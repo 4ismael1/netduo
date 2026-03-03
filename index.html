@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NetDuo - Network Diagnostics</title>
+    <script>
+      (function () {
+        try {
+          var params = new URLSearchParams(window.location.search || '')
+          var bootTheme = params.get('bootTheme')
+          var cached = localStorage.getItem('netduo.theme')
+          var theme = (bootTheme === 'dark' || bootTheme === 'light')
+            ? bootTheme
+            : (cached === 'dark' || cached === 'light')
+            ? cached
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          var bg = theme === 'dark' ? '#050507' : '#f1f5f9'
+          document.documentElement.setAttribute('data-theme', theme)
+          document.documentElement.style.backgroundColor = bg
+          document.documentElement.style.colorScheme = theme
+          var style = document.createElement('style')
+          style.setAttribute('data-netduo-boot-theme', 'true')
+          style.textContent = 'html,body,#root{background:' + bg + ';}'
+          document.head.appendChild(style)
+        } catch (_) {}
+      })()
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

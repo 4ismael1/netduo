@@ -1,0 +1,151 @@
+/* ═══════════════════════════════════════
+   Diagnostics — Panel System
+   ═══════════════════════════════════════ */
+
+/* ── Controls Row ── */
+.diag-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+.diag-controls-row .v3-input { flex: 1; }
+
+/* ── Traceroute Hops ── */
+.diag-hop-list {
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-top: 4px;
+}
+
+.diag-hop-header {
+    display: grid;
+    grid-template-columns: 44px 1fr 1.5fr 80px;
+    padding: 10px 16px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: var(--gray-50);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.diag-hop-row {
+    display: grid;
+    grid-template-columns: 44px 1fr 1.5fr 80px;
+    align-items: center;
+    padding: 10px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border-subtle);
+    animation: fadeUp 0.15s ease both;
+    background: var(--bg-surface);
+    transition: background 80ms ease;
+}
+.diag-hop-row:hover { background: var(--gray-50); }
+.diag-hop-row:last-child { border-bottom: none; }
+
+/* ── Ping Stats ── */
+.ping-stats-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+    background: var(--gray-50);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+}
+
+.ping-stat {
+    text-align: center;
+}
+.ping-stat-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+.ping-stat-val {
+    font-size: 18px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: -0.03em;
+}
+
+/* ── Ping Terminal ── */
+.ping-terminal {
+    background: #0a0c10;
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    max-height: 340px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.9;
+    border: 1px solid #1e2230;
+    color: #c8cdd8;
+}
+
+.ping-line {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    animation: fadeUp 0.1s ease both;
+    color: #c8cdd8;
+}
+.ping-line span { white-space: nowrap; }
+
+/* terminal scrollbar */
+.ping-terminal::-webkit-scrollbar { width: 5px; }
+.ping-terminal::-webkit-scrollbar-track { background: transparent; }
+.ping-terminal::-webkit-scrollbar-thumb { background: #3a3f4d; border-radius: 4px; }
+
+/* ── DNS Grid ── */
+.dns-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+    margin-top: 4px;
+}
+
+.dns-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: box-shadow 120ms ease;
+}
+.dns-card:hover { box-shadow: var(--shadow-sm); }
+
+.dns-type-badge {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.dns-answers {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.dns-answer {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+    padding: 4px 8px;
+    background: var(--gray-50);
+    border-radius: var(--radius-sm);
+    word-break: break-all;
+}
+
+@media (max-width: 700px) {
+    .ping-stats-row { grid-template-columns: repeat(3, 1fr); }
+    .diag-controls-row { flex-direction: column; align-items: stretch; }
+}

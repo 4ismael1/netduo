@@ -1,0 +1,37 @@
+.netduo-mark {
+    --nd-bg-start: #73c9f8;
+    --nd-bg-end: #4caeef;
+    --nd-fg: #ffffff;
+    --nd-shadow: rgba(18, 47, 97, 0.34);
+    display: block;
+}
+
+.netduo-mark.dark {
+    --nd-bg-start: #12306f;
+    --nd-bg-end: #0a1f53;
+    --nd-shadow: rgba(3, 10, 30, 0.56);
+}
+
+.netduo-mark.light {
+    --nd-bg-start: #73c9f8;
+    --nd-bg-end: #4caeef;
+    --nd-shadow: rgba(18, 47, 97, 0.34);
+}
+
+.netduo-mark.accent {
+    --nd-bg-start: var(--color-accent, #3b82f6);
+    --nd-bg-end: var(--color-accent-hover, #2563eb);
+    --nd-shadow: color-mix(in srgb, var(--color-accent, #3b82f6) 34%, transparent);
+}
+
+[data-theme="dark"] .netduo-mark.auto {
+    --nd-bg-start: #12306f;
+    --nd-bg-end: #0a1f53;
+    --nd-shadow: rgba(3, 10, 30, 0.56);
+}
+
+[data-theme="light"] .netduo-mark.auto {
+    --nd-bg-start: #73c9f8;
+    --nd-bg-end: #4caeef;
+    --nd-shadow: rgba(18, 47, 97, 0.34);
+}

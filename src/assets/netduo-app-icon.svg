@@ -1,0 +1,76 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 256 256"
+  role="img"
+  aria-labelledby="netduoIconTitle netduoIconDesc"
+  class="netduo-app-icon"
+>
+  <title id="netduoIconTitle">NetDuo App Icon</title>
+  <desc id="netduoIconDesc">Rounded square background with a network pulse mark and two node dots.</desc>
+
+  <style>
+    .netduo-app-icon {
+      --nd-bg-start: #73c9f8;
+      --nd-bg-end: #4caeef;
+      --nd-fg: #ffffff;
+      --nd-shadow: rgba(18, 47, 97, 0.34);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .netduo-app-icon:not([data-mode='light']) {
+        --nd-bg-start: #12306f;
+        --nd-bg-end: #0a1f53;
+        --nd-shadow: rgba(3, 10, 30, 0.56);
+      }
+    }
+
+    .netduo-app-icon[data-mode='light'] {
+      --nd-bg-start: #73c9f8;
+      --nd-bg-end: #4caeef;
+      --nd-shadow: rgba(18, 47, 97, 0.34);
+    }
+
+    .netduo-app-icon[data-mode='dark'] {
+      --nd-bg-start: #12306f;
+      --nd-bg-end: #0a1f53;
+      --nd-shadow: rgba(3, 10, 30, 0.56);
+    }
+
+    .netduo-app-icon[data-mode='accent'] {
+      --nd-bg-start: var(--nd-accent-start, var(--color-accent, #3b82f6));
+      --nd-bg-end: var(--nd-accent-end, #1d4ed8);
+      --nd-shadow: rgba(10, 27, 64, 0.46);
+    }
+  </style>
+
+  <defs>
+    <linearGradient id="netduoBg" x1="24" y1="24" x2="232" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" style="stop-color: var(--nd-bg-start)" />
+      <stop offset="100%" style="stop-color: var(--nd-bg-end)" />
+    </linearGradient>
+
+    <linearGradient id="netduoHighlight" x1="64" y1="46" x2="200" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.26" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <filter id="netduoShadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="var(--nd-shadow)" />
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="208" height="208" rx="44" fill="url(#netduoBg)" filter="url(#netduoShadow)" />
+  <rect x="24" y="24" width="208" height="208" rx="44" fill="url(#netduoHighlight)" />
+
+  <path
+    d="M66 170 L111 95 L145 133 L189 70"
+    fill="none"
+    stroke="var(--nd-fg)"
+    stroke-width="13"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="66" cy="170" r="12" fill="var(--nd-fg)" />
+  <circle cx="189" cy="70" r="12" fill="var(--nd-fg)" />
+</svg>

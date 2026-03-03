@@ -1,0 +1,162 @@
+/* ═══════════════════════════════════════
+   Sidebar — Collapsible Rail (64px ↔ 200px)
+   ═══════════════════════════════════════ */
+
+.sidebar-rail {
+    width: 64px;
+    height: 100%;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-light);
+    display: flex;
+    flex-direction: column;
+    padding: 10px 0 8px;
+    transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    overflow: hidden;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.sidebar-rail.expanded {
+    width: 200px;
+}
+
+/* ── Logo ── */
+.rail-top {
+    flex-shrink: 0;
+    padding: 4px 10px 12px;
+}
+
+.rail-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--radius-md);
+    transition: background 120ms ease;
+    user-select: none;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.rail-logo:hover { background: var(--gray-100); }
+
+.logo-mark {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.logo-text {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--text-primary);
+    letter-spacing: -0.03em;
+    white-space: nowrap;
+    opacity: 1;
+    transition: opacity 150ms ease;
+}
+
+/* ── Section Label ── */
+.nav-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 12px 18px 6px;
+    white-space: nowrap;
+}
+
+/* ── Navigation ── */
+.rail-nav {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.rail-bottom {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 4px;
+}
+
+/* ── Nav Button ── */
+.nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 38px;
+    margin: 0 8px;
+    padding: 0 12px;
+    border-radius: var(--radius-md);
+    color: var(--gray-400);
+    transition: all 120ms ease;
+    position: relative;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+/* Collapsed: center icon */
+.sidebar-rail:not(.expanded) .nav-btn {
+    justify-content: center;
+    padding: 0;
+    margin: 0 10px;
+}
+
+.nav-btn:hover {
+    color: var(--gray-700);
+    background: var(--gray-100);
+}
+
+.nav-btn.active {
+    color: var(--color-accent);
+    background: var(--color-accent-ghost);
+}
+
+.nav-label {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.nav-btn.active .nav-label { font-weight: 600; }
+
+/* ── Tooltip (only when collapsed) ── */
+.sidebar-rail:not(.expanded) .nav-btn::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + 18px);
+    top: 50%;
+    transform: translateY(-50%) scale(0.92);
+    padding: 5px 10px;
+    background: var(--gray-800);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 100ms ease;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.sidebar-rail:not(.expanded) .nav-btn:hover::after {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+}
+
+/* Toggle button removed — use logo click to expand/collapse */
+
+/* Dark mode overrides */
+[data-theme="dark"] .sidebar-rail { background: var(--bg-surface); border-color: var(--border-light); }
+[data-theme="dark"] .rail-logo:hover { background: var(--bg-surface-hover); }
+[data-theme="dark"] .nav-btn:hover { color: var(--gray-700); background: var(--bg-surface-hover); }
+[data-theme="dark"] .sidebar-rail:not(.expanded) .nav-btn::after { background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-light); }

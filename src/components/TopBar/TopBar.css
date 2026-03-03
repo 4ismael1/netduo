@@ -1,0 +1,74 @@
+/* ═══════════════════════════════════════
+   TopBar — Minimal drag strip
+   ═══════════════════════════════════════ */
+
+.topbar {
+    height: var(--topbar-h);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px 0 20px;
+    background: var(--bg-app);
+    border-bottom: 1px solid var(--border-subtle);
+    -webkit-app-region: drag;
+    user-select: none;
+}
+
+.topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.topbar-brand {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+}
+
+.topbar-sep {
+    color: var(--gray-300);
+    font-size: 16px;
+}
+
+.topbar-time {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* ── Window Controls ── */
+.topbar-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    -webkit-app-region: no-drag;
+}
+
+.wc-btn {
+    width: 32px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--gray-500);
+    cursor: pointer;
+    transition: all 100ms ease;
+}
+
+.wc-btn:hover {
+    background: var(--gray-200);
+    color: var(--text-primary);
+}
+
+.wc-close:hover {
+    background: #ef4444;
+    color: white;
+}
+
+/* Dark mode overrides */
+[data-theme="dark"] .topbar { background: var(--bg-app); border-color: var(--border-subtle); }
+[data-theme="dark"] .wc-btn:hover { background: var(--gray-200); }

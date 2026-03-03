@@ -1,0 +1,78 @@
+/* ═══════════════════════════════════════
+   Tools — Utility Panel System
+   ═══════════════════════════════════════ */
+
+/* ── Controls Row ── */
+.tool-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+.tool-controls-row .v3-input { flex: 1; }
+
+/* ── Alert rows ── */
+.tool-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 18px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 16px;
+}
+.tool-alert.success {
+    background: var(--color-success-bg);
+    color: #15803d;
+    border: 1px solid var(--color-success-border);
+}
+.tool-alert.error {
+    background: var(--color-danger-bg);
+    color: #dc2626;
+    border: 1px solid var(--color-danger-border);
+}
+
+/* ── SSL Grid ── */
+.ssl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    margin-top: 4px;
+}
+.ssl-grid-item {
+    padding: 12px 14px;
+    background: var(--gray-50);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+}
+.ssl-grid-item .v3-label-sm { margin-bottom: 4px; }
+.ssl-grid-item .v3-metric-value {
+    font-size: 14px;
+    word-break: break-all;
+}
+
+/* ── Terminal Output (Whois) ── */
+.terminal-output {
+    background: var(--gray-900);
+    color: var(--gray-300);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.65;
+    padding: 18px 20px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--gray-700);
+    max-height: 420px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: text;
+}
+.terminal-output::-webkit-scrollbar { width: 5px; }
+.terminal-output::-webkit-scrollbar-track { background: transparent; }
+.terminal-output::-webkit-scrollbar-thumb { background: var(--gray-600); border-radius: 4px; }
+
+@media (max-width: 700px) {
+    .tool-controls-row { flex-direction: column; align-items: stretch; }
+    .ssl-grid { grid-template-columns: 1fr; }
+}
