@@ -632,13 +632,30 @@ async function getWifiSnapshot() {
         if (!out) return null
         const lines = out.split('\n')
         const get = (...keys) => {
+            // Pass 1: exact label match (text before ':' must equal key exactly)
+            // This prevents e.g. "Cifrado del grupo" from shadowing "Cifrado"
             for (const key of keys) {
                 for (const l of lines) {
                     if (key.toLowerCase() === 'ssid') {
                         if (/^\s+SSID\s/i.test(l) && !/BSSID/i.test(l) && l.includes(':'))
                             return l.substring(l.indexOf(':') + 1).trim()
-                    } else if (l.toLowerCase().includes(key.toLowerCase()) && l.includes(':')) {
-                        return l.substring(l.indexOf(':') + 1).trim()
+                    } else if (l.includes(':')) {
+                        const label = l.substring(0, l.indexOf(':')).trim()
+                        if (label.toLowerCase() === key.toLowerCase()) {
+                            return l.substring(l.indexOf(':') + 1).trim()
+                        }
+                    }
+                }
+            }
+            // Pass 2: prefix match on label (for truncated Spanish keys like 'Velocidad de recepci')
+            for (const key of keys) {
+                if (key.toLowerCase() === 'ssid') continue // already handled
+                for (const l of lines) {
+                    if (l.includes(':')) {
+                        const label = l.substring(0, l.indexOf(':')).trim()
+                        if (label.toLowerCase().startsWith(key.toLowerCase())) {
+                            return l.substring(l.indexOf(':') + 1).trim()
+                        }
                     }
                 }
             }
@@ -803,7 +820,59 @@ ipcMain.handle('get-wifi-info', async () => {
 })
 
 // ── DNS Servers ───────────────────────────────────────
-ipcMain.handle('get-dns-servers', () => dns.getServers())
+ipcMain.handle('get-dns-servers', async () => {
+    // dns.getServers() often returns stub/loopback (127.0.0.1, ::1) or
+    // link-local IPv6 (fe80::) instead of the real upstream DNS.
+    // Always try ipconfig /all first on Windows to get the actual DNS servers.
+    try {
+        const { out } = await run('ipconfig /all', 5000)
+        if (out) {
+            // Parse DNS server lines: they follow "Servidores DNS" / "DNS Servers" label
+            // and may span multiple indented continuation lines
+            const dnsFromIpconfig = []
+            const lines = out.split('\n')
+            let inDnsBlock = false
+            for (const line of lines) {
+                if (/DNS\s*(Servers|Server)|Servidores\s*DNS/i.test(line) && line.includes(':')) {
+                    inDnsBlock = true
+                    const val = line.substring(line.indexOf(':') + 1).trim()
+                    if (val && !/^fe80/i.test(val)) dnsFromIpconfig.push(val)
+                } else if (inDnsBlock) {
+                    const trimmed = line.trim()
+                    // Continuation lines are indented values (IPs) with no label
+                    if (trimmed && !trimmed.includes(':') && /^[\d.]/.test(trimmed)) {
+                        // Plain IPv4 continuation
+                        if (!dnsFromIpconfig.includes(trimmed)) dnsFromIpconfig.push(trimmed)
+                    } else if (trimmed && !trimmed.includes(' . ') && /^[\da-f.:]+$/i.test(trimmed) && !/^fe80/i.test(trimmed)) {
+                        // IPv6 continuation (non-link-local)
+                        if (!dnsFromIpconfig.includes(trimmed)) dnsFromIpconfig.push(trimmed)
+                    } else {
+                        inDnsBlock = false
+                    }
+                }
+            }
+            // Deduplicate & filter out loopback
+            const filtered = [...new Set(dnsFromIpconfig)].filter(s =>
+                s !== '127.0.0.1' && s !== '::1' && !/^fe80/i.test(s)
+            )
+            if (filtered.length) return filtered
+        }
+    } catch { /* fall through */ }
+
+    // Fallback: use Node's dns.getServers(), sort IPv4 first
+    const servers = dns.getServers()
+    return [...servers].sort((a, b) => {
+        const aIsV4 = /^\d+\.\d+\.\d+\.\d+$/.test(a)
+        const bIsV4 = /^\d+\.\d+\.\d+\.\d+$/.test(b)
+        const aIsLinkLocal = a.startsWith('fe80') || a === '127.0.0.1' || a === '::1'
+        const bIsLinkLocal = b.startsWith('fe80') || b === '127.0.0.1' || b === '::1'
+        if (aIsV4 && !bIsV4) return -1
+        if (!aIsV4 && bIsV4) return 1
+        if (aIsLinkLocal && !bIsLinkLocal) return 1
+        if (!aIsLinkLocal && bIsLinkLocal) return -1
+        return 0
+    })
+})
 
 // ── ARP Table ─────────────────────────────────────────
 ipcMain.handle('get-arp-table', async () => {
@@ -3113,6 +3182,7 @@ ipcMain.handle('wan-probe-request', async (_, opts) => {
 })
 
 
-
+
+
 
 

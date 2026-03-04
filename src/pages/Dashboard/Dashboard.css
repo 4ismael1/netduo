@@ -578,11 +578,16 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 2px;
-    margin-left: 6px;
+    padding: 4px;
+    margin-left: 4px;
     border-radius: var(--radius-sm);
     vertical-align: middle;
     transition: color .15s, background .15s;
+    min-width: 24px;
+    min-height: 24px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
 }
 .ip-eye-btn:hover {
     color: var(--text-primary);

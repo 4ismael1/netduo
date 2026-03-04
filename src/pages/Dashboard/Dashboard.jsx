@@ -383,8 +383,8 @@ export default function Dashboard() {
                                 ? <span className="copied-flash">Copied!</span>
                                 : (net.publicIP ? (showPublicIP ? net.publicIP : net.publicIP.replace(/./g, '\u2022')) : '\u2014')}
                             {net.publicIP && !copiedIP && (
-                                <button className="ip-eye-btn" onClick={(e) => { e.stopPropagation(); setShowPublicIP(p => !p) }} title={showPublicIP ? 'Hide IP' : 'Show IP'}>
-                                    {showPublicIP ? <EyeOff size={14} /> : <Eye size={14} />}
+                                <button className="ip-eye-btn" onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }} onClick={(e) => { e.stopPropagation(); e.preventDefault(); setShowPublicIP(p => !p) }} title={showPublicIP ? 'Hide IP' : 'Show IP'}>
+                                    {showPublicIP ? <EyeOff size={16} /> : <Eye size={16} />}
                                 </button>
                             )}
                         </div>
