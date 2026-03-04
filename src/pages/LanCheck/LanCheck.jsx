@@ -1155,20 +1155,49 @@ export default function LanCheck() {
                                 </div>
                             </div>
                         ) : (
-                            <>
-                                <div className="lchk-report-actions">
-                                    <button className="v3-btn v3-btn-secondary" onClick={() => setStage('setup')}>
-                                        <Play size={14} />
-                                        Scan Again
-                                    </button>
-                                    <button className="v3-btn v3-btn-secondary" onClick={() => setStage('history')}>
-                                        <History size={14} />
-                                        Open History
-                                    </button>
-                                    <button className="v3-btn v3-btn-secondary" onClick={() => copyReportJson(report)}>
-                                        <Copy size={14} />
-                                        Copy JSON
-                                    </button>
+                            <div className="lchk-report-shell">
+                                <div className="v3-card lchk-report-hero">
+                                    <div className="lchk-report-hero-top">
+                                        <div className="lchk-report-heading">
+                                            <span className="lchk-report-kicker">LAN Check Report</span>
+                                            <h2 className="lchk-report-title">Scope {report.range}</h2>
+                                            <p className="lchk-report-subtitle">
+                                                {(PROFILE_PRESETS[report.profile]?.title || String(report.profile || '').toUpperCase())} profile - {report.summary.targetsScanned} scanned hosts - {report.findings.length} findings
+                                            </p>
+                                        </div>
+                                        <div className="lchk-report-actions">
+                                            <button className="v3-btn v3-btn-secondary" onClick={() => setStage('setup')}>
+                                                <Play size={14} />
+                                                Scan Again
+                                            </button>
+                                            <button className="v3-btn v3-btn-secondary" onClick={() => setStage('history')}>
+                                                <History size={14} />
+                                                Open History
+                                            </button>
+                                            <button className="v3-btn v3-btn-secondary" onClick={() => copyReportJson(report)}>
+                                                <Copy size={14} />
+                                                Copy JSON
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="lchk-report-glance">
+                                        <span className="lchk-report-glance-item">
+                                            <ShieldAlert size={13} />
+                                            {report.summary.riskBand.label} risk - {report.summary.riskScore}/100
+                                        </span>
+                                        <span className="lchk-report-glance-item">
+                                            <Database size={13} />
+                                            {confirmedOpenServices} confirmed open - {inconclusiveServices} inconclusive
+                                        </span>
+                                        <span className="lchk-report-glance-item">
+                                            <Globe size={13} />
+                                            {report.summary.devicesTotal} discovered - {report.summary.targetsScanned} fingerprinted
+                                        </span>
+                                        <span className="lchk-report-glance-item">
+                                            <Clock3 size={13} />
+                                            Runtime {formatDuration((scanFinishedAt || Date.now()) - (scanStartedAt || Date.now()))}
+                                        </span>
+                                    </div>
                                 </div>
 
                                 <div className="lchk-summary-grid">
@@ -1205,101 +1234,111 @@ export default function LanCheck() {
                                         <span className="lchk-summary-meta">Discovery: {report.summary.discoveryEnabled ? 'enabled' : 'focused targets'}</span>
                                     </div>
                                 </div>
-                                <div className="v3-card lchk-findings-card">
-                                    <div className="v3-card-header">
-                                        <div className="v3-card-title"><Shield size={16} color="var(--color-accent)" /> Findings</div>
-                                        <div className="lchk-severity-counters">
-                                            {Object.entries(severityCounts).map(([level, count]) => (
-                                                <span key={level} className={`lchk-sev-chip ${level}`}>{level} {count}</span>
-                                            ))}
+                                <div className="lchk-report-main-grid">
+                                    <div className="v3-card lchk-findings-card">
+                                        <div className="v3-card-header">
+                                            <div className="v3-card-title"><Shield size={16} color="var(--color-accent)" /> Findings</div>
+                                            <div className="lchk-severity-counters">
+                                                {Object.entries(severityCounts).map(([level, count]) => (
+                                                    <span key={level} className={`lchk-sev-chip ${level}`}>{level} {count}</span>
+                                                ))}
+                                            </div>
                                         </div>
+                                        {!report.findings.length ? (
+                                            <div className="lchk-no-open">
+                                                <ShieldCheck size={15} color="var(--color-success)" />
+                                                No findings detected in this LAN scope.
+                                            </div>
+                                        ) : (
+                                            <div className="lchk-findings-list">
+                                                {report.findings.map(item => {
+                                                    const ItemIcon = SEVERITY_META[item.severity]?.icon || Info
+                                                    return (
+                                                        <div key={item.id} className={`lchk-finding ${item.severity}`}>
+                                                            <div className="lchk-finding-head">
+                                                                <span className="lchk-finding-severity"><ItemIcon size={13} /> {item.severity}</span>
+                                                                <strong>{item.title}</strong>
+                                                            </div>
+                                                            <p>{item.evidence}</p>
+                                                            <div className="lchk-finding-rec">{item.recommendation}</div>
+                                                        </div>
+                                                    )
+                                                })}
+                                            </div>
+                                        )}
                                     </div>
-                                    <div className="lchk-findings-list">
-                                        {report.findings.map(item => {
-                                            const ItemIcon = SEVERITY_META[item.severity]?.icon || Info
-                                            return (
-                                                <div key={item.id} className={`lchk-finding ${item.severity}`}>
-                                                    <div className="lchk-finding-head">
-                                                        <span className="lchk-finding-severity"><ItemIcon size={13} /> {item.severity}</span>
-                                                        <strong>{item.title}</strong>
-                                                    </div>
-                                                    <p>{item.evidence}</p>
-                                                    <div className="lchk-finding-rec">{item.recommendation}</div>
+
+                                    <div className="v3-card lchk-open-ports-card">
+                                        <div className="v3-card-header">
+                                            <div className="v3-card-title"><Fingerprint size={16} color="var(--color-accent)" /> Open Service Evidence</div>
+                                            <span className="v3-badge accent">{confirmedOpenServices} confirmed - {inconclusiveServices} inconclusive</span>
+                                        </div>
+                                        {!openRows.length ? (
+                                            <div className="lchk-no-open">
+                                                <CheckCircle2 size={16} color="var(--color-success)" />
+                                                No open TCP/UDP service evidence found in selected profile scope.
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="lchk-open-note">
+                                                    Entries marked <span className="mono">filtered</span> are inconclusive for UDP scans and require confirmation.
                                                 </div>
-                                            )
-                                        })}
-                                    </div>
-                                </div>
-
-                                <div className="v3-card lchk-open-ports-card">
-                                    <div className="v3-card-header">
-                                        <div className="v3-card-title"><Fingerprint size={16} color="var(--color-accent)" /> Open Service Evidence</div>
-                                        <span className="v3-badge accent">{confirmedOpenServices} confirmed - {inconclusiveServices} inconclusive</span>
-                                    </div>
-                                    {!openRows.length ? (
-                                        <div className="lchk-no-open">
-                                            <CheckCircle2 size={16} color="var(--color-success)" />
-                                            No open TCP/UDP service evidence found in selected profile scope.
-                                        </div>
-                                    ) : (
-                                        <>
-                                            <div className="lchk-open-note">
-                                                Entries marked <span className="mono">filtered</span> are inconclusive for UDP scans and require confirmation.
-                                            </div>
-                                            <div className="lchk-table-wrap">
-                                                <table className="np-table">
-                                                    <thead>
-                                                        <tr>
-                                                            <th>Host</th>
-                                                            <th>Port</th>
-                                                            <th>Proto</th>
-                                                            <th>State</th>
-                                                            <th>Service</th>
-                                                            <th>Role</th>
-                                                            <th>Severity</th>
-                                                            <th>RTT</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {pagedRows.map((row, idx) => {
-                                                            const rawState = String(row.state || 'open').toLowerCase()
-                                                            const displayState = rawState === 'open|filtered' ? 'filtered' : (rawState || 'open')
-                                                            return (
-                                                            <tr key={`${row.ip}-${row.protocol || 'tcp'}-${row.port}-${idx}`}>
-                                                                <td className="mono">{row.ip}</td>
-                                                                <td className="mono">{row.port}</td>
-                                                                <td className="mono">{String(row.protocol || 'tcp').toUpperCase()}</td>
-                                                                <td><span className={`lchk-state-chip ${displayState.replace(/\|/g, '-')}`}>{displayState}</span></td>
-                                                                <td>
-                                                                    <div className="lchk-service-cell">
-                                                                        <strong>{row.service}</strong>
-                                                                        {row.detail ? <small>{row.detail}</small> : null}
-                                                                    </div>
-                                                                </td>
-                                                                <td>{row.isGateway ? <span className="lchk-role-chip"><Router size={11} /> Gateway</span> : row.displayName}</td>
-                                                                <td><span className={`lchk-sev-chip ${row.severity}`}>{row.severity}</span></td>
-                                                                <td className="mono">{row.time != null ? `${row.time}ms` : '-'}</td>
+                                                <div className="lchk-table-wrap">
+                                                    <table className="np-table">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Host</th>
+                                                                <th>Port</th>
+                                                                <th>Proto</th>
+                                                                <th>State</th>
+                                                                <th>Service</th>
+                                                                <th>Role</th>
+                                                                <th>Severity</th>
+                                                                <th>RTT</th>
                                                             </tr>
-                                                        )})}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                            <div className="lchk-pagination">
-                                                <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.max(1, v - 1))} disabled={reportPage <= 1}>
-                                                    <ChevronLeft size={13} />
-                                                    Prev
-                                                </button>
-                                                <span className="mono">Page {reportPage} / {totalPages}</span>
-                                                <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.min(totalPages, v + 1))} disabled={reportPage >= totalPages}>
-                                                    Next
-                                                    <ChevronRight size={13} />
-                                                </button>
-                                            </div>
-                                        </>
-                                    )}
+                                                        </thead>
+                                                        <tbody>
+                                                            {pagedRows.map((row, idx) => {
+                                                                const rawState = String(row.state || 'open').toLowerCase()
+                                                                const displayState = rawState === 'open|filtered' ? 'filtered' : (rawState || 'open')
+                                                                return (
+                                                                    <tr key={`${row.ip}-${row.protocol || 'tcp'}-${row.port}-${idx}`}>
+                                                                        <td className="mono">{row.ip}</td>
+                                                                        <td className="mono">{row.port}</td>
+                                                                        <td className="mono">{String(row.protocol || 'tcp').toUpperCase()}</td>
+                                                                        <td><span className={`lchk-state-chip ${displayState.replace(/\|/g, '-')}`}>{displayState}</span></td>
+                                                                        <td>
+                                                                            <div className="lchk-service-cell">
+                                                                                <strong>{row.service}</strong>
+                                                                                {row.detail ? <small>{row.detail}</small> : null}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td>{row.isGateway ? <span className="lchk-role-chip"><Router size={11} /> Gateway</span> : row.displayName}</td>
+                                                                        <td><span className={`lchk-sev-chip ${row.severity}`}>{row.severity}</span></td>
+                                                                        <td className="mono">{row.time != null ? `${row.time}ms` : '-'}</td>
+                                                                    </tr>
+                                                                )
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div className="lchk-pagination">
+                                                    <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.max(1, v - 1))} disabled={reportPage <= 1}>
+                                                        <ChevronLeft size={13} />
+                                                        Prev
+                                                    </button>
+                                                    <span className="mono">Page {reportPage} / {totalPages}</span>
+                                                    <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.min(totalPages, v + 1))} disabled={reportPage >= totalPages}>
+                                                        Next
+                                                        <ChevronRight size={13} />
+                                                    </button>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
 
-                                <div className="lchk-bottom-grid">
+                                <div className="lchk-report-support-grid">
                                     <div className="v3-card lchk-upnp-card">
                                         <div className="v3-card-header">
                                             <div className="v3-card-title"><Wifi size={16} color="var(--color-accent)" /> UPnP / SSDP Intel</div>
@@ -1351,7 +1390,7 @@ export default function LanCheck() {
                                         </div>
                                     </div>
                                 </div>
-                            </>
+                            </div>
                         )}
                     </motion.section>
                 )}
