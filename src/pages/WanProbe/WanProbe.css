@@ -336,7 +336,14 @@
     gap: 6px;
     font-size: 10px;
     color: var(--text-muted);
-    white-space: nowrap;
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+}
+
+.wp2-mode-meta > span {
+    min-width: 0;
 }
 
 .wp2-flow-block {

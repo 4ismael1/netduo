@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
     Wifi, Globe, Shield, CheckCircle2, AlertTriangle, XCircle,
     Loader2, Radar, Gauge, Stethoscope, Wrench, ArrowRight,
@@ -9,6 +9,7 @@ import { AreaChart, Area, ResponsiveContainer, Tooltip, YAxis, ReferenceLine } f
 import { useNavigate } from 'react-router-dom'
 import bridge from '../../lib/electronBridge'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
+import DashboardSkeleton from './DashboardSkeleton.jsx'
 import './Dashboard.css'
 
 const MAX_PTS = 30
@@ -59,7 +60,7 @@ function StatTile({ icon, label, value, sub, accent }) {
                 <div className={`stat-tile-value mono${value ? ' copyable' : ''}`} onClick={handleCopy} title={value ? 'Click to copy' : ''}>
                     {copied ? <span className="copied-flash">Copied!</span> : (value || '-')}
                 </div>
-                {sub && <div className="stat-tile-sub">{sub}</div>}
+                <div className="stat-tile-sub">{sub || '\u00A0'}</div>
             </div>
         </div>
     )
@@ -68,6 +69,7 @@ function StatTile({ icon, label, value, sub, accent }) {
 export default function Dashboard() {
     const navigate = useNavigate()
     const net = useNetworkStatus()
+    const dashRef = useRef(null)
     const [pingData, setPingData] = useState(_pingCache?.pingData ?? Object.fromEntries(HOSTS.map(h => [h, []])))
     const [pingLatest, setPingLatest] = useState(_pingCache?.pingLatest ?? {})
     const [gwPing, setGwPing] = useState(_pingCache?.gwPing ?? null)
@@ -76,7 +78,14 @@ export default function Dashboard() {
     const [signalPts, setSignalPts] = useState(_signalHistory)
     const [copiedIP, setCopiedIP] = useState(false)
     const [showPublicIP, setShowPublicIP] = useState(false)
+    const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
     const stateRef = useRef({})
+    const [ready, setReady] = useState(!net.loading)
+
+    // Mark ready once loading finishes
+    useEffect(() => {
+        if (!net.loading && !ready) setReady(true)
+    }, [net.loading, ready])
 
     const shouldProbeGateway = Boolean(net.connected && net.gateway && !net.isVpn)
 
@@ -219,8 +228,73 @@ export default function Dashboard() {
         { icon: Wrench,      label: 'Tools',         desc: 'SSL, Whois & more',       path: '/tools',       color: '#f59e0b' },
     ]
 
+    const avgLiveLatency = (() => {
+        const values = Object.values(pingLatest).filter(v => Number.isFinite(v))
+        if (!values.length) return null
+        return Math.round(values.reduce((acc, cur) => acc + cur, 0) / values.length)
+    })()
+
+    const latencyYDomain = useMemo(() => {
+        const values = HOSTS.flatMap(host =>
+            (pingData[host] || [])
+                .map(point => point?.ms)
+                .filter(value => Number.isFinite(value) && value >= 0)
+        )
+        if (!values.length) return [0, 40]
+
+        const sorted = [...values].sort((a, b) => a - b)
+        const p95Index = Math.max(0, Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95)))
+        const p95 = sorted[p95Index]
+        const max = sorted[sorted.length - 1]
+
+        // Keep global comparability but avoid one extreme outlier flattening everything.
+        const cappedUpper = max > p95 * 3 ? (p95 * 1.4) : max
+        const upper = Math.max(30, Math.ceil((cappedUpper + 5) / 5) * 5)
+        return [0, upper]
+    }, [pingData])
+
+    const ipv6Address = net.interfaces?.find(item =>
+        item?.family === 'IPv6'
+        && !item?.internal
+        && (!net.ifaceName || item?.name === net.ifaceName)
+    )?.address || null
+
+    const recomputeExtraDeviceInfo = useCallback(() => {
+        const container = dashRef.current
+        if (!container) return
+        const overflow = container.scrollHeight > (container.clientHeight + 1)
+        const slack = container.clientHeight - container.scrollHeight
+        setShowExtraDeviceInfo(prev => {
+            if (prev) return !overflow
+            return !overflow && slack >= 180
+        })
+    }, [])
+
+    useEffect(() => {
+        const timer = setTimeout(() => recomputeExtraDeviceInfo(), 120)
+        return () => clearTimeout(timer)
+    }, [
+        recomputeExtraDeviceInfo,
+        net.loading,
+        net.connected,
+        net.isVpn,
+        net.ifaceName,
+        net.localIP,
+        net.publicIP,
+        net.gateway,
+    ])
+
+    useEffect(() => {
+        const onResize = () => requestAnimationFrame(recomputeExtraDeviceInfo)
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+    }, [recomputeExtraDeviceInfo])
+
+    // Show skeleton while initial data is loading
+    if (!ready) return <DashboardSkeleton />
+
     return (
-        <div className="dash page-enter">
+        <div className="dash dash-ready page-enter" ref={dashRef}>
             {/* Header */}
             <div className="dash-header">
                 <div>
@@ -229,12 +303,10 @@ export default function Dashboard() {
                         {net.sysInfo?.hostname || 'Network'} - {net.wifi?.ssid || net.ifaceName || 'Loading...'}
                     </p>
                 </div>
-                {health !== 'loading' && (
-                    <span className={`status-pill ${health}`}>
-                        <span className="status-dot" />
-                        {hc.pill}
-                    </span>
-                )}
+                <span className={`status-pill ${health}`}>
+                    <span className="status-dot" />
+                    {hc.pill}
+                </span>
             </div>
 
             {/* Status Banner */}
@@ -289,7 +361,7 @@ export default function Dashboard() {
                             title={net.localIP ? 'Click to copy' : ''}>
                             {net.localIP || '\u2014'}
                         </div>
-                        {net.ifaceName && <div className="stat-tile-sub">{net.ifaceName}</div>}
+                        <div className="stat-tile-sub">{net.ifaceName || '\u00A0'}</div>
                     </div>
                 </div>
                 <div className="stat-tile">
@@ -409,23 +481,25 @@ export default function Dashboard() {
                                 const yMin = Math.floor(mid - span / 2 - 4)
                                 const yMax = Math.ceil(mid + span / 2 + 4)
                                 return (
-                                    <ResponsiveContainer width="100%" height={120}>
-                                        <AreaChart data={pts} margin={{ top: 4, right: 6, bottom: 2, left: 0 }}>
-                                            <YAxis domain={[yMin, yMax]} hide />
-                                            <ReferenceLine y={-50} stroke="var(--color-success)" strokeDasharray="4 4" strokeOpacity={0.35} />
-                                            <ReferenceLine y={-75} stroke="var(--color-warning)" strokeDasharray="4 4" strokeOpacity={0.35} />
-                                            <Tooltip
-                                                contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: 8, fontSize: 12, boxShadow: '0 4px 12px rgba(0,0,0,.08)' }}
-                                                labelFormatter={() => ''}
-                                                formatter={v => [`${v} dBm`, 'Signal']}
-                                            />
-                                            <Area type="monotone" dataKey="dbm" stroke="#06b6d4"
-                                                strokeWidth={2} fill="none" dot={false}
-                                                activeDot={{ r: 3, strokeWidth: 2, fill: '#fff', stroke: '#06b6d4' }}
-                                                isAnimationActive={false}
-                                                connectNulls />
-                                        </AreaChart>
-                                    </ResponsiveContainer>
+                                    <div className="signal-chart-frame">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <AreaChart data={pts} margin={{ top: 4, right: 6, bottom: 2, left: 0 }}>
+                                                <YAxis domain={[yMin, yMax]} hide />
+                                                <ReferenceLine y={-50} stroke="var(--color-success)" strokeDasharray="4 4" strokeOpacity={0.35} />
+                                                <ReferenceLine y={-75} stroke="var(--color-warning)" strokeDasharray="4 4" strokeOpacity={0.35} />
+                                                <Tooltip
+                                                    contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: 8, fontSize: 12, boxShadow: '0 4px 12px rgba(0,0,0,.08)' }}
+                                                    labelFormatter={() => ''}
+                                                    formatter={v => [`${v} dBm`, 'Signal']}
+                                                />
+                                                <Area type="monotone" dataKey="dbm" stroke="#06b6d4"
+                                                    strokeWidth={2} fill="none" dot={false}
+                                                    activeDot={{ r: 3, strokeWidth: 2, fill: '#fff', stroke: '#06b6d4' }}
+                                                    isAnimationActive={false}
+                                                    connectNulls />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
                                 )
                             })()}
                             {/* Quality legend */}
@@ -470,7 +544,7 @@ export default function Dashboard() {
                                 </span>
                             </div>
                             <div className="chart-area">
-                                <ResponsiveContainer width="100%" height={70}>
+                                <ResponsiveContainer width="100%" height="100%">
                                     <AreaChart data={pingData[h]} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
                                         <defs>
                                             <linearGradient id={`grad-${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -478,16 +552,17 @@ export default function Dashboard() {
                                                 <stop offset="100%" stopColor={CHART_COLORS[i]} stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <YAxis domain={[0, 'auto']} hide />
+                                        <YAxis domain={latencyYDomain} hide />
                                         <Tooltip
                                             contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: 8, fontSize: 12, boxShadow: '0 4px 12px rgba(0,0,0,.08)' }}
                                             labelFormatter={() => ''}
                                             formatter={v => v != null ? [`${v} ms`, 'Ping'] : ['-', 'Ping']}
                                         />
-                                        <Area type="monotone" dataKey="ms" stroke={CHART_COLORS[i]}
+                                        <Area type="linear" dataKey="ms" stroke={CHART_COLORS[i]}
                                             strokeWidth={2} fill={`url(#grad-${i})`} dot={false}
                                             activeDot={{ r: 3, strokeWidth: 2, fill: '#fff', stroke: CHART_COLORS[i] }}
-                                            isAnimationActive={false} />
+                                            isAnimationActive={false}
+                                            connectNulls />
                                     </AreaChart>
                                 </ResponsiveContainer>
                             </div>
@@ -521,9 +596,46 @@ export default function Dashboard() {
                     ))}
                 </div>
             </div>
+
+            {showExtraDeviceInfo && (
+                <div className="dash-card dash-extra-info">
+                    <div className="dash-card-head">
+                        <div className="dash-card-left">
+                            <Server size={16} />
+                            <span>Device Context</span>
+                        </div>
+                        <span className="dash-card-meta">Auto-shown on spacious layouts</span>
+                    </div>
+                    <div className="dash-extra-grid">
+                        <div className="dash-extra-item">
+                            <div className="dash-extra-label">Link Profile</div>
+                            <div className="dash-extra-value">{linkLabel}</div>
+                            <div className="dash-extra-sub">{net.ifaceName || 'Unknown interface'}</div>
+                        </div>
+                        <div className="dash-extra-item">
+                            <div className="dash-extra-label">Addressing</div>
+                            <div className="dash-extra-value mono">{net.localIP || '-'}</div>
+                            <div className="dash-extra-sub mono">{ipv6Address || 'No IPv6 on active link'}</div>
+                        </div>
+                        <div className="dash-extra-item">
+                            <div className="dash-extra-label">Resolver Set</div>
+                            <div className="dash-extra-value">{net.dns?.length || 0} DNS</div>
+                            <div className="dash-extra-sub mono">{net.dns?.[0] || '-'}</div>
+                        </div>
+                        <div className="dash-extra-item">
+                            <div className="dash-extra-label">Path Quality</div>
+                            <div className="dash-extra-value mono">{avgLiveLatency != null ? `${avgLiveLatency} ms` : '-'}</div>
+                            <div className="dash-extra-sub">
+                                {net.isVpn ? 'VPN tunnel path' : (gwPing != null ? `Gateway ${gwPing} ms` : 'Gateway probe unavailable')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
+
 
 
 

@@ -1,0 +1,25 @@
+/* ══ Skeleton shimmer animation ══ */
+
+@keyframes sk-shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+.sk-bone {
+    display: inline-block;
+    background: linear-gradient(
+        90deg,
+        var(--gray-100) 25%,
+        var(--gray-50, #f8fafc) 50%,
+        var(--gray-100) 75%
+    );
+    background-size: 200% 100%;
+    animation: sk-shimmer 1.6s ease-in-out infinite;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.sk-block {
+    display: flex;
+    flex-direction: column;
+}

@@ -9,6 +9,7 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    --telemetry-chart-height: 128px;
 }
 
 /* ── Header ── */
@@ -16,6 +17,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
+    min-height: 56px;
 }
 
 .dash-title {
@@ -29,17 +31,20 @@
     font-size: 13px;
     color: var(--text-muted);
     margin-top: 2px;
+    min-height: 19px;
 }
 
 /* ── Status Pill ── */
 .status-pill {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
     padding: 5px 14px;
     border-radius: var(--radius-full);
     font-size: 12px;
     font-weight: 600;
+    min-width: 112px;
 }
 .status-dot {
     width: 7px;
@@ -53,6 +58,8 @@
 .status-pill.warning .status-dot { background: var(--color-warning); }
 .status-pill.bad     { background: var(--color-danger-bg);  color: #dc2626; }
 .status-pill.bad     .status-dot { background: var(--color-danger); }
+.status-pill.loading { background: var(--gray-100); color: var(--text-muted); }
+.status-pill.loading .status-dot { background: var(--gray-400); }
 
 /* ── Status Banner ── */
 .dash-banner {
@@ -99,14 +106,24 @@
     font-size: 13px;
     color: var(--text-secondary);
     margin-top: 2px;
+    min-height: 19px;
+    display: block;
 }
 
 .banner-right {
     display: flex;
     align-items: center;
     gap: 20px;
+    min-width: 150px;
+    min-height: 34px;
+    justify-content: flex-end;
 }
-.banner-ping { text-align: right; }
+.banner-ping {
+    text-align: right;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: flex-end;
+}
 .ping-val {
     font-size: 28px;
     font-weight: 700;
@@ -137,8 +154,14 @@
     border: 1px solid var(--border-light);
     border-radius: var(--radius-lg);
     transition: box-shadow 150ms ease;
+    min-height: 104px;
 }
 .stat-tile:hover { box-shadow: var(--shadow-xs); }
+
+.stat-tile-body {
+    min-width: 0;
+    flex: 1;
+}
 
 .stat-tile-icon {
     width: 36px;
@@ -164,10 +187,13 @@
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
-    word-break: break-all;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     display: flex;
     align-items: center;
     gap: 6px;
+    min-height: 22px;
 }
 .stat-tile-value.copyable {
     cursor: pointer;
@@ -186,6 +212,8 @@
     font-size: 11px;
     color: var(--text-muted);
     margin-top: 2px;
+    min-height: 16px;
+    display: block;
 }
 
 /* ── Card ── */
@@ -220,19 +248,25 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 10px;
+    align-items: stretch;
 }
 
 .chart-cell {
     padding: 10px;
     background: var(--gray-50);
     border-radius: var(--radius-md);
+    display: grid;
+    grid-template-rows: auto var(--telemetry-chart-height);
+    align-content: start;
+    min-height: 0;
 }
 
 .chart-label {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
+    min-height: 20px;
 }
 .chart-dot {
     width: 8px;
@@ -253,6 +287,8 @@
 .chart-area {
     border-radius: var(--radius-sm);
     overflow: hidden;
+    min-height: 0;
+    height: var(--telemetry-chart-height);
 }
 
 /* ── Actions ── */
@@ -308,11 +344,68 @@
 }
 .action-card:hover .action-arrow { opacity: 1; }
 
+/* —— Extra device context (only when there is enough vertical slack) —— */
+.dash-extra-info {
+    animation: fade-in-up 160ms ease-out;
+}
+
+.dash-extra-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.dash-extra-item {
+    border: 1px solid var(--border-light);
+    background: var(--gray-50);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    min-height: 72px;
+}
+
+.dash-extra-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.dash-extra-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.25;
+}
+
+.dash-extra-sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.35;
+}
+
 /* ── Details Chips ── */
 .dash-details-row {
     display: flex;
     gap: 8px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 30px;
+    align-items: center;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+}
+
+.dash-details-row::-webkit-scrollbar {
+    height: 6px;
+}
+
+.dash-details-row::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
 }
 
 .detail-chip {
@@ -348,22 +441,42 @@
     .chart-grid   { grid-template-columns: 1fr; }
     .action-grid  { grid-template-columns: repeat(2, 1fr); }
     .dash-cards-row { grid-template-columns: 1fr; }
+    .dash-extra-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* ── Cards Row (Signal + Latency side-by-side) ── */
 .dash-cards-row {
     display: grid;
-    grid-template-columns: 1fr 2fr;
+    grid-template-columns: minmax(300px, 1fr) minmax(0, 2fr);
     gap: 12px;
-    flex: 1;
-    min-height: 0;
+    align-items: stretch;
+    flex: 0 0 auto;
+}
+
+.dash-cards-row > .dash-card {
+    height: 100%;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
 }
 
 /* ── Signal Chart ── */
 .dash-card-signal .signal-chart-wrap {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
+    min-height: 0;
+    flex: 1;
+}
+
+.dash-card-latency .chart-grid {
+    align-content: start;
+    flex: 1;
+}
+
+.signal-chart-frame {
+    height: var(--telemetry-chart-height);
+    min-height: 0;
 }
 
 .signal-empty {
@@ -436,7 +549,8 @@
     align-items: center;
     gap: 6px;
     justify-content: center;
-    padding-top: 4px;
+    padding-top: 2px;
+    min-height: 16px;
 }
 .sq-dot {
     width: 6px;
@@ -473,4 +587,122 @@
 .ip-eye-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
+}
+
+@keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ══ Dashboard Skeleton ══ */
+.dash-skeleton {
+    pointer-events: none;
+}
+
+@keyframes sk-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.dash-skeleton {
+    animation: sk-fade-in 200ms ease-out;
+}
+
+.dash.dash-ready {
+    animation: fade-in-up 280ms ease-out;
+}
+
+.sk-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 22px;
+    background: var(--bg-surface);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-light);
+    border-left: 4px solid var(--gray-200);
+}
+
+.sk-banner-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.sk-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sk-banner-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.sk-stat-tile {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    min-height: 104px;
+}
+
+.sk-stat-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+}
+
+.sk-chips-row {
+    display: flex;
+    gap: 8px;
+    min-height: 30px;
+    align-items: center;
+}
+
+.sk-chart-cell {
+    padding: 10px;
+    background: var(--gray-50);
+    border-radius: var(--radius-md);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sk-chart-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 20px;
+}
+
+.sk-legend-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.sk-action-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+}
+
+.sk-action-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }

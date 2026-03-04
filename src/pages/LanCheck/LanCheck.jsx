@@ -62,6 +62,20 @@ const PROFILE_PRESETS = {
     },
 }
 
+const HARDENING_EXTRA_PORTS = [
+    81, 88, 110, 135, 137, 138, 143, 389, 502, 631, 873, 1080, 1433, 1521,
+    1883, 2375, 2376, 3000, 3128, 4444, 5000, 5001, 5357, 5601, 6379, 7001,
+    7443, 8888, 9200, 9300, 11211, 27017,
+]
+
+const PROFILE_UDP_PORTS = {
+    quick: [53, 67, 68, 123, 161, 1900, 5351],
+    standard: [53, 67, 68, 69, 123, 137, 138, 161, 500, 1900, 5351],
+    deep: [53, 67, 68, 69, 111, 123, 137, 138, 161, 500, 514, 520, 1701, 1900, 4500, 5351],
+}
+
+const HARDENING_EXTRA_UDP_PORTS = [3478, 5004, 5060, 5353, 11211]
+
 const STEP_KEYS = [
     { id: 'discovery', label: 'Discovery', icon: Radar },
     { id: 'upnp', label: 'UPnP Intel', icon: Wifi },
@@ -93,6 +107,19 @@ const SEVERITY_META = {
 const REPORT_ROWS_PER_PAGE = 15
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
+function uniqueSortedPorts(ports) {
+    return Array.from(new Set((ports || []).map(port => Number.parseInt(String(port), 10)).filter(Number.isInteger))).sort((a, b) => a - b)
+}
+function resolveProfilePorts(profileId, extendedSweep) {
+    const base = PROFILE_PRESETS[profileId]?.ports || []
+    if (!extendedSweep) return uniqueSortedPorts(base)
+    return uniqueSortedPorts([...base, ...HARDENING_EXTRA_PORTS])
+}
+function resolveProfileUdpPorts(profileId, extendedSweep) {
+    const base = PROFILE_UDP_PORTS[profileId] || PROFILE_UDP_PORTS.standard
+    if (!extendedSweep) return uniqueSortedPorts(base)
+    return uniqueSortedPorts([...base, ...HARDENING_EXTRA_UDP_PORTS])
+}
 function byIpAsc(a, b) {
     const av = Number.parseInt(String(a.ip || '').split('.').pop() || '0', 10)
     const bv = Number.parseInt(String(b.ip || '').split('.').pop() || '0', 10)
@@ -123,6 +150,37 @@ function mergeDevices(current, incoming) {
     for (const item of incoming || []) map.set(item.ip, { ...map.get(item.ip), ...item })
     return [...map.values()].sort(byIpAsc)
 }
+function isIpInScope(ip, base, start, end) {
+    const value = String(ip || '').trim()
+    if (!value.startsWith(`${base}.`)) return false
+    const last = Number.parseInt(value.split('.').pop() || '', 10)
+    return Number.isInteger(last) && last >= start && last <= end
+}
+function resolveServiceSeverity(port, protocol = 'tcp', state = 'open') {
+    const proto = String(protocol || 'tcp').toLowerCase()
+    const st = String(state || 'open').toLowerCase()
+    if (st === 'filtered' || st === 'open|filtered') return 'info'
+
+    if (proto === 'udp') {
+        if ([69, 161].includes(port)) return 'medium'
+        if ([53, 123, 500, 1900, 5351].includes(port)) return 'low'
+        return 'info'
+    }
+
+    if ([23, 2375].includes(port)) return 'high'
+    if ([3389, 445, 139, 5985, 3306, 5432, 27017, 11211, 15672, 6379].includes(port)) return 'medium'
+    if ([8080, 8443, 7547, 22, 21, 80, 443, 5000, 5001, 9200, 9300].includes(port)) return 'low'
+    return 'info'
+}
+
+function isConfirmedOpenRow(row) {
+    return String(row?.state || '').toLowerCase() === 'open'
+}
+
+function isInconclusiveRow(row) {
+    const state = String(row?.state || '').toLowerCase()
+    return state === 'filtered' || state === 'open|filtered'
+}
 function chooseGateway(devices) {
     const gateways = devices.filter(d => d.isGateway)
     return gateways.find(d => d.ip.endsWith('.1')) || gateways.find(d => d.ip.endsWith('.254')) || gateways[0] || null
@@ -147,10 +205,12 @@ async function runWithConcurrency(tasks, limit, onEach) {
 function finding(id, severity, title, evidence, recommendation, category) {
     return { id, severity, title, evidence, recommendation, category }
 }
-function scoreFromFindings(findings, openCount) {
-    const weights = { critical: 28, high: 18, medium: 10, low: 5, info: 2 }
+function scoreFromFindings(findings, confirmedOpenCount, inconclusiveCount) {
+    const weights = { critical: 24, high: 14, medium: 8, low: 3, info: 1 }
     const base = findings.reduce((acc, item) => acc + (weights[item.severity] || 0), 0)
-    return clamp(Math.round(base + Math.min(22, (openCount || 0) * 0.7)), 0, 100)
+    const confirmedBoost = Math.min(26, Math.round((confirmedOpenCount || 0) * 0.65))
+    const inconclusiveBoost = Math.min(6, Math.round((inconclusiveCount || 0) * 0.18))
+    return clamp(Math.round(base + confirmedBoost + inconclusiveBoost), 0, 100)
 }
 function normalizeHistoryRows(rows) {
     if (!Array.isArray(rows)) return []
@@ -180,7 +240,13 @@ function StepPill({ step, status }) {
     return (
         <div className={`lchk-step-pill ${status}`}>
             <div className="lchk-step-dot">
-                {status === 'done' ? <CheckCircle2 size={13} /> : status === 'running' ? <Loader2 size={13} className="spin-icon" /> : <Icon size={13} />}
+                {status === 'done'
+                    ? <CheckCircle2 size={13} />
+                    : status === 'running'
+                        ? <Loader2 size={13} className="spin-icon" />
+                        : status === 'skipped'
+                            ? <Info size={13} />
+                            : <Icon size={13} />}
             </div>
             <span>{step.label}</span>
         </div>
@@ -189,6 +255,8 @@ function StepPill({ step, status }) {
 
 export default function LanCheck() {
     const [profile, setProfile] = useState('standard')
+    const [enableDiscovery, setEnableDiscovery] = useState(true)
+    const [extendedSweep, setExtendedSweep] = useState(true)
     const [baseIP, setBaseIP] = useState('192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
@@ -210,6 +278,14 @@ export default function LanCheck() {
     const [historyQuery, setHistoryQuery] = useState('')
 
     const preset = PROFILE_PRESETS[profile]
+    const selectedPorts = useMemo(
+        () => resolveProfilePorts(profile, extendedSweep),
+        [profile, extendedSweep]
+    )
+    const selectedUdpPorts = useMemo(
+        () => resolveProfileUdpPorts(profile, extendedSweep),
+        [profile, extendedSweep]
+    )
 
     async function loadHistory() {
         setHistoryLoading(true)
@@ -227,6 +303,8 @@ export default function LanCheck() {
         bridge.configGet('lancheck.settings').then(saved => {
             if (!saved || typeof saved !== 'object') return
             if (PROFILE_PRESETS[saved.profile]) setProfile(saved.profile)
+            if (typeof saved.enableDiscovery === 'boolean') setEnableDiscovery(saved.enableDiscovery)
+            if (typeof saved.extendedSweep === 'boolean') setExtendedSweep(saved.extendedSweep)
             if (typeof saved.baseIP === 'string') setBaseIP(saved.baseIP)
             if (Number.isInteger(saved.rangeStart)) setRangeStart(saved.rangeStart)
             if (Number.isInteger(saved.rangeEnd)) setRangeEnd(saved.rangeEnd)
@@ -254,17 +332,34 @@ export default function LanCheck() {
     const openRows = useMemo(() => {
         const rows = [...(report?.openPorts || [])]
         rows.sort((a, b) => {
+            const stateOrder = state => {
+                const normalized = String(state || '').toLowerCase()
+                if (normalized === 'open') return 0
+                if (normalized === 'filtered' || normalized === 'open|filtered') return 1
+                return 2
+            }
+            const sv = stateOrder(a.state) - stateOrder(b.state)
+            if (sv !== 0) return sv
             const av = SEVERITY_META[a.severity]?.order ?? 99
             const bv = SEVERITY_META[b.severity]?.order ?? 99
             if (av !== bv) return av - bv
             if (a.ip !== b.ip) return byIpAsc(a, b)
+            if ((a.protocol || 'tcp') !== (b.protocol || 'tcp')) return (a.protocol || 'tcp').localeCompare(b.protocol || 'tcp')
             return a.port - b.port
         })
         return rows
     }, [report])
+    const confirmedOpenRows = useMemo(() => openRows.filter(isConfirmedOpenRow), [openRows])
+    const inconclusiveRows = useMemo(() => openRows.filter(isInconclusiveRow), [openRows])
 
     const totalPages = Math.max(1, Math.ceil(openRows.length / REPORT_ROWS_PER_PAGE))
     const pagedRows = openRows.slice((reportPage - 1) * REPORT_ROWS_PER_PAGE, reportPage * REPORT_ROWS_PER_PAGE)
+    const confirmedOpenServices = report?.summary?.confirmedOpenServices ?? confirmedOpenRows.length
+    const confirmedOpenTcpServices = report?.summary?.confirmedOpenTcpServices ?? confirmedOpenRows.filter(row => row.protocol === 'tcp').length
+    const confirmedOpenUdpServices = report?.summary?.confirmedOpenUdpServices ?? confirmedOpenRows.filter(row => row.protocol === 'udp').length
+    const inconclusiveServices = report?.summary?.inconclusiveServices ?? inconclusiveRows.length
+    const inconclusiveTcpServices = report?.summary?.inconclusiveTcpServices ?? inconclusiveRows.filter(row => row.protocol === 'tcp').length
+    const inconclusiveUdpServices = report?.summary?.inconclusiveUdpServices ?? inconclusiveRows.filter(row => row.protocol === 'udp').length
 
     useEffect(() => {
         if (reportPage > totalPages) setReportPage(totalPages)
@@ -348,47 +443,79 @@ export default function LanCheck() {
 
     function buildFindings({ devices, gateway, openPorts, upnp, profileId }) {
         const findings = []
-        const byPort = new Map()
-        for (const row of openPorts) {
-            if (!byPort.has(row.port)) byPort.set(row.port, [])
-            byPort.get(row.port).push(row)
-        }
+        const confirmedOpenPorts = openPorts.filter(isConfirmedOpenRow)
+        const inconclusivePorts = openPorts.filter(isInconclusiveRow)
 
-        if ((byPort.get(23) || []).length) {
-            findings.push(finding('lan-telnet-exposed', 'critical', 'Telnet exposed inside LAN', `Detected ${(byPort.get(23) || []).length} telnet exposures on tcp/23.`, 'Disable Telnet and replace with SSH. Restrict administration interfaces by ACL.', 'remote-management'))
+        const byProtocolPort = new Map()
+        const inconclusiveByProtocolPort = new Map()
+        for (const row of confirmedOpenPorts) {
+            const protocol = String(row.protocol || 'tcp').toLowerCase()
+            const key = `${protocol}:${row.port}`
+            if (!byProtocolPort.has(key)) byProtocolPort.set(key, [])
+            byProtocolPort.get(key).push(row)
         }
-        const smb = [...(byPort.get(139) || []), ...(byPort.get(445) || [])]
+        for (const row of inconclusivePorts) {
+            const protocol = String(row.protocol || 'tcp').toLowerCase()
+            const key = `${protocol}:${row.port}`
+            if (!inconclusiveByProtocolPort.has(key)) inconclusiveByProtocolPort.set(key, [])
+            inconclusiveByProtocolPort.get(key).push(row)
+        }
+        const rowsBy = (port, protocol = 'tcp') => byProtocolPort.get(`${protocol}:${port}`) || []
+        const inconclusiveRowsBy = (port, protocol = 'tcp') => inconclusiveByProtocolPort.get(`${protocol}:${port}`) || []
+
+        const telnetRows = rowsBy(23, 'tcp')
+        if (telnetRows.length) {
+            findings.push(finding('lan-telnet-exposed', 'high', 'Telnet exposed inside LAN', `Detected ${telnetRows.length} telnet exposure(s) on tcp/23.`, 'Disable Telnet and replace with SSH. Restrict administration interfaces by ACL.', 'remote-management'))
+        }
+        const smb = [...rowsBy(139, 'tcp'), ...rowsBy(445, 'tcp')]
         if (smb.length) {
-            findings.push(finding('lan-smb-surface', 'high', 'SMB file-sharing surface detected', `Found ${smb.length} SMB-related open service entries (tcp/139 or tcp/445).`, 'Limit SMB to trusted hosts, disable legacy SMB and enforce credential hardening.', 'lateral-movement'))
+            findings.push(finding('lan-smb-surface', 'medium', 'SMB file-sharing surface detected', `Found ${smb.length} SMB-related confirmed-open entries (tcp/139 or tcp/445).`, 'Limit SMB to trusted hosts, disable legacy SMB and enforce credential hardening.', 'lateral-movement'))
         }
-        const rdp = byPort.get(3389) || []
+        const rdp = rowsBy(3389, 'tcp')
         if (rdp.length) {
-            findings.push(finding('lan-rdp-open', 'high', 'RDP service exposed', `Detected ${rdp.length} reachable RDP endpoint(s) on tcp/3389.`, 'Restrict RDP access, require NLA/MFA and keep management on isolated VLAN.', 'remote-management'))
+            findings.push(finding('lan-rdp-open', 'medium', 'RDP service exposed', `Detected ${rdp.length} reachable RDP endpoint(s) on tcp/3389.`, 'Restrict RDP access, require NLA/MFA and keep management on isolated VLAN.', 'remote-management'))
         }
 
-        const dbRows = [3306, 5432, 6379, 27017, 15672, 11211].flatMap(port => byPort.get(port) || [])
+        const dbRows = [3306, 5432, 6379, 27017, 15672, 11211].flatMap(port => rowsBy(port, 'tcp'))
         if (dbRows.length) {
-            findings.push(finding('lan-db-exposure', 'high', 'Data services open on LAN', `Detected database/queue services on ${new Set(dbRows.map(v => v.port)).size} sensitive ports.`, 'Segment these services, enforce auth/TLS and remove broad LAN bindings.', 'data-exposure'))
+            findings.push(finding('lan-db-exposure', 'medium', 'Data services open on LAN', `Detected database/queue services on ${new Set(dbRows.map(v => v.port)).size} sensitive ports.`, 'Segment these services, enforce auth/TLS and remove broad LAN bindings.', 'data-exposure'))
         }
 
-        const mgmtRows = [7547, 8080, 8443, 9000, 9443, 10000].flatMap(port => byPort.get(port) || [])
-        if (mgmtRows.length) {
-            findings.push(finding('lan-router-mgmt-surface', 'medium', 'Management interface surface detected', `Detected ${mgmtRows.length} management-like service hits on local assets.`, 'Disable unused management endpoints and restrict admin plane to dedicated devices.', 'router-hardening'))
+        const mgmtRows = [7547, 8080, 8443, 9000, 9443, 10000].flatMap(port => rowsBy(port, 'tcp'))
+        if (mgmtRows.length >= 2) {
+            findings.push(finding('lan-router-mgmt-surface', 'medium', 'Management interface surface detected', `Detected ${mgmtRows.length} management-like confirmed-open hits on local assets.`, 'Disable unused management endpoints and restrict admin plane to dedicated devices.', 'router-hardening'))
+        }
+
+        const snmpUdp = rowsBy(161, 'udp')
+        if (snmpUdp.length) {
+            findings.push(finding('lan-snmp-udp', 'medium', 'SNMP exposed over UDP', `Detected ${snmpUdp.length} SNMP responder(s) on udp/161.`, 'Restrict SNMP to admin hosts, use ACLs, and enforce strong communities or SNMPv3.', 'management-plane'))
+        }
+        const tftpUdp = rowsBy(69, 'udp')
+        if (tftpUdp.length) {
+            findings.push(finding('lan-tftp-udp', 'medium', 'TFTP service exposed over UDP', `Detected ${tftpUdp.length} TFTP responder(s) on udp/69.`, 'Disable TFTP where possible or isolate it to secured provisioning segments.', 'legacy-protocol'))
+        }
+        const dnsUdp = rowsBy(53, 'udp')
+        if (dnsUdp.length >= 3) {
+            findings.push(finding('lan-dns-udp-wide', 'low', 'Multiple DNS UDP responders detected', `Detected ${dnsUdp.length} responders on udp/53 in selected scope.`, 'Validate authorized DNS servers and segment or block rogue resolvers.', 'service-control'))
+        }
+        const ntpUdp = rowsBy(123, 'udp')
+        if (ntpUdp.length >= 3) {
+            findings.push(finding('lan-ntp-udp-wide', 'low', 'Multiple NTP UDP responders detected', `Detected ${ntpUdp.length} responders on udp/123.`, 'Limit NTP to trusted hosts and prevent unnecessary exposure.', 'service-control'))
         }
 
         if (gateway) {
-            const gwHttp = openPorts.some(row => row.ip === gateway.ip && row.port === 80)
-            const gwHttps = openPorts.some(row => row.ip === gateway.ip && row.port === 443)
+            const gwHttp = confirmedOpenPorts.some(row => row.ip === gateway.ip && row.port === 80 && row.protocol === 'tcp')
+            const gwHttps = confirmedOpenPorts.some(row => row.ip === gateway.ip && row.port === 443 && row.protocol === 'tcp')
             if (gwHttp && !gwHttps) {
-                findings.push(finding('lan-router-http-only', 'medium', 'Gateway panel appears reachable over plain HTTP', `Gateway ${gateway.ip} responds on tcp/80 while secure tcp/443 was not observed.`, 'Prefer HTTPS-only admin and disable remote admin unless strictly required.', 'router-hardening'))
+                findings.push(finding('lan-router-http-only', 'low', 'Gateway panel appears reachable over plain HTTP', `Gateway ${gateway.ip} responds on tcp/80 while secure tcp/443 was not observed.`, 'Prefer HTTPS-only admin and disable remote admin unless strictly required.', 'router-hardening'))
             }
         }
 
         const upnpSummary = upnp?.summary || { igdCount: 0, ssdpResponders: 0, gatewayIgdCount: 0 }
         if (upnpSummary.igdCount > 0) {
-            findings.push(finding('lan-upnp-igd', upnpSummary.gatewayIgdCount > 0 ? 'high' : 'medium', 'UPnP IGD capability detected', `Detected ${upnpSummary.igdCount} IGD-capable UPnP responder(s).`, 'Disable UPnP where possible and monitor NAT mapping behavior.', 'upnp'))
+            findings.push(finding('lan-upnp-igd', upnpSummary.gatewayIgdCount > 0 ? 'medium' : 'low', 'UPnP IGD capability detected', `Detected ${upnpSummary.igdCount} IGD-capable UPnP responder(s).`, 'Disable UPnP where possible and monitor NAT mapping behavior.', 'upnp'))
         } else if (upnpSummary.ssdpResponders > 0) {
-            findings.push(finding('lan-ssdp-surface', 'medium', 'SSDP discovery surface present', `Detected ${upnpSummary.ssdpResponders} SSDP responder(s).`, 'Isolate IoT/UPnP-capable devices and reduce unnecessary multicast exposure.', 'upnp'))
+            findings.push(finding('lan-ssdp-surface', 'info', 'SSDP discovery surface present', `Detected ${upnpSummary.ssdpResponders} SSDP responder(s).`, 'Isolate IoT/UPnP-capable devices and reduce unnecessary multicast exposure.', 'upnp'))
         }
 
         const unknownAssets = devices.filter(d => !d.isLocal && !d.isGateway && !d.vendor && !d.hostname && !d.displayName).length
@@ -401,12 +528,119 @@ export default function LanCheck() {
             findings.push(finding('lan-randomized-mac', 'info', 'Private MAC devices detected', `${randomized} devices are using randomized/private MAC addresses.`, 'Usually expected for privacy; maintain baseline inventory to reduce blind spots.', 'inventory'))
         }
 
+        const exposedSurface = confirmedOpenPorts.length
+        if (exposedSurface >= 28) {
+            findings.push(finding('lan-broad-surface', 'medium', 'Broad LAN attack surface detected', `${exposedSurface} confirmed-open service entries were detected in this run.`, 'Reduce unnecessary exposed services and segment management/data planes by trust zone.', 'exposure'))
+        } else if (exposedSurface >= 18) {
+            findings.push(finding('lan-broad-surface-low', 'low', 'Elevated LAN service surface detected', `${exposedSurface} confirmed-open service entries were detected in this run.`, 'Review if all exposed services are required and limit unnecessary listeners.', 'exposure'))
+        }
+
+        const inconclusiveUdpRows = inconclusivePorts.filter(row => row.protocol === 'udp')
+        if (inconclusiveUdpRows.length >= 4) {
+            const distinctPorts = Array.from(new Set(inconclusiveUdpRows.map(row => row.port))).sort((a, b) => a - b)
+            findings.push(finding(
+                'lan-udp-inconclusive',
+                'info',
+                'Several UDP checks were inconclusive (filtered)',
+                `${inconclusiveUdpRows.length} UDP checks returned filtered on ports ${distinctPorts.slice(0, 8).join(', ')}${distinctPorts.length > 8 ? '...' : ''}.`,
+                'Correlate with host firewall rules and repeat UDP checks with a higher timeout for confirmation.',
+                'evidence'
+            ))
+        }
+
+        const inconclusiveHighRisk = [
+            ...inconclusiveRowsBy(23, 'tcp'),
+            ...inconclusiveRowsBy(3389, 'tcp'),
+            ...inconclusiveRowsBy(2375, 'tcp'),
+            ...inconclusiveRowsBy(69, 'udp'),
+            ...inconclusiveRowsBy(161, 'udp'),
+        ]
+        if (inconclusiveHighRisk.length >= 2) {
+            findings.push(finding(
+                'lan-inconclusive-sensitive',
+                'low',
+                'Some sensitive ports returned inconclusive responses',
+                `${inconclusiveHighRisk.length} sensitive checks returned filtered and need confirmation.`,
+                'Validate these specific hosts manually before classifying them as exposed.',
+                'evidence'
+            ))
+        }
+
         if (!findings.length) {
             findings.push(finding('lan-no-critical', 'info', 'No high-risk indicators in scanned scope', `No major high-risk signatures were found with profile ${PROFILE_PRESETS[profileId]?.title || profileId}.`, 'Keep periodic scans active and compare against historical baseline.', 'posture'))
         }
 
         findings.sort((a, b) => (SEVERITY_META[a.severity]?.order ?? 99) - (SEVERITY_META[b.severity]?.order ?? 99))
         return findings
+    }
+
+    async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit }) {
+        const map = new Map()
+        const addHost = (ip, extra = {}) => {
+            if (!isIpInScope(ip, safeBase, start, end)) return
+            if (!map.has(ip)) {
+                map.set(ip, {
+                    ip,
+                    alive: false,
+                    time: null,
+                    mac: null,
+                    seenOnly: true,
+                    hostname: null,
+                    vendor: null,
+                    displayName: null,
+                    isGateway: false,
+                    isLocal: false,
+                    isRandomized: false,
+                    ...extra,
+                })
+            } else {
+                map.set(ip, { ...map.get(ip), ...extra })
+            }
+        }
+
+        addHost(`${safeBase}.1`, { isGateway: true, displayName: 'Gateway' })
+        addHost(`${safeBase}.254`, { isGateway: true, displayName: 'Gateway' })
+
+        try {
+            const ifaces = await bridge.getNetworkInterfaces()
+            const localIpv4 = (ifaces || []).find(item => item?.family === 'IPv4' && !item?.internal && isIpInScope(item?.address, safeBase, start, end))
+            if (localIpv4?.address) {
+                addHost(localIpv4.address, {
+                    isLocal: true,
+                    mac: localIpv4.mac || null,
+                    displayName: localIpv4.address,
+                })
+            }
+        } catch {
+            // ignore local interface resolution failures
+        }
+
+        try {
+            const arpRows = await bridge.getArpTable()
+            for (const row of arpRows || []) {
+                if (!isIpInScope(row?.ip, safeBase, start, end)) continue
+                addHost(row.ip, {
+                    mac: row.mac || null,
+                    displayName: row.ip,
+                })
+            }
+        } catch {
+            // ignore arp enrichment failures
+        }
+
+        const targets = [...map.values()]
+            .sort((a, b) => {
+                if (a.isGateway && !b.isGateway) return -1
+                if (!a.isGateway && b.isGateway) return 1
+                return byIpAsc(a, b)
+            })
+            .slice(0, hostLimit)
+            .map(item => ({
+                ...item,
+                displayName: item.displayName || item.hostname || item.vendor || (item.isGateway ? 'Gateway' : 'Network device'),
+            }))
+
+        return targets
     }
 
     async function startLanSecurityScan() {
@@ -426,30 +660,55 @@ export default function LanCheck() {
         setScanStartedAt(Date.now())
         setScanFinishedAt(null)
         setReportPage(1)
-        setStepState({ discovery: 'running', upnp: 'idle', services: 'idle', analysis: 'idle' })
+        setStepState({
+            discovery: enableDiscovery ? 'running' : 'skipped',
+            upnp: enableDiscovery ? 'idle' : 'running',
+            services: 'idle',
+            analysis: 'idle',
+        })
 
         const cfg = PROFILE_PRESETS[profile]
+        const portsToScan = selectedPorts
         const { baseIP: safeBase, start, end } = validated
         const scanStarted = Date.now()
 
-        bridge.configSet('lancheck.settings', { profile, baseIP: safeBase, rangeStart: start, rangeEnd: end }).catch(() => {})
+        bridge.configSet('lancheck.settings', {
+            profile,
+            enableDiscovery,
+            extendedSweep,
+            baseIP: safeBase,
+            rangeStart: start,
+            rangeEnd: end,
+        }).catch(() => {})
         pushActivity(`LAN check initialized for ${safeBase}.${start}-${end}`, 'info')
         try {
             let discoveredHosts = []
-            const span = end - start + 1
-            for (let cursor = start; cursor <= end; cursor += cfg.batchSize) {
-                const chunkStart = cursor
-                const chunkEnd = Math.min(cursor + cfg.batchSize - 1, end)
-                pushActivity(`Discovery sweep: ${safeBase}.${chunkStart}-${chunkEnd}`, 'info')
-                const chunk = await bridge.lanScan(safeBase, chunkStart, chunkEnd)
-                discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
+            if (enableDiscovery) {
+                const span = end - start + 1
+                for (let cursor = start; cursor <= end; cursor += cfg.batchSize) {
+                    const chunkStart = cursor
+                    const chunkEnd = Math.min(cursor + cfg.batchSize - 1, end)
+                    pushActivity(`Discovery sweep: ${safeBase}.${chunkStart}-${chunkEnd}`, 'info')
+                    const chunk = await bridge.lanScan(safeBase, chunkStart, chunkEnd)
+                    discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
+                    setDiscovered(discoveredHosts)
+                    const doneRatio = (chunkEnd - start + 1) / span
+                    setProgress(clamp(Math.round(doneRatio * 34), 1, 34))
+                }
+                pushActivity(`Discovery completed: ${discoveredHosts.length} hosts detected`, 'ok')
+                setStepState(prev => ({ ...prev, discovery: 'done', upnp: 'running' }))
+            } else {
+                const fallbackHostLimit = Math.max(cfg.hostLimit, Math.min(64, cfg.hostLimit * 2))
+                discoveredHosts = await buildTargetsWithoutDiscovery({
+                    safeBase,
+                    start,
+                    end,
+                    hostLimit: fallbackHostLimit,
+                })
                 setDiscovered(discoveredHosts)
-                const doneRatio = (chunkEnd - start + 1) / span
-                setProgress(clamp(Math.round(doneRatio * 34), 1, 34))
+                setProgress(20)
+                pushActivity(`Discovery disabled: using focused target set (${discoveredHosts.length} hosts)`, discoveredHosts.length ? 'info' : 'warn')
             }
-
-            pushActivity(`Discovery completed: ${discoveredHosts.length} hosts detected`, 'ok')
-            setStepState(prev => ({ ...prev, discovery: 'done', upnp: 'running' }))
 
             const upnpIntel = await bridge.lanUpnpScan(safeBase, start, end).catch(() => ({ ok: false, summary: null, devices: [] }))
             const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
@@ -469,40 +728,110 @@ export default function LanCheck() {
                     if (!a.alive && b.alive) return 1
                     return byIpAsc(a, b)
                 })
-                .slice(0, cfg.hostLimit)
+                .slice(0, enableDiscovery ? cfg.hostLimit : Math.max(cfg.hostLimit, Math.min(64, cfg.hostLimit * 2)))
 
-            const tasks = []
-            for (const host of targetHosts) {
-                for (const port of cfg.ports) {
-                    tasks.push(async () => {
-                        const res = await bridge.checkPort(host.ip, port, cfg.timeoutMs)
-                        if (!res?.open) return null
-                        return {
-                            ip: host.ip,
-                            displayName: host.displayName || host.hostname || host.vendor || 'Unknown device',
-                            isGateway: !!host.isGateway,
-                            port,
-                            service: PORT_LABELS[port] || `tcp/${port}`,
-                            severity: port === 23 ? 'critical' : [3389, 445, 139, 2375, 7547].includes(port) ? 'high' : [8080, 8443, 1900, 161, 53, 22].includes(port) ? 'medium' : 'low',
-                            time: res.time ?? null,
-                        }
-                    })
-                }
-            }
+            const udpPortsToScan = selectedUdpPorts
+            pushActivity(
+                `Service sweep scope: ${targetHosts.length} hosts x ${portsToScan.length} TCP + ${udpPortsToScan.length} UDP ports`,
+                'info'
+            )
 
             const openPortRows = []
-            const checked = await runWithConcurrency(tasks, cfg.concurrency, (completed, total) => {
-                const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
-                setProgress(clamp(p, 50, 92))
-            })
-            for (const row of checked) if (row) openPortRows.push(row)
+            const hostByIp = new Map(targetHosts.map(host => [host.ip, host]))
 
-            pushActivity(`Service sweep completed: ${openPortRows.length} open service hits`, openPortRows.length ? 'warn' : 'ok')
+            if (typeof bridge.lanSecurityScan === 'function') {
+                const scanTasks = targetHosts.map(host => async () => bridge.lanSecurityScan({
+                    targets: [{ ip: host.ip }],
+                    tcpPorts: portsToScan,
+                    udpPorts: udpPortsToScan,
+                    timeoutMs: cfg.timeoutMs,
+                    tcpAttempts: profile === 'quick' ? 1 : 2,
+                    udpAttempts: profile === 'deep' ? 2 : 1,
+                    includeServiceProbe: true,
+                    hostConcurrency: 1,
+                }))
+
+                const hostResponses = await runWithConcurrency(
+                    scanTasks,
+                    Math.max(1, Math.min(10, Math.ceil(cfg.concurrency / 5))),
+                    (completed, total) => {
+                        const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
+                        setProgress(clamp(p, 50, 92))
+                    }
+                )
+
+                for (let i = 0; i < hostResponses.length; i += 1) {
+                    const response = hostResponses[i]
+                    const resultHost = response?.results?.[0]
+                    const hostIp = resultHost?.ip || targetHosts[i]?.ip
+                    const hostMeta = hostByIp.get(hostIp) || targetHosts[i]
+                    const entries = Array.isArray(resultHost?.entries) ? resultHost.entries : []
+                    for (const entry of entries) {
+                        const state = String(entry?.state || '').toLowerCase()
+                        if (state !== 'open' && state !== 'filtered' && state !== 'open|filtered') continue
+                        const protocol = String(entry?.protocol || 'tcp').toLowerCase() === 'udp' ? 'udp' : 'tcp'
+                        const port = Number.parseInt(String(entry?.port), 10)
+                        if (!Number.isInteger(port)) continue
+                        openPortRows.push({
+                            ip: hostMeta?.ip || hostIp,
+                            displayName: hostMeta?.displayName || hostMeta?.hostname || hostMeta?.vendor || 'Unknown device',
+                            isGateway: !!hostMeta?.isGateway,
+                            port,
+                            protocol,
+                            state,
+                            service: entry?.service || PORT_LABELS[port] || `${protocol}/${port}`,
+                            detail: entry?.detail || null,
+                            severity: resolveServiceSeverity(port, protocol, state),
+                            time: Number.isFinite(entry?.rtt) ? Math.round(entry.rtt) : null,
+                        })
+                    }
+                }
+            } else {
+                const tasks = []
+                for (const host of targetHosts) {
+                    for (const port of portsToScan) {
+                        tasks.push(async () => {
+                            const res = await bridge.checkPort(host.ip, port, cfg.timeoutMs)
+                            if (!res?.open) return null
+                            return {
+                                ip: host.ip,
+                                displayName: host.displayName || host.hostname || host.vendor || 'Unknown device',
+                                isGateway: !!host.isGateway,
+                                port,
+                                protocol: 'tcp',
+                                state: 'open',
+                                service: PORT_LABELS[port] || `tcp/${port}`,
+                                detail: null,
+                                severity: resolveServiceSeverity(port, 'tcp', 'open'),
+                                time: res.time ?? null,
+                            }
+                        })
+                    }
+                }
+                const checked = await runWithConcurrency(tasks, cfg.concurrency, (completed, total) => {
+                    const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
+                    setProgress(clamp(p, 50, 92))
+                })
+                for (const row of checked) if (row) openPortRows.push(row)
+            }
+
+            const tcpHits = openPortRows.filter(row => row.protocol === 'tcp').length
+            const udpHits = openPortRows.filter(row => row.protocol === 'udp').length
+            const confirmedRowsRun = openPortRows.filter(isConfirmedOpenRow)
+            const inconclusiveRowsRun = openPortRows.filter(isInconclusiveRow)
+            const confirmedTcpHits = confirmedRowsRun.filter(row => row.protocol === 'tcp').length
+            const confirmedUdpHits = confirmedRowsRun.filter(row => row.protocol === 'udp').length
+            const inconclusiveTcpHits = inconclusiveRowsRun.filter(row => row.protocol === 'tcp').length
+            const inconclusiveUdpHits = inconclusiveRowsRun.filter(row => row.protocol === 'udp').length
+            pushActivity(
+                `Service sweep completed: ${confirmedRowsRun.length} confirmed-open + ${inconclusiveRowsRun.length} inconclusive indicators (TCP ${tcpHits}, UDP ${udpHits})`,
+                confirmedRowsRun.length ? 'warn' : 'ok'
+            )
             setStepState(prev => ({ ...prev, services: 'done', analysis: 'running' }))
             setProgress(94)
 
             const findings = buildFindings({ devices: discoveredHosts, gateway, openPorts: openPortRows, upnp: upnpIntel, profileId: profile })
-            const riskScore = scoreFromFindings(findings, openPortRows.length)
+            const riskScore = scoreFromFindings(findings, confirmedRowsRun.length, inconclusiveRowsRun.length)
             const riskBand = getRiskBand(riskScore)
             const finishedAt = Date.now()
 
@@ -520,8 +849,20 @@ export default function LanCheck() {
                     riskBand,
                     devicesTotal: discoveredHosts.length,
                     targetsScanned: targetHosts.length,
+                    portsPerHost: portsToScan.length,
+                    udpPortsPerHost: udpPortsToScan.length,
                     openServices: openPortRows.length,
+                    openTcpServices: tcpHits,
+                    openUdpServices: udpHits,
+                    confirmedOpenServices: confirmedRowsRun.length,
+                    confirmedOpenTcpServices: confirmedTcpHits,
+                    confirmedOpenUdpServices: confirmedUdpHits,
+                    inconclusiveServices: inconclusiveRowsRun.length,
+                    inconclusiveTcpServices: inconclusiveTcpHits,
+                    inconclusiveUdpServices: inconclusiveUdpHits,
                     upnpResponders: upnpIntel?.summary?.ssdpResponders || 0,
+                    discoveryEnabled: enableDiscovery,
+                    extendedSweepEnabled: extendedSweep,
                     durationMs: Math.max(0, finishedAt - scanStarted),
                 },
             }
@@ -614,7 +955,7 @@ export default function LanCheck() {
                                     <button key={key} className={`lchk-profile ${profile === key ? 'active' : ''}`} onClick={() => setProfile(key)} disabled={running}>
                                         <div className="lchk-profile-head">{value.title}</div>
                                         <p>{value.description}</p>
-                                        <span>{value.ports.length} ports - up to {value.hostLimit} hosts</span>
+                                        <span>{resolveProfilePorts(key, extendedSweep).length} ports - up to {value.hostLimit} hosts</span>
                                     </button>
                                 ))}
                             </div>
@@ -637,56 +978,95 @@ export default function LanCheck() {
                                 </div>
                             )}
 
+                            <div className="lchk-scan-options">
+                                <label className="lchk-option">
+                                    <input
+                                        type="checkbox"
+                                        checked={enableDiscovery}
+                                        onChange={event => setEnableDiscovery(event.target.checked)}
+                                        disabled={running}
+                                    />
+                                    <div>
+                                        <strong>Discovery sweep</strong>
+                                        <span>Host inventory phase. Disable to skip subnet discovery and use focused targets (faster).</span>
+                                    </div>
+                                </label>
+                                <label className="lchk-option">
+                                    <input
+                                        type="checkbox"
+                                        checked={extendedSweep}
+                                        onChange={event => setExtendedSweep(event.target.checked)}
+                                        disabled={running}
+                                    />
+                                    <div>
+                                        <strong>Extended hardening sweep</strong>
+                                        <span>Adds extra high-risk service ports for a more complete LAN security audit.</span>
+                                    </div>
+                                </label>
+                            </div>
+
                             <div className="lchk-scope-meta">
-                                <span><Search size={13} /> Ports in profile: {preset.ports.length}</span>
+                                <span><Search size={13} /> TCP ports: {selectedPorts.length}</span>
+                                <span><Wifi size={13} /> UDP ports: {selectedUdpPorts.length}</span>
                                 <span><Router size={13} /> Max hosts inspected: {preset.hostLimit}</span>
                                 <span><Clock3 size={13} /> Concurrency: {preset.concurrency}</span>
+                                <span><Radar size={13} /> Discovery: {enableDiscovery ? 'enabled' : 'focused mode'}</span>
                             </div>
                         </div>
 
-                        <div className="v3-card lchk-plan-card">
-                            <div className="v3-card-header">
-                                <div className="v3-card-title"><Radar size={16} color="var(--color-accent)" /> Execution Plan</div>
-                            </div>
-                            <div className="lchk-step-strip">
-                                {STEP_KEYS.map(step => <StepPill key={step.id} step={step} status="idle" />)}
-                            </div>
-                            <div className="lchk-plan-metrics">
-                                <div className="lchk-kpi"><span>Profile</span><strong>{preset.title}</strong></div>
-                                <div className="lchk-kpi"><span>Scope</span><strong className="mono">{baseIP}.{rangeStart}-{rangeEnd}</strong></div>
-                                <div className="lchk-kpi"><span>History</span><strong>{historyRows.length} reports</strong></div>
-                            </div>
-                            <button className="v3-btn v3-btn-primary lchk-main-btn" onClick={startLanSecurityScan} disabled={running}>
-                                <Play size={15} />
-                                Execute LAN Check
-                            </button>
-                        </div>
-                        <div className="v3-card lchk-recent-card">
-                            <div className="v3-card-header">
-                                <div className="v3-card-title"><History size={16} color="var(--color-accent)" /> Recent Reports</div>
-                                <button className="v3-btn v3-btn-secondary" onClick={() => setStage('history')}>View all</button>
-                            </div>
-                            {!recentHistory.length ? (
-                                <div className="lchk-empty-box">
-                                    <Info size={14} />
-                                    No LAN reports saved yet.
+                        <div className="lchk-right-col">
+                            <div className="v3-card lchk-plan-card">
+                                <div className="v3-card-header">
+                                    <div className="v3-card-title"><Radar size={16} color="var(--color-accent)" /> Execution Plan</div>
                                 </div>
-                            ) : (
-                                <div className="lchk-recent-list">
-                                    {recentHistory.map(item => {
-                                        const band = getRiskBand(item.riskScore)
-                                        return (
-                                            <button key={item.id} className="lchk-recent-item" onClick={() => openHistoryReport(item)}>
-                                                <div>
-                                                    <strong>{String(item.profile || '').toUpperCase()} - {item.scope}</strong>
-                                                    <p>{formatDateTime(item.timestamp)}</p>
-                                                </div>
-                                                <span className="lchk-risk-pill" style={{ color: band.color }}>{band.label} {item.riskScore}</span>
-                                            </button>
-                                        )
-                                    })}
+                                <div className="lchk-step-strip">
+                                    {STEP_KEYS.map(step => (
+                                        <StepPill
+                                            key={step.id}
+                                            step={step}
+                                            status={step.id === 'discovery' && !enableDiscovery ? 'skipped' : 'idle'}
+                                        />
+                                    ))}
                                 </div>
-                            )}
+                                <div className="lchk-plan-metrics">
+                                    <div className="lchk-kpi"><span>Profile</span><strong>{preset.title}</strong></div>
+                                    <div className="lchk-kpi"><span>Scope</span><strong className="mono">{baseIP}.{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>Mode</span><strong>{enableDiscovery ? 'Full discovery' : 'Focused targets'}</strong></div>
+                                    <div className="lchk-kpi"><span>Coverage</span><strong>{selectedPorts.length + selectedUdpPorts.length} checks/host</strong></div>
+                                    <div className="lchk-kpi"><span>History</span><strong>{historyRows.length} reports</strong></div>
+                                </div>
+                                <button className="v3-btn v3-btn-primary lchk-main-btn" onClick={startLanSecurityScan} disabled={running}>
+                                    <Play size={15} />
+                                    Execute LAN Check
+                                </button>
+                            </div>
+                            <div className="v3-card lchk-recent-card">
+                                <div className="v3-card-header">
+                                    <div className="v3-card-title"><History size={16} color="var(--color-accent)" /> Recent Reports</div>
+                                    <button className="v3-btn v3-btn-secondary" onClick={() => setStage('history')}>View all</button>
+                                </div>
+                                {!recentHistory.length ? (
+                                    <div className="lchk-empty-box">
+                                        <Info size={14} />
+                                        No LAN reports saved yet.
+                                    </div>
+                                ) : (
+                                    <div className="lchk-recent-list">
+                                        {recentHistory.map(item => {
+                                            const band = getRiskBand(item.riskScore)
+                                            return (
+                                                <button key={item.id} className="lchk-recent-item" onClick={() => openHistoryReport(item)}>
+                                                    <div>
+                                                        <strong>{String(item.profile || '').toUpperCase()} - {item.scope}</strong>
+                                                        <p>{formatDateTime(item.timestamp)}</p>
+                                                    </div>
+                                                    <span className="lchk-risk-pill" style={{ color: band.color }}>{band.label} {item.riskScore}</span>
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </motion.section>
                 )}
@@ -705,6 +1085,9 @@ export default function LanCheck() {
                                     <div className="lchk-kpi"><span>Discovered</span><strong>{discovered.length}</strong></div>
                                     <div className="lchk-kpi"><span>Profile</span><strong>{PROFILE_PRESETS[profile].title}</strong></div>
                                     <div className="lchk-kpi"><span>Range</span><strong className="mono">{baseIP}.{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>TCP / host</span><strong>{selectedPorts.length}</strong></div>
+                                    <div className="lchk-kpi"><span>UDP / host</span><strong>{selectedUdpPorts.length}</strong></div>
+                                    <div className="lchk-kpi"><span>Discovery</span><strong>{enableDiscovery ? 'Enabled' : 'Focused'}</strong></div>
                                 </div>
                             </div>
 
@@ -805,15 +1188,21 @@ export default function LanCheck() {
                                     </div>
                                     <div className="v3-card lchk-summary-card">
                                         <div className="v3-label-sm"><Database size={12} /> Open Services</div>
-                                        <strong>{report.summary.openServices}</strong>
-                                        <span className="lchk-summary-sub">Reachable services found</span>
+                                        <strong>{confirmedOpenServices}</strong>
+                                        <span className="lchk-summary-sub">Confirmed-open services</span>
+                                        <span className="lchk-summary-meta">TCP: {confirmedOpenTcpServices} - UDP: {confirmedOpenUdpServices}</span>
+                                        <span className="lchk-summary-meta">Inconclusive (filtered): {inconclusiveServices} (TCP {inconclusiveTcpServices} - UDP {inconclusiveUdpServices})</span>
                                         <span className="lchk-summary-meta">SSDP responders: {report.summary.upnpResponders}</span>
+                                        <span className="lchk-summary-meta">
+                                            Scope density: {(report.summary.portsPerHost || resolveProfilePorts(report.profile, report.summary.extendedSweepEnabled !== false).length) + (report.summary.udpPortsPerHost || resolveProfileUdpPorts(report.profile, report.summary.extendedSweepEnabled !== false).length)} checks per host
+                                        </span>
                                     </div>
                                     <div className="v3-card lchk-summary-card">
                                         <div className="v3-label-sm"><Clock3 size={12} /> Duration</div>
                                         <strong>{formatDuration((scanFinishedAt || Date.now()) - (scanStartedAt || Date.now()))}</strong>
                                         <span className="lchk-summary-sub">Total scan runtime</span>
                                         <span className="mono lchk-summary-meta">Scope: {report.range}</span>
+                                        <span className="lchk-summary-meta">Discovery: {report.summary.discoveryEnabled ? 'enabled' : 'focused targets'}</span>
                                     </div>
                                 </div>
                                 <div className="v3-card lchk-findings-card">
@@ -845,21 +1234,26 @@ export default function LanCheck() {
                                 <div className="v3-card lchk-open-ports-card">
                                     <div className="v3-card-header">
                                         <div className="v3-card-title"><Fingerprint size={16} color="var(--color-accent)" /> Open Service Evidence</div>
-                                        <span className="v3-badge accent">{openRows.length} total</span>
+                                        <span className="v3-badge accent">{confirmedOpenServices} confirmed - {inconclusiveServices} inconclusive</span>
                                     </div>
                                     {!openRows.length ? (
                                         <div className="lchk-no-open">
                                             <CheckCircle2 size={16} color="var(--color-success)" />
-                                            No open service evidence found in selected profile scope.
+                                            No open TCP/UDP service evidence found in selected profile scope.
                                         </div>
                                     ) : (
                                         <>
+                                            <div className="lchk-open-note">
+                                                Entries marked <span className="mono">filtered</span> are inconclusive for UDP scans and require confirmation.
+                                            </div>
                                             <div className="lchk-table-wrap">
                                                 <table className="np-table">
                                                     <thead>
                                                         <tr>
                                                             <th>Host</th>
                                                             <th>Port</th>
+                                                            <th>Proto</th>
+                                                            <th>State</th>
                                                             <th>Service</th>
                                                             <th>Role</th>
                                                             <th>Severity</th>
@@ -867,16 +1261,26 @@ export default function LanCheck() {
                                                         </tr>
                                                     </thead>
                                                     <tbody>
-                                                        {pagedRows.map((row, idx) => (
-                                                            <tr key={`${row.ip}-${row.port}-${idx}`}>
+                                                        {pagedRows.map((row, idx) => {
+                                                            const rawState = String(row.state || 'open').toLowerCase()
+                                                            const displayState = rawState === 'open|filtered' ? 'filtered' : (rawState || 'open')
+                                                            return (
+                                                            <tr key={`${row.ip}-${row.protocol || 'tcp'}-${row.port}-${idx}`}>
                                                                 <td className="mono">{row.ip}</td>
                                                                 <td className="mono">{row.port}</td>
-                                                                <td>{row.service}</td>
+                                                                <td className="mono">{String(row.protocol || 'tcp').toUpperCase()}</td>
+                                                                <td><span className={`lchk-state-chip ${displayState.replace(/\|/g, '-')}`}>{displayState}</span></td>
+                                                                <td>
+                                                                    <div className="lchk-service-cell">
+                                                                        <strong>{row.service}</strong>
+                                                                        {row.detail ? <small>{row.detail}</small> : null}
+                                                                    </div>
+                                                                </td>
                                                                 <td>{row.isGateway ? <span className="lchk-role-chip"><Router size={11} /> Gateway</span> : row.displayName}</td>
                                                                 <td><span className={`lchk-sev-chip ${row.severity}`}>{row.severity}</span></td>
                                                                 <td className="mono">{row.time != null ? `${row.time}ms` : '-'}</td>
                                                             </tr>
-                                                        ))}
+                                                        )})}
                                                     </tbody>
                                                 </table>
                                             </div>

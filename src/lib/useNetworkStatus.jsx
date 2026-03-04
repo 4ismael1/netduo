@@ -86,16 +86,25 @@ export function NetworkStatusProvider({ children }) {
         vpnStatusRef.current = vpnStatus
     }, [vpnStatus])
 
+    /** Wraps a promise with a timeout — resolves undefined if it takes too long */
+    const withTimeout = (promise, ms) => Promise.race([
+        promise,
+        new Promise(resolve => setTimeout(() => resolve(undefined), ms)),
+    ])
+
     const fetchAll = useCallback(async ({ skipWifi = false, skipGeo = false } = {}) => {
         try {
-            const calls = [
-                bridge.getNetworkInterfaces(),
-                skipWifi ? Promise.resolve(undefined) : bridge.getWifiInfo(),
-                bridge.getDnsServers(),
-                bridge.getSystemInfo(),
-                bridge.getVpnStatus ? bridge.getVpnStatus() : Promise.resolve(null),
+            // ── Phase 1: all local calls in parallel — unblocks UI when done ──
+            // Each call has a 4s safety timeout so the skeleton never gets stuck
+            const LOCAL_TIMEOUT = 4000
+            const localCalls = [
+                withTimeout(bridge.getNetworkInterfaces(), LOCAL_TIMEOUT),
+                skipWifi ? Promise.resolve(undefined) : withTimeout(bridge.getWifiInfo(), LOCAL_TIMEOUT),
+                withTimeout(bridge.getDnsServers(), LOCAL_TIMEOUT),
+                withTimeout(bridge.getSystemInfo(), LOCAL_TIMEOUT),
+                bridge.getVpnStatus ? withTimeout(bridge.getVpnStatus(), LOCAL_TIMEOUT) : Promise.resolve(null),
             ]
-            const [ifaces, w, d, sys, vpn] = await Promise.allSettled(calls)
+            const [ifaces, w, d, sys, vpn] = await Promise.allSettled(localCalls)
 
             if (!mountedRef.current) return
 
@@ -160,7 +169,10 @@ export function NetworkStatusProvider({ children }) {
             if (d.status === 'fulfilled') setDns(d.value || [])
             if (sys.status === 'fulfilled') setSysInfo(sys.value)
 
-            // Public IP + geo (slightly slower)
+            // All local data is ready — skeleton disappears, UI renders complete
+            if (mountedRef.current) setLoading(false)
+
+            // ── Phase 2: only public IP + geo in background (hidden behind eye toggle) ──
             if (!skipGeo) {
                 try {
                     const pip = await bridge.getPublicIP()
@@ -179,7 +191,6 @@ export function NetworkStatusProvider({ children }) {
                 } catch { /* ok */ }
             }
         } catch { /* silent */ }
-        finally { if (mountedRef.current) setLoading(false) }
     }, [])
 
     useEffect(() => {

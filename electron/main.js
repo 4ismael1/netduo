@@ -1,5 +1,6 @@
 ﻿const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const { exec, spawn } = require('child_process')
 const os = require('os')
 const dns = require('dns')
@@ -11,9 +12,101 @@ const http = require('http')
 const WsClient = require('ws')
 const database = require('./database')
 
-const isDev = process.env.NODE_ENV !== 'production'
+// Use Electron packaging state instead of NODE_ENV.
+// In installed builds NODE_ENV is often undefined, and relying on it can
+// incorrectly force dev-mode URL loading (localhost:5173).
+const isDev = !app.isPackaged
 const appIconPath = path.join(__dirname, 'assets', 'icon.ico')
+const startupLogName = 'netduo-startup.log'
 
+// Stability fallback for GPUs/drivers that can cause blank renderer windows.
+app.disableHardwareAcceleration()
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+}
+
+function appendStartupLog(message) {
+    try {
+        const line = `[${new Date().toISOString()}] ${message}\n`
+        const userDataPath = app.getPath('userData')
+        fs.appendFileSync(path.join(userDataPath, startupLogName), line, 'utf8')
+    } catch {
+        // keep silent, logging must never crash startup
+    }
+}
+
+function renderBootErrorHtml(title, details = '') {
+    const safeTitle = escapeHtml(title || 'NetDuo startup error')
+    const safeDetails = escapeHtml(details).replace(/\n/g, '<br>')
+    return `
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NetDuo Startup Error</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #050507;
+      color: #e2e8f0;
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    .card {
+      width: min(760px, 92vw);
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 22px;
+      background: #0b1220;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      color: #f8fafc;
+    }
+    p { margin: 0 0 8px; color: #94a3b8; line-height: 1.55; }
+    .detail {
+      margin-top: 12px;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      background: #020617;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #f8fafc;
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <h1>${safeTitle}</h1>
+    <p>NetDuo could not load the renderer correctly.</p>
+    <p>Check the startup log in your user profile for details.</p>
+    <div class="detail">${safeDetails || 'No additional details.'}</div>
+  </section>
+</body>
+</html>`
+}
+
+function showBootErrorPage(win, title, details) {
+    if (!win || win.isDestroyed()) return
+    const html = renderBootErrorHtml(title, details)
+    const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    win.loadURL(dataUrl).catch(() => {})
+    if (!win.isVisible()) win.show()
+}
 // ─── Helpers ──────────────────────────────────────────────────────────────
 const PING_TIME_RE = /(?:tiempo|time|zeit|temps|tempo|tyd)[=<]\s*(\d+\.?\d*)/i
 
@@ -422,13 +515,54 @@ function createWindow() {
     })
 
     mainWin = win
+    appendStartupLog(`createWindow() bootTheme=${bootTheme} dev=${isDev ? 'yes' : 'no'}`)
+
+    win.webContents.on('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
+        if (!isMainFrame) return
+        const detail = `did-fail-load code=${code} description=${description || 'unknown'} url=${validatedURL || 'n/a'}`
+        appendStartupLog(detail)
+        showBootErrorPage(
+            win,
+            'NetDuo failed to load UI',
+            `${detail}\nLog file: ${startupLogName}`
+        )
+    })
+
+    win.webContents.on('render-process-gone', (_event, details) => {
+        const reason = details?.reason || 'unknown'
+        const exitCode = details?.exitCode
+        const detail = `render-process-gone reason=${reason} exitCode=${exitCode}`
+        appendStartupLog(detail)
+        showBootErrorPage(
+            win,
+            'NetDuo renderer crashed',
+            `${detail}\nLog file: ${startupLogName}`
+        )
+    })
+
+    win.webContents.on('preload-error', (_event, preloadPath, error) => {
+        const detail = `preload-error path=${preloadPath || 'n/a'} error=${error?.message || error || 'unknown'}`
+        appendStartupLog(detail)
+        showBootErrorPage(
+            win,
+            'NetDuo preload failed',
+            `${detail}\nLog file: ${startupLogName}`
+        )
+    })
 
     if (isDev) {
         win.loadURL(`http://localhost:5173/?bootTheme=${bootTheme}`)
     } else {
         win.loadFile(path.join(__dirname, '../dist/index.html'), { query: { bootTheme } })
     }
-    win.once('ready-to-show', () => win.show())
+    win.once('ready-to-show', () => {
+        appendStartupLog('ready-to-show')
+        win.show()
+    })
+    win.webContents.on('did-finish-load', () => {
+        appendStartupLog('did-finish-load')
+        if (!win.isVisible()) win.show()
+    })
 
     const onMinimize = () => {
         if (!win.isDestroyed()) win.minimize()
@@ -583,9 +717,21 @@ function stopNetworkWatcher() {
 }
 
 app.whenReady().then(() => {
+    appendStartupLog('app.whenReady')
     database.init(app.getPath('userData'))
     createWindow()
     startNetworkWatcher()
+    appendStartupLog('startup complete')
+}).catch(err => {
+    appendStartupLog(`whenReady-error: ${err?.stack || err}`)
+})
+
+process.on('uncaughtException', err => {
+    appendStartupLog(`uncaughtException: ${err?.stack || err}`)
+})
+
+process.on('unhandledRejection', reason => {
+    appendStartupLog(`unhandledRejection: ${reason?.stack || reason}`)
 })
 app.on('window-all-closed', () => {
     stopNetworkWatcher()
@@ -746,6 +892,453 @@ ipcMain.handle('check-port', (_, host, port, timeout = 3000) => new Promise(reso
     socket.on('error', err => resolve({ host, port, open: false, error: err.message, time: Date.now() - start }))
     socket.connect(port, host)
 }))
+
+const LAN_HTTP_PORTS = new Set([80, 81, 88, 8000, 8080, 8081, 8888, 9000, 9090, 10000])
+const LAN_HTTPS_PORTS = new Set([443, 444, 8443, 9443, 10443, 5001, 7001, 7443])
+
+function normalizePortList(rawPorts, maxLength = 4096) {
+    const source = Array.isArray(rawPorts) ? rawPorts : []
+    const ports = []
+    for (const value of source) {
+        const port = Number.parseInt(String(value), 10)
+        if (!Number.isInteger(port) || port < 1 || port > 65535) continue
+        ports.push(port)
+    }
+    const unique = Array.from(new Set(ports))
+    unique.sort((a, b) => a - b)
+    return unique.slice(0, maxLength)
+}
+
+function normalizeErrorCode(error) {
+    return String(error?.code || error?.message || '').trim().toUpperCase()
+}
+
+function normalizeTcpStateFromError(error) {
+    const code = normalizeErrorCode(error)
+    if (code === 'ETIMEDOUT' || code === 'TIMEOUT') return 'filtered'
+    if (code === 'ECONNREFUSED') return 'closed'
+    if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || code === 'EHOSTDOWN' || code === 'ENOTFOUND') return 'closed'
+    return 'closed'
+}
+
+function tcpProbeOnce(host, port, timeoutMs) {
+    return new Promise(resolve => {
+        const started = Date.now()
+        const socket = new net.Socket()
+        let settled = false
+
+        const done = (state, error = null) => {
+            if (settled) return
+            settled = true
+            try { socket.destroy() } catch { /* noop */ }
+            resolve({
+                state,
+                rtt: Date.now() - started,
+                error: error || null,
+            })
+        }
+
+        socket.setTimeout(timeoutMs)
+        socket.once('connect', () => done('open'))
+        socket.once('timeout', () => done('filtered', 'timeout'))
+        socket.once('error', err => done(normalizeTcpStateFromError(err), normalizeErrorCode(err)))
+
+        try { socket.connect(port, host) } catch (err) { done('closed', normalizeErrorCode(err)) }
+    })
+}
+
+async function tcpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
+    const maxAttempts = Math.max(1, Math.min(3, attempts))
+    const rows = []
+    for (let index = 0; index < maxAttempts; index += 1) {
+        const row = await tcpProbeOnce(host, port, timeoutMs)
+        rows.push(row)
+        if (row.state === 'open') break
+    }
+
+    const open = rows.find(item => item.state === 'open')
+    if (open) {
+        return {
+            state: 'open',
+            rtt: open.rtt,
+            attempts: rows.length,
+            error: null,
+        }
+    }
+
+    const filtered = rows.find(item => item.state === 'filtered')
+    if (filtered) {
+        return {
+            state: 'filtered',
+            rtt: filtered.rtt,
+            attempts: rows.length,
+            error: filtered.error || null,
+        }
+    }
+
+    const last = rows[rows.length - 1] || { state: 'closed', rtt: null, error: null }
+    return {
+        state: 'closed',
+        rtt: last.rtt,
+        attempts: rows.length,
+        error: last.error || null,
+    }
+}
+
+function cleanupBannerText(text) {
+    return String(text || '')
+        .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 180)
+}
+
+function readTcpBanner(host, port, timeoutMs, payload = null, expectData = true) {
+    return new Promise(resolve => {
+        const socket = new net.Socket()
+        let settled = false
+        let chunks = []
+
+        const done = (value = null) => {
+            if (settled) return
+            settled = true
+            try { socket.destroy() } catch { /* noop */ }
+            resolve(value)
+        }
+
+        socket.setTimeout(timeoutMs)
+        socket.once('connect', () => {
+            if (payload) {
+                try { socket.write(payload) } catch { /* noop */ }
+            }
+            if (!expectData) {
+                setTimeout(() => done(null), Math.min(260, timeoutMs))
+            }
+        })
+        socket.on('data', data => {
+            if (settled) return
+            chunks.push(data)
+            const merged = Buffer.concat(chunks).subarray(0, 512)
+            done(cleanupBannerText(merged.toString('utf8')))
+        })
+        socket.once('timeout', () => done(null))
+        socket.once('error', () => done(null))
+
+        try { socket.connect(port, host) } catch { done(null) }
+    })
+}
+
+function probeHttpHead(host, port, secure, timeoutMs) {
+    return new Promise(resolve => {
+        const client = secure ? https : http
+        const req = client.request({
+            host,
+            port,
+            method: 'HEAD',
+            path: '/',
+            timeout: timeoutMs,
+            rejectUnauthorized: false,
+        }, res => {
+            const detail = [`status ${res.statusCode}`]
+            if (res.headers?.server) detail.push(`server ${String(res.headers.server).slice(0, 80)}`)
+            if (res.headers?.['x-powered-by']) detail.push(`x-powered-by ${String(res.headers['x-powered-by']).slice(0, 80)}`)
+            res.resume()
+            resolve({
+                service: secure ? 'https' : 'http',
+                detail: detail.join(', '),
+            })
+        })
+        req.once('error', () => resolve(null))
+        req.once('timeout', () => { req.destroy(); resolve(null) })
+        req.end()
+    })
+}
+
+function probeTlsIdentity(host, port, timeoutMs) {
+    return new Promise(resolve => {
+        const socket = tls.connect({
+            host,
+            port,
+            servername: host,
+            rejectUnauthorized: false,
+            timeout: timeoutMs,
+        }, () => {
+            const cert = socket.getPeerCertificate(true)
+            const detail = []
+            if (cert?.subject?.CN) detail.push(`cn ${String(cert.subject.CN).slice(0, 80)}`)
+            const proto = socket.getProtocol()
+            if (proto) detail.push(`tls ${proto}`)
+            socket.end()
+            resolve({
+                service: 'tls',
+                detail: detail.join(', ') || 'tls endpoint',
+            })
+        })
+        socket.once('error', () => resolve(null))
+        socket.once('timeout', () => { socket.destroy(); resolve(null) })
+    })
+}
+
+async function fingerprintTcpService(host, port, timeoutMs) {
+    if (LAN_HTTP_PORTS.has(port)) {
+        const info = await probeHttpHead(host, port, false, timeoutMs + 400)
+        if (info) return info
+    }
+    if (LAN_HTTPS_PORTS.has(port)) {
+        const info = await probeHttpHead(host, port, true, timeoutMs + 500)
+        if (info) return info
+        const tlsInfo = await probeTlsIdentity(host, port, timeoutMs + 500)
+        if (tlsInfo) return tlsInfo
+    }
+
+    if (port === 22) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return banner ? { service: 'ssh', detail: banner } : { service: 'ssh', detail: null }
+    }
+    if (port === 21) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return banner ? { service: 'ftp', detail: banner } : { service: 'ftp', detail: null }
+    }
+    if (port === 25 || port === 587) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return banner ? { service: 'smtp', detail: banner } : { service: 'smtp', detail: null }
+    }
+    if (port === 110) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return banner ? { service: 'pop3', detail: banner } : { service: 'pop3', detail: null }
+    }
+    if (port === 143) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return banner ? { service: 'imap', detail: banner } : { service: 'imap', detail: null }
+    }
+    if (port === 6379) {
+        const banner = await readTcpBanner(host, port, timeoutMs, Buffer.from('*1\r\n$4\r\nPING\r\n'), true)
+        if (banner && /PONG/i.test(banner)) return { service: 'redis', detail: 'PONG response' }
+        return { service: 'redis', detail: banner || null }
+    }
+    if (port === 3306) {
+        const banner = await readTcpBanner(host, port, timeoutMs)
+        return { service: 'mysql', detail: banner || null }
+    }
+    if (port === 3389) return { service: 'rdp', detail: null }
+    if (port === 445) return { service: 'smb', detail: null }
+    return null
+}
+
+function buildDnsQueryPacket() {
+    const tx = Math.floor(Math.random() * 0xffff)
+    const header = Buffer.from([
+        (tx >> 8) & 0xff, tx & 0xff,
+        0x01, 0x00,
+        0x00, 0x01,
+        0x00, 0x00,
+        0x00, 0x00,
+        0x00, 0x00,
+    ])
+    const labels = Buffer.from([0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d, 0x00])
+    const tail = Buffer.from([0x00, 0x01, 0x00, 0x01])
+    return Buffer.concat([header, labels, tail])
+}
+
+function getUdpProbePayload(port) {
+    if (port === 53) return buildDnsQueryPacket()
+    if (port === 69) return Buffer.concat([Buffer.from([0x00, 0x01]), Buffer.from('netduo-test\0octet\0', 'ascii')])
+    if (port === 123) {
+        const buf = Buffer.alloc(48)
+        buf[0] = 0x1b
+        return buf
+    }
+    if (port === 161) return Buffer.from('302602010104067075626c6963a01902047065b37b020100020100300b300906052b060102010500', 'hex')
+    if (port === 1900) {
+        return Buffer.from(
+            'M-SEARCH * HTTP/1.1\r\n' +
+            'HOST:239.255.255.250:1900\r\n' +
+            'MAN:"ssdp:discover"\r\n' +
+            'MX:2\r\n' +
+            'ST:ssdp:all\r\n\r\n',
+            'ascii'
+        )
+    }
+    if (port === 5351) return Buffer.from([0x00, 0x00, 0x00, 0x00])
+    return Buffer.from([0x00])
+}
+
+function udpProbeOnce(host, port, timeoutMs) {
+    return new Promise(resolve => {
+        const socket = dgram.createSocket('udp4')
+        const started = Date.now()
+        let settled = false
+
+        const done = (state, error = null, responseSize = 0) => {
+            if (settled) return
+            settled = true
+            try { socket.close() } catch { /* noop */ }
+            resolve({
+                state,
+                rtt: Date.now() - started,
+                error: error || null,
+                responseSize,
+            })
+        }
+
+        const timer = setTimeout(() => done('filtered', 'timeout', 0), timeoutMs)
+        socket.once('message', msg => {
+            clearTimeout(timer)
+            done('open', null, msg?.length || 0)
+        })
+        socket.once('error', err => {
+            clearTimeout(timer)
+            const code = normalizeErrorCode(err)
+            if (code === 'ECONNREFUSED') done('closed', code, 0)
+            else done('filtered', code || 'error', 0)
+        })
+
+        const payload = getUdpProbePayload(port)
+        socket.send(payload, 0, payload.length, port, host, err => {
+            if (!err) return
+            clearTimeout(timer)
+            done('closed', normalizeErrorCode(err), 0)
+        })
+    })
+}
+
+async function udpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
+    const maxAttempts = Math.max(1, Math.min(3, attempts))
+    const rows = []
+    for (let index = 0; index < maxAttempts; index += 1) {
+        const row = await udpProbeOnce(host, port, timeoutMs)
+        rows.push(row)
+        if (row.state === 'open') break
+    }
+
+    const open = rows.find(item => item.state === 'open')
+    if (open) {
+        return {
+            state: 'open',
+            rtt: open.rtt,
+            attempts: rows.length,
+            error: null,
+        }
+    }
+
+    const filtered = rows.find(item => item.state === 'filtered' || item.state === 'open|filtered')
+    if (filtered) {
+        return {
+            state: 'filtered',
+            rtt: filtered.rtt,
+            attempts: rows.length,
+            error: filtered.error || null,
+        }
+    }
+
+    const last = rows[rows.length - 1] || { state: 'closed', rtt: null, error: null }
+    return {
+        state: 'closed',
+        rtt: last.rtt,
+        attempts: rows.length,
+        error: last.error || null,
+    }
+}
+
+async function scanLanSecurityHost(host, options) {
+    const entries = []
+    const tcpPorts = normalizePortList(options?.tcpPorts, 4096)
+    const udpPorts = normalizePortList(options?.udpPorts, 2048)
+    const timeoutMs = Math.max(300, Math.min(4000, Number.parseInt(String(options?.timeoutMs || 900), 10) || 900))
+    const tcpAttempts = Math.max(1, Math.min(3, Number.parseInt(String(options?.tcpAttempts || 1), 10) || 1))
+    const udpAttempts = Math.max(1, Math.min(3, Number.parseInt(String(options?.udpAttempts || 1), 10) || 1))
+    const includeServiceProbe = options?.includeServiceProbe !== false
+    const tcpConcurrency = Math.max(4, Math.min(64, Number.parseInt(String(options?.tcpConcurrency || 24), 10) || 24))
+    const udpConcurrency = Math.max(2, Math.min(24, Number.parseInt(String(options?.udpConcurrency || 8), 10) || 8))
+
+    if (tcpPorts.length) {
+        const tcpRows = await parallelMap(tcpPorts, async port => {
+            const probe = await tcpProbeWithAttempts(host, port, timeoutMs, tcpAttempts)
+            const row = {
+                protocol: 'tcp',
+                port,
+                state: probe.state,
+                rtt: probe.rtt,
+                attempts: probe.attempts,
+                service: null,
+                detail: null,
+                error: probe.error || null,
+            }
+            if (probe.state === 'open' && includeServiceProbe) {
+                const fp = await withTimeout(fingerprintTcpService(host, port, timeoutMs), timeoutMs + 600, null)
+                if (fp?.service) row.service = fp.service
+                if (fp?.detail) row.detail = fp.detail
+            }
+            return row
+        }, tcpConcurrency)
+        entries.push(...tcpRows)
+    }
+
+    if (udpPorts.length) {
+        const udpRows = await parallelMap(udpPorts, async port => {
+            const probe = await udpProbeWithAttempts(host, port, timeoutMs, udpAttempts)
+            return {
+                protocol: 'udp',
+                port,
+                state: probe.state,
+                rtt: probe.rtt,
+                attempts: probe.attempts,
+                service: null,
+                detail: probe.state === 'filtered' ? 'no response (filtered)' : null,
+                error: probe.error || null,
+            }
+        }, udpConcurrency)
+        entries.push(...udpRows)
+    }
+
+    entries.sort((a, b) => {
+        if (a.protocol !== b.protocol) return a.protocol.localeCompare(b.protocol)
+        return a.port - b.port
+    })
+    return entries
+}
+
+ipcMain.handle('lan-security-scan', async (_, payload = {}) => {
+    const started = Date.now()
+    const rawTargets = Array.isArray(payload?.targets) ? payload.targets : []
+    const targets = rawTargets
+        .map(item => sanitizeHost(item?.ip ?? item))
+        .filter(Boolean)
+        .map(ip => ({ ip }))
+
+    if (!targets.length) {
+        return {
+            ok: true,
+            checkedAt: new Date().toISOString(),
+            durationMs: 0,
+            results: [],
+        }
+    }
+
+    const hostConcurrency = Math.max(1, Math.min(12, Number.parseInt(String(payload?.hostConcurrency || 4), 10) || 4))
+    const options = {
+        tcpPorts: payload?.tcpPorts,
+        udpPorts: payload?.udpPorts,
+        timeoutMs: payload?.timeoutMs,
+        tcpAttempts: payload?.tcpAttempts,
+        udpAttempts: payload?.udpAttempts,
+        includeServiceProbe: payload?.includeServiceProbe !== false,
+        tcpConcurrency: payload?.tcpConcurrency,
+        udpConcurrency: payload?.udpConcurrency,
+    }
+
+    const results = await parallelMap(targets, async target => {
+        const entries = await scanLanSecurityHost(target.ip, options)
+        return { ip: target.ip, entries }
+    }, hostConcurrency)
+
+    return {
+        ok: true,
+        checkedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - started),
+        results,
+    }
+})
 
 // ── Port Scanner ──────────────────────────────────────
 ipcMain.handle('scan-ports', async (_, host, startPort, endPort) => {
@@ -2521,4 +3114,5 @@ ipcMain.handle('wan-probe-request', async (_, opts) => {
 
 
 
+
 

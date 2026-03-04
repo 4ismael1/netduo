@@ -277,6 +277,38 @@ const bridge = {
                 },
                 checkedAt: new Date().toISOString(),
             }), 1200)),
+    lanSecurityScan: (payload) =>
+        API?.lanSecurityScan
+            ? API.lanSecurityScan(payload)
+            : new Promise(resolve => {
+                const targets = Array.isArray(payload?.targets) ? payload.targets : []
+                const tcpPorts = Array.isArray(payload?.tcpPorts) ? payload.tcpPorts : []
+                const udpPorts = Array.isArray(payload?.udpPorts) ? payload.udpPorts : []
+                const results = targets.map(target => {
+                    const tcpEntries = tcpPorts
+                        .filter(port => [22, 23, 80, 443, 445, 3389, 7547, 8080].includes(port) || Math.random() > 0.96)
+                        .map(port => ({
+                            protocol: 'tcp',
+                            port,
+                            state: 'open',
+                            rtt: rndInt(8, 170),
+                            service: null,
+                            detail: null,
+                        }))
+                    const udpEntries = udpPorts
+                        .filter(port => [53, 123, 161, 1900].includes(port) && Math.random() > 0.35)
+                        .map(port => ({
+                            protocol: 'udp',
+                            port,
+                            state: port === 161 ? 'open' : 'filtered',
+                            rtt: rndInt(12, 220),
+                            service: null,
+                            detail: null,
+                        }))
+                    return { ip: target?.ip, entries: [...tcpEntries, ...udpEntries] }
+                })
+                setTimeout(() => resolve({ ok: true, results, durationMs: rndInt(500, 1700) }), 700 + Math.random() * 500)
+            }),
 
     // SSL Check
     sslCheck: (host, port = 443) =>
