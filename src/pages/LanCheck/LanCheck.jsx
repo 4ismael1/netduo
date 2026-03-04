@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
     AlertTriangle,
@@ -105,6 +105,9 @@ const SEVERITY_META = {
 }
 
 const REPORT_ROWS_PER_PAGE = 15
+const WIFI_IFACE_RE = /(wi-?fi|wlan|wireless|802\.11)/i
+const ETHERNET_IFACE_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|intel\(r\).*ethernet|gigabit)/i
+const VIRTUAL_IFACE_RE = /(virtual|vmware|vethernet|hyper-v|loopback|bluetooth|hamachi|zerotier|tailscale|wireguard|wintun|tun|tap)/i
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
 function uniqueSortedPorts(ports) {
@@ -155,6 +158,33 @@ function isIpInScope(ip, base, start, end) {
     if (!value.startsWith(`${base}.`)) return false
     const last = Number.parseInt(value.split('.').pop() || '', 10)
     return Number.isInteger(last) && last >= start && last <= end
+}
+function scoreLanInterface(iface) {
+    const name = String(iface?.name || '')
+    const desc = String(iface?.interfaceDescription || '')
+    const probe = `${name} ${desc}`.trim()
+    const status = String(iface?.interfaceStatus || '').toLowerCase()
+    const address = String(iface?.address || '')
+    let score = 0
+
+    if (status.includes('up') || status.includes('connected') || status.includes('conect')) score += 60
+    if (!VIRTUAL_IFACE_RE.test(probe)) score += 35
+    if (ETHERNET_IFACE_RE.test(probe)) score += 18
+    if (WIFI_IFACE_RE.test(probe)) score += 16
+    if (address.startsWith('169.254.')) score -= 100
+
+    return score
+}
+function resolveAutoBaseFromInterfaces(list) {
+    const candidates = (list || []).filter(item => item?.family === 'IPv4' && !item?.internal && typeof item?.address === 'string')
+    if (!candidates.length) return ''
+    const primary = candidates
+        .map(item => ({ item, score: scoreLanInterface(item) }))
+        .sort((a, b) => b.score - a.score)[0]?.item
+    if (!primary?.address) return ''
+    const parts = primary.address.split('.')
+    if (parts.length !== 4) return ''
+    return parts.slice(0, 3).join('.')
 }
 function resolveServiceSeverity(port, protocol = 'tcp', state = 'open') {
     const proto = String(protocol || 'tcp').toLowerCase()
@@ -276,6 +306,7 @@ export default function LanCheck() {
     const [historyRows, setHistoryRows] = useState([])
     const [historyLoading, setHistoryLoading] = useState(false)
     const [historyQuery, setHistoryQuery] = useState('')
+    const autoBaseResolvedRef = useRef(false)
 
     const preset = PROFILE_PRESETS[profile]
     const selectedPorts = useMemo(
@@ -305,7 +336,7 @@ export default function LanCheck() {
             if (PROFILE_PRESETS[saved.profile]) setProfile(saved.profile)
             if (typeof saved.enableDiscovery === 'boolean') setEnableDiscovery(saved.enableDiscovery)
             if (typeof saved.extendedSweep === 'boolean') setExtendedSweep(saved.extendedSweep)
-            if (typeof saved.baseIP === 'string') setBaseIP(saved.baseIP)
+            if (typeof saved.baseIP === 'string' && !autoBaseResolvedRef.current) setBaseIP(saved.baseIP)
             if (Number.isInteger(saved.rangeStart)) setRangeStart(saved.rangeStart)
             if (Number.isInteger(saved.rangeEnd)) setRangeEnd(saved.rangeEnd)
         }).catch(() => {})
@@ -313,15 +344,31 @@ export default function LanCheck() {
     }, [])
 
     useEffect(() => {
-        bridge.getNetworkInterfaces().then(list => {
-            const ipv4 = (list || []).find(item => item.family === 'IPv4' && !item.internal)
-            if (!ipv4?.address) return
-            const parts = ipv4.address.split('.')
-            if (parts.length !== 4) return
-            parts.pop()
-            const autoBase = parts.join('.')
-            setBaseIP(prev => (prev === '192.168.1' ? autoBase : prev))
-        }).catch(() => {})
+        let disposed = false
+
+        async function syncAutoBaseIP() {
+            try {
+                const list = await bridge.getNetworkInterfaces()
+                if (disposed) return
+                const autoBase = resolveAutoBaseFromInterfaces(list)
+                if (!autoBase) return
+                autoBaseResolvedRef.current = true
+                setBaseIP(prev => (prev === autoBase ? prev : autoBase))
+            } catch {
+                // ignore interface resolution errors
+            }
+        }
+
+        syncAutoBaseIP().catch(() => {})
+        const offChanged = bridge.onNetworkChanged?.(() => { syncAutoBaseIP().catch(() => {}) })
+        const onOnline = () => { syncAutoBaseIP().catch(() => {}) }
+        window.addEventListener('online', onOnline)
+
+        return () => {
+            disposed = true
+            if (typeof offChanged === 'function') offChanged()
+            window.removeEventListener('online', onOnline)
+        }
     }, [])
     const severityCounts = useMemo(() => {
         const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 }
@@ -644,7 +691,19 @@ export default function LanCheck() {
     }
 
     async function startLanSecurityScan() {
-        const validated = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
+        let effectiveBaseIP = baseIP
+        try {
+            const ifaces = await bridge.getNetworkInterfaces()
+            const autoBase = resolveAutoBaseFromInterfaces(ifaces)
+            if (autoBase) {
+                effectiveBaseIP = autoBase
+                if (autoBase !== baseIP) setBaseIP(autoBase)
+            }
+        } catch {
+            // keep current base IP when interface refresh is not available
+        }
+
+        const validated = validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
         if (!validated.ok) {
             setInputError(validated.error)
             return
@@ -1030,7 +1089,7 @@ export default function LanCheck() {
                                 </div>
                                 <div className="lchk-plan-metrics">
                                     <div className="lchk-kpi"><span>Profile</span><strong>{preset.title}</strong></div>
-                                    <div className="lchk-kpi"><span>Scope</span><strong className="mono">{baseIP}.{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>Scope</span><strong className="mono lchk-scope-value">{baseIP}.<wbr />{rangeStart}-{rangeEnd}</strong></div>
                                     <div className="lchk-kpi"><span>Mode</span><strong>{enableDiscovery ? 'Full discovery' : 'Focused targets'}</strong></div>
                                     <div className="lchk-kpi"><span>Coverage</span><strong>{selectedPorts.length + selectedUdpPorts.length} checks/host</strong></div>
                                     <div className="lchk-kpi"><span>History</span><strong>{historyRows.length} reports</strong></div>
@@ -1084,7 +1143,7 @@ export default function LanCheck() {
                                 <div className="lchk-live-kpi">
                                     <div className="lchk-kpi"><span>Discovered</span><strong>{discovered.length}</strong></div>
                                     <div className="lchk-kpi"><span>Profile</span><strong>{PROFILE_PRESETS[profile].title}</strong></div>
-                                    <div className="lchk-kpi"><span>Range</span><strong className="mono">{baseIP}.{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>Range</span><strong className="mono lchk-scope-value">{baseIP}.<wbr />{rangeStart}-{rangeEnd}</strong></div>
                                     <div className="lchk-kpi"><span>TCP / host</span><strong>{selectedPorts.length}</strong></div>
                                     <div className="lchk-kpi"><span>UDP / host</span><strong>{selectedUdpPorts.length}</strong></div>
                                     <div className="lchk-kpi"><span>Discovery</span><strong>{enableDiscovery ? 'Enabled' : 'Focused'}</strong></div>

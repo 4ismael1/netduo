@@ -396,6 +396,7 @@
     padding: 10px;
     display: grid;
     gap: 5px;
+    min-width: 0;
 }
 
 .lchk-kpi span {
@@ -408,6 +409,16 @@
 .lchk-kpi strong {
     font-size: 15px;
     font-weight: 700;
+    min-width: 0;
+    max-width: 100%;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.lchk-scope-value {
+    font-size: clamp(12px, 1.05vw, 14px);
+    letter-spacing: -0.01em;
 }
 
 .lchk-step-pill {
