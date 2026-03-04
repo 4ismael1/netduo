@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanPorts: (host, start, end) => ipcRenderer.invoke('scan-ports', host, start, end),
     httpTest: (url, method, headers) => ipcRenderer.invoke('http-test', url, method, headers),
     lanScan: (base, start, end) => ipcRenderer.invoke('lan-scan', base, start, end),
+    lanScanEnrich: (payload) => ipcRenderer.invoke('lan-scan-enrich', payload),
     lanUpnpScan: (base, start, end) => ipcRenderer.invoke('lan-upnp-scan', base, start, end),
     lanSecurityScan: (payload) => ipcRenderer.invoke('lan-security-scan', payload),
     sslCheck: (host, port) => ipcRenderer.invoke('ssl-check', host, port),

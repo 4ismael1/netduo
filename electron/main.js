@@ -1454,6 +1454,38 @@ ipcMain.handle('http-test', (_, url, method = 'GET', headers = {}) => new Promis
 const { lookupVendor: ouiLookup } = require('./oui-db')
 const vendorCache = new Map()
 const vendorPending = new Map()
+const scannerDiscoveryCache = {
+    ssdpByBase: new Map(),
+    mdnsByBase: new Map(),
+}
+const SCANNER_DISCOVERY_TTL_MS = 20000
+const SCANNER_DISCOVERY_MAX_KEYS = 16
+
+function getScannerDiscoveryCache(cacheMap, key) {
+    const hit = cacheMap.get(key)
+    if (!hit) return null
+    if (Date.now() - hit.ts > SCANNER_DISCOVERY_TTL_MS) {
+        cacheMap.delete(key)
+        return null
+    }
+    return hit.value
+}
+
+function setScannerDiscoveryCache(cacheMap, key, value) {
+    cacheMap.set(key, { ts: Date.now(), value: value || {} })
+    if (cacheMap.size <= SCANNER_DISCOVERY_MAX_KEYS) return
+    const oldestKey = cacheMap.keys().next().value
+    if (oldestKey) cacheMap.delete(oldestKey)
+}
+
+function filterDiscoveryByRange(infoByIp, baseIP, rangeStart, rangeEnd) {
+    const out = {}
+    for (const [ip, info] of Object.entries(infoByIp || {})) {
+        if (!ipInRange(ip, baseIP, rangeStart, rangeEnd)) continue
+        out[ip] = info
+    }
+    return out
+}
 
 /** Run a promise with a timeout (ms). Returns fallback on timeout. */
 function withTimeout(promise, ms, fallback = null) {
@@ -1627,6 +1659,264 @@ function deriveVendorFromRandomized(mac) {
     return ouiLookup(derivedMac)
 }
 
+function encodeDnsName(name) {
+    const labels = String(name || '')
+        .split('.')
+        .map(label => label.trim())
+        .filter(Boolean)
+    const chunks = []
+    for (const label of labels) {
+        const bytes = Buffer.from(label, 'utf8')
+        if (bytes.length === 0 || bytes.length > 63) return null
+        chunks.push(Buffer.from([bytes.length]))
+        chunks.push(bytes)
+    }
+    chunks.push(Buffer.from([0]))
+    return Buffer.concat(chunks)
+}
+
+function buildMdnsQueryPacket() {
+    const q1 = encodeDnsName('_services._dns-sd._udp.local')
+    const q2 = encodeDnsName('_workstation._tcp.local')
+    if (!q1 || !q2) return null
+    const header = Buffer.alloc(12)
+    // Transaction ID = 0 for multicast DNS.
+    header.writeUInt16BE(0x0000, 0)
+    header.writeUInt16BE(0x0000, 2)
+    header.writeUInt16BE(2, 4)
+    header.writeUInt16BE(0, 6)
+    header.writeUInt16BE(0, 8)
+    header.writeUInt16BE(0, 10)
+    // QCLASS with QU bit (0x8000) requests unicast responses when possible.
+    const questionClass = Buffer.from([0x80, 0x01]) // IN + unicast-response
+    const questionTypePtr = Buffer.from([0x00, 0x0c]) // PTR
+    return Buffer.concat([header, q1, questionTypePtr, questionClass, q2, questionTypePtr, questionClass])
+}
+
+function parseIPv6FromBuffer(buf, offset) {
+    const parts = []
+    for (let i = 0; i < 16; i += 2) {
+        parts.push(buf.readUInt16BE(offset + i).toString(16))
+    }
+    return parts.join(':')
+}
+
+function readDnsName(buf, offset, depth = 0) {
+    if (!Buffer.isBuffer(buf) || offset < 0 || offset >= buf.length || depth > 12) return null
+    const labels = []
+    let i = offset
+    let nextOffset = offset
+    while (i < buf.length) {
+        const len = buf[i]
+        // Pointer compression (11xxxxxx)
+        if ((len & 0xc0) === 0xc0) {
+            if (i + 1 >= buf.length) return null
+            const pointerOffset = ((len & 0x3f) << 8) | buf[i + 1]
+            const pointed = readDnsName(buf, pointerOffset, depth + 1)
+            if (!pointed) return null
+            if (pointed.name) labels.push(pointed.name)
+            nextOffset = i + 2
+            return { name: labels.join('.'), nextOffset }
+        }
+        if (len === 0) {
+            nextOffset = i + 1
+            return { name: labels.join('.'), nextOffset }
+        }
+        if (len > 63 || i + 1 + len > buf.length) return null
+        labels.push(buf.slice(i + 1, i + 1 + len).toString('utf8'))
+        i += 1 + len
+    }
+    return null
+}
+
+function parseDnsRecords(buf, offset, count) {
+    const records = []
+    let cursor = offset
+    for (let i = 0; i < count; i++) {
+        const nameNode = readDnsName(buf, cursor)
+        if (!nameNode) return { records: [], nextOffset: null }
+        cursor = nameNode.nextOffset
+        if (cursor + 10 > buf.length) return { records: [], nextOffset: null }
+        const type = buf.readUInt16BE(cursor)
+        const klassRaw = buf.readUInt16BE(cursor + 2)
+        const klass = klassRaw & 0x7fff
+        const ttl = buf.readUInt32BE(cursor + 4)
+        const rdlength = buf.readUInt16BE(cursor + 8)
+        cursor += 10
+        if (cursor + rdlength > buf.length) return { records: [], nextOffset: null }
+        const rstart = cursor
+
+        let ptr = null
+        let target = null
+        let ipv4 = null
+        let ipv6 = null
+
+        if (type === 1 && rdlength === 4) {
+            ipv4 = `${buf[rstart]}.${buf[rstart + 1]}.${buf[rstart + 2]}.${buf[rstart + 3]}`
+        } else if (type === 28 && rdlength === 16) {
+            ipv6 = parseIPv6FromBuffer(buf, rstart)
+        } else if (type === 12 || type === 5) {
+            const ptrNode = readDnsName(buf, rstart)
+            if (ptrNode) ptr = ptrNode.name
+        } else if (type === 33 && rdlength >= 6) {
+            const targetNode = readDnsName(buf, rstart + 6)
+            if (targetNode) target = targetNode.name
+        }
+
+        records.push({
+            name: nameNode.name || '',
+            type,
+            class: klass,
+            ttl,
+            ptr,
+            target,
+            ipv4,
+            ipv6,
+        })
+        cursor += rdlength
+    }
+    return { records, nextOffset: cursor }
+}
+
+function parseDnsMessage(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 12) return null
+    const qdcount = buf.readUInt16BE(4)
+    const ancount = buf.readUInt16BE(6)
+    const nscount = buf.readUInt16BE(8)
+    const arcount = buf.readUInt16BE(10)
+
+    let cursor = 12
+    for (let i = 0; i < qdcount; i++) {
+        const qname = readDnsName(buf, cursor)
+        if (!qname) return null
+        cursor = qname.nextOffset
+        if (cursor + 4 > buf.length) return null
+        cursor += 4
+    }
+
+    const parsedAnswers = parseDnsRecords(buf, cursor, ancount + nscount + arcount)
+    if (parsedAnswers.nextOffset == null) return null
+    return parsedAnswers.records
+}
+
+function normalizeMdnsCandidate(raw) {
+    if (!raw || typeof raw !== 'string') return null
+    let value = raw.trim().replace(/\.$/, '')
+    if (!value) return null
+    if (value.includes('._')) value = value.split('._')[0]
+    value = value.replace(/\.local$/i, '').trim()
+    if (!value || /^_/.test(value)) return null
+    // Remove control characters while keeping spaces for friendly names.
+    value = value.replace(/[\u0000-\u001f\u007f]+/g, '').trim()
+    if (!value) return null
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return null
+    if (/^[0-9a-f]{12,}$/i.test(value)) return null
+    return value
+}
+
+function scoreMdnsCandidate(name, sourceType) {
+    if (!name) return -100
+    let score = sourceType === 'a' ? 50 : sourceType === 'srv' ? 40 : 30
+    if (name.length <= 24) score += 4
+    if (name.includes(' ')) score += 2
+    if (name.includes('._')) score -= 6
+    if (/^([a-f0-9]{2}[:-]){2,}/i.test(name)) score -= 8
+    return score
+}
+
+function mdnsMergeCandidate(outByIp, ip, rawName, sourceType = 'ptr') {
+    if (!ip) return
+    const hostname = normalizeMdnsCandidate(rawName)
+    if (!hostname) return
+    const score = scoreMdnsCandidate(hostname, sourceType)
+    const prev = outByIp[ip]
+    if (!prev || score > prev.score || (score === prev.score && hostname.length < prev.hostname.length)) {
+        outByIp[ip] = { hostname, score }
+    }
+}
+
+function mdnsDiscover(timeoutMs = 1400) {
+    return new Promise((resolve) => {
+        const packet = buildMdnsQueryPacket()
+        if (!packet) return resolve({})
+
+        const socket = dgram.createSocket('udp4')
+        const byIp = {}
+        let done = false
+
+        const finish = () => {
+            if (done) return
+            done = true
+            try { socket.close() } catch { /* noop */ }
+            const out = {}
+            for (const [ip, row] of Object.entries(byIp)) {
+                if (!row?.hostname) continue
+                out[ip] = { hostname: row.hostname }
+            }
+            resolve(out)
+        }
+
+        socket.on('error', finish)
+        socket.on('message', (msg, rinfo) => {
+            const sourceIp = rinfo?.address
+            if (!sourceIp) return
+            const records = parseDnsMessage(msg)
+            if (!records?.length) return
+            for (const record of records) {
+                if (record.type === 1 && record.ipv4) {
+                    mdnsMergeCandidate(byIp, record.ipv4, record.name, 'a')
+                    continue
+                }
+                if (record.type === 33 && record.target) {
+                    mdnsMergeCandidate(byIp, sourceIp, record.target, 'srv')
+                    continue
+                }
+                if (record.type === 12 && record.ptr) {
+                    mdnsMergeCandidate(byIp, sourceIp, record.ptr, 'ptr')
+                }
+            }
+        })
+
+        socket.bind(0, () => {
+            try { socket.setBroadcast(true) } catch { /* noop */ }
+            socket.send(packet, 0, packet.length, 5353, '224.0.0.251', () => { })
+            setTimeout(() => {
+                socket.send(packet, 0, packet.length, 5353, '224.0.0.251', () => { })
+            }, 250)
+            setTimeout(finish, timeoutMs)
+        })
+    })
+}
+
+async function collectMdnsInfo(baseIP, rangeStart, rangeEnd) {
+    const raw = await withTimeout(mdnsDiscover(1500), 2100, {})
+    const out = {}
+    for (const [ip, info] of Object.entries(raw || {})) {
+        if (!ipInRange(ip, baseIP, rangeStart, rangeEnd)) continue
+        const hostname = normalizeResolvedHost(info?.hostname)
+        if (hostname) out[ip] = { hostname }
+    }
+    return out
+}
+
+async function collectSsdpInfoCached(baseIP, rangeStart, rangeEnd) {
+    const cacheKey = String(baseIP || '').trim()
+    const cached = getScannerDiscoveryCache(scannerDiscoveryCache.ssdpByBase, cacheKey)
+    if (cached) return filterDiscoveryByRange(cached, baseIP, rangeStart, rangeEnd)
+    const full = await withTimeout(collectSsdpInfo(baseIP, 1, 254), 4200, {})
+    setScannerDiscoveryCache(scannerDiscoveryCache.ssdpByBase, cacheKey, full || {})
+    return filterDiscoveryByRange(full || {}, baseIP, rangeStart, rangeEnd)
+}
+
+async function collectMdnsInfoCached(baseIP, rangeStart, rangeEnd) {
+    const cacheKey = String(baseIP || '').trim()
+    const cached = getScannerDiscoveryCache(scannerDiscoveryCache.mdnsByBase, cacheKey)
+    if (cached) return filterDiscoveryByRange(cached, baseIP, rangeStart, rangeEnd)
+    const full = await withTimeout(collectMdnsInfo(baseIP, 1, 254), 2300, {})
+    setScannerDiscoveryCache(scannerDiscoveryCache.mdnsByBase, cacheKey, full || {})
+    return filterDiscoveryByRange(full || {}, baseIP, rangeStart, rangeEnd)
+}
+
 function decodeXmlEntities(s) {
     if (!s) return ''
     return s
@@ -1789,8 +2079,9 @@ async function collectSsdpInfo(baseIP, rangeStart, rangeEnd) {
     return out
 }
 
-/** Resolve hostname for a single device using multiple strategies */
-async function resolveHostname(ip) {
+/** Resolve hostname for a single device using multiple strategies. */
+async function resolveHostname(ip, options = {}) {
+    const allowHeavy = options?.allowHeavy === true
     // 1. Reverse DNS (PTR)
     const ptr = await withTimeout(reverseDNS(ip), 1500)
     const ptrName = normalizeResolvedHost(ptr)
@@ -1808,13 +2099,13 @@ async function resolveHostname(ip) {
     if (svcName) return { hostname: svcName, nameSource: 'ptr' }
 
     // 4. ping -a for Windows DNS/LLMNR/NetBIOS-assisted resolution
-    if (process.platform === 'win32') {
+    if (allowHeavy && process.platform === 'win32') {
         const pingName = normalizeResolvedHost(await withTimeout(pingResolveName(ip), 2500))
         if (pingName) return { hostname: pingName, nameSource: 'ptr' }
     }
 
     // 5. NetBIOS
-    if (process.platform === 'win32') {
+    if (allowHeavy && process.platform === 'win32') {
         const nb = normalizeResolvedHost(await withTimeout(netbiosLookup(ip), 3500))
         if (nb) return { hostname: nb, nameSource: 'netbios' }
     }
@@ -1994,8 +2285,11 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
     results = Array.from(byIp.values())
     if (results.length === 0) return results
 
-    // Phase 4: SSDP discovery (UPnP devices often expose friendlyName/manufacturer)
-    const ssdpByIp = await withTimeout(collectSsdpInfo(baseIP, rangeStart, rangeEnd), 4200, {})
+    // Phase 4: Discovery intel (cached across scanner batch calls on same subnet)
+    const [ssdpByIp, mdnsByIp] = await Promise.all([
+        withTimeout(collectSsdpInfoCached(baseIP, rangeStart, rangeEnd), 4300, {}),
+        withTimeout(collectMdnsInfoCached(baseIP, rangeStart, rangeEnd), 2400, {}),
+    ])
 
     // Phase 5: Parallel name resolution + vendor lookup (concurrency = 8)
     await parallelMap(results, async (r) => {
@@ -2009,7 +2303,12 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
 
         // Hostname resolution
         const ssdp = ssdpByIp[r.ip]
-        let { hostname, nameSource } = await resolveHostname(r.ip)
+        const mdns = mdnsByIp[r.ip]
+        let { hostname, nameSource } = await resolveHostname(r.ip, { allowHeavy: false })
+        if (!hostname && mdns?.hostname) {
+            hostname = mdns.hostname
+            nameSource = 'mdns'
+        }
         if (!hostname && ssdp?.friendlyName) {
             hostname = ssdp.friendlyName
             nameSource = 'ssdp'
@@ -2043,6 +2342,62 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
     })
 
     return results
+})
+
+ipcMain.handle('lan-scan-enrich', async (_, payload = {}) => {
+    const items = Array.isArray(payload?.devices) ? payload.devices : []
+    if (!items.length) return []
+
+    const enriched = await parallelMap(items, async (item) => {
+        const ip = String(item?.ip || '').trim()
+        if (!ip) return null
+
+        const existingHost = normalizeResolvedHost(item?.hostname)
+        const hasHostname = !!existingHost
+        const isRandomized = !!item?.isRandomized
+        const macEmpty = !!item?.macEmpty
+        const isLocal = !!item?.isLocal
+        let hostname = null
+        let nameSource = null
+        let vendor = null
+        let vendorSource = null
+
+        // Heavy host naming fallback only on Windows and only when still unnamed.
+        if (!hasHostname && process.platform === 'win32') {
+            const pingName = normalizeResolvedHost(await withTimeout(pingResolveName(ip), 2200))
+            if (pingName) {
+                hostname = pingName
+                nameSource = 'ptr'
+            } else {
+                const nb = normalizeResolvedHost(await withTimeout(netbiosLookup(ip), 3400))
+                if (nb) {
+                    hostname = nb
+                    nameSource = 'netbios'
+                }
+            }
+        }
+
+        // Retry vendor fallback for unknown devices (skip randomized/private MACs).
+        if (!item?.vendor && item?.mac && !isRandomized && !macEmpty) {
+            const vendorResolved = await resolveVendor(item.mac, false)
+            if (vendorResolved?.vendor) {
+                vendor = vendorResolved.vendor
+                vendorSource = vendorResolved.vendorSource
+            }
+        }
+
+        if (!hostname && !vendor) return null
+        return {
+            ip,
+            hostname,
+            nameSource,
+            vendor,
+            vendorSource,
+            displayName: hostname || vendor || (isLocal ? os.hostname() : null),
+        }
+    }, 6)
+
+    return enriched.filter(Boolean)
 })
 
 ipcMain.handle('lan-upnp-scan', async (_, baseIP, rangeStart, rangeEnd) => {

@@ -121,6 +121,7 @@ export default function Scanner() {
     const [inputError, setInputError] = useState(null)
     const detailScrollRef = useRef(null)
     const prevDetailLoadingRef = useRef(false)
+    const scanRunRef = useRef(0)
 
     useEffect(() => {
         bridge.getNetworkInterfaces().then(ifaces => {
@@ -152,9 +153,75 @@ export default function Scanner() {
         setInputError(null)
         return validated
     }
+
+    function enrichForView(device) {
+        const cls = classifyDevice(device)
+        return {
+            ...device,
+            deviceType: cls.type,
+            devColor: cls.color,
+            DevIcon: cls.Icon,
+        }
+    }
+
+    async function enrichUnknownDevices(seedDevices, scanId) {
+        const candidates = (seedDevices || [])
+            .filter(d => d && d.ip && !d.isLocal && (!d.hostname || (!d.vendor && !d.isGateway)))
+            .map(d => ({
+                ip: d.ip,
+                hostname: d.hostname || null,
+                nameSource: d.nameSource || 'unknown',
+                vendor: d.vendor || null,
+                vendorSource: d.vendorSource || 'unknown',
+                mac: d.mac || null,
+                isLocal: !!d.isLocal,
+                isGateway: !!d.isGateway,
+                isRandomized: !!d.isRandomized,
+                macEmpty: !!d.macEmpty,
+            }))
+
+        if (!candidates.length) return
+
+        try {
+            const updates = await bridge.lanScanEnrich({ devices: candidates })
+            if (scanRunRef.current !== scanId || !Array.isArray(updates) || updates.length === 0) return
+
+            const byIp = new Map(updates.map(row => [row.ip, row]))
+            setDevices(prev => prev.map(device => {
+                const update = byIp.get(device.ip)
+                if (!update) return device
+                return enrichForView({
+                    ...device,
+                    ...update,
+                    hostname: update.hostname || device.hostname || null,
+                    nameSource: update.nameSource || device.nameSource || 'unknown',
+                    vendor: update.vendor || device.vendor || null,
+                    vendorSource: update.vendorSource || device.vendorSource || 'unknown',
+                })
+            }))
+            setSelected(prev => {
+                if (!prev) return prev
+                const update = byIp.get(prev.ip)
+                if (!update) return prev
+                return enrichForView({
+                    ...prev,
+                    ...update,
+                    hostname: update.hostname || prev.hostname || null,
+                    nameSource: update.nameSource || prev.nameSource || 'unknown',
+                    vendor: update.vendor || prev.vendor || null,
+                    vendorSource: update.vendorSource || prev.vendorSource || 'unknown',
+                })
+            })
+        } catch {
+            // Background enrichment is best-effort and should never block scanner UX.
+        }
+    }
+
     async function startScan() {
         const validated = validateInputs()
         if (!validated) return
+        const scanId = scanRunRef.current + 1
+        scanRunRef.current = scanId
         const safeBaseIP = validated.baseIP
         const safeRangeStart = validated.start
         const safeRangeEnd = validated.end
@@ -166,22 +233,17 @@ export default function Scanner() {
         for (let s = safeRangeStart; s <= safeRangeEnd; s += BATCH) {
             const e = Math.min(s + BATCH - 1, safeRangeEnd)
             const results = await bridge.lanScan(safeBaseIP, s, e)
+            if (scanRunRef.current !== scanId) return
             if (results) {
-                const enriched = results.map(r => {
-                    const cls = classifyDevice(r)
-                    return {
-                        ...r,
-                        deviceType: cls.type,
-                        devColor: cls.color,
-                        DevIcon: cls.Icon,
-                    }
-                })
+                const enriched = results.map(r => enrichForView(r))
                 found.push(...enriched); setDevices([...found])
             }
             setProgress(Math.round(((e - safeRangeStart + 1) / total) * 100))
         }
+        if (scanRunRef.current !== scanId) return
         setScanning(false)
         bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: `${safeBaseIP}.0/24`, results: { found: found.length } })
+        void enrichUnknownDevices(found, scanId)
     }
     async function openDetail(device) {
         setSelected(device); setDetailLoading(true); setDetailData(null)

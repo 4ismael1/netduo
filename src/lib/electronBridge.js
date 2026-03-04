@@ -245,6 +245,24 @@ const bridge = {
                 ].filter(d => { const l = parseInt(d.ip.split('.').pop()); return l >= start && l <= end })
                 r(devices)
             }, 2000 + Math.random() * 1000)),
+    lanScanEnrich: (payload) =>
+        API?.lanScanEnrich
+            ? API.lanScanEnrich(payload)
+            : new Promise(resolve => {
+                const rows = Array.isArray(payload?.devices) ? payload.devices : []
+                const updates = rows
+                    .filter(d => d && d.ip && (!d.hostname || !d.vendor))
+                    .map(d => ({
+                        ip: d.ip,
+                        hostname: d.hostname || (Math.random() > 0.65 ? `host-${d.ip.split('.').pop()}` : null),
+                        nameSource: d.hostname ? d.nameSource || null : 'mdns',
+                        vendor: d.vendor || null,
+                        vendorSource: d.vendor ? d.vendorSource || null : null,
+                        displayName: d.hostname || d.vendor || null,
+                    }))
+                    .filter(u => u.hostname || u.vendor)
+                setTimeout(() => resolve(updates), 700 + Math.random() * 600)
+            }),
     lanUpnpScan: (base, start, end) =>
         API ? API.lanUpnpScan(base, start, end)
             : new Promise(r => setTimeout(() => r({
