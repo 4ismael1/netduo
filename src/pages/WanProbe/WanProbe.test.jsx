@@ -34,7 +34,10 @@ vi.mock('../../lib/electronBridge', () => ({
     default: {
         configGet: vi.fn(),
         configSet: vi.fn(),
+        wanProbeConfigGet: vi.fn(),
+        wanProbeConfigSet: vi.fn(),
         wanProbeRequest: vi.fn(),
+        openExternal: vi.fn(() => Promise.resolve({ ok: true })),
     },
 }))
 
@@ -107,6 +110,8 @@ function setupWanProbeMocks({
         wanProbeUdpRangeTo: '',
     }
 
+    bridge.wanProbeConfigGet.mockResolvedValue(configMap)
+    bridge.wanProbeConfigSet.mockResolvedValue(true)
     bridge.configGet.mockImplementation(key => Promise.resolve(configMap[key] ?? null))
     bridge.configSet.mockResolvedValue(true)
 

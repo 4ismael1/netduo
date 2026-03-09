@@ -122,20 +122,25 @@
     text-align: right;
     min-height: 34px;
     display: inline-flex;
-    align-items: flex-end;
+    align-items: baseline;
+    gap: 4px;
 }
 .ping-val {
-    font-size: 28px;
+    font-size: clamp(20px, 1.8vw, 24px);
     font-weight: 700;
     line-height: 1;
     letter-spacing: -0.04em;
     color: var(--text-primary);
+    min-width: 2ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 .ping-unit {
     font-size: 12px;
     font-weight: 500;
     color: var(--text-muted);
-    margin-left: 3px;
+    margin-left: 0;
+    line-height: 1.15;
 }
 
 /* ── Stat Tiles ── */
@@ -611,10 +616,6 @@
 
 .dash-skeleton {
     animation: sk-fade-in 200ms ease-out;
-}
-
-.dash.dash-ready {
-    animation: fade-in-up 280ms ease-out;
 }
 
 .sk-banner {

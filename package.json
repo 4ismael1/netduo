@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
@@ -32,6 +33,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/coverage-v8": "^4.0.18",
     "concurrently": "^9.2.1",
     "electron": "^40.6.1",
     "electron-builder": "^26.8.1",
@@ -63,5 +65,8 @@
       "installerIcon": "electron/assets/icon.ico",
       "uninstallerIcon": "electron/assets/icon.ico"
     }
+  },
+  "overrides": {
+    "tar": "7.5.10"
   }
 }

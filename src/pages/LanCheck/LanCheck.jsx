@@ -29,6 +29,7 @@ import {
     XCircle,
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
 import './LanCheck.css'
 
@@ -339,8 +340,12 @@ export default function LanCheck() {
             if (typeof saved.baseIP === 'string' && !autoBaseResolvedRef.current) setBaseIP(saved.baseIP)
             if (Number.isInteger(saved.rangeStart)) setRangeStart(saved.rangeStart)
             if (Number.isInteger(saved.rangeEnd)) setRangeEnd(saved.rangeEnd)
-        }).catch(() => {})
-        loadHistory().catch(() => {})
+        }).catch(error => {
+            logBridgeWarning('lancheck:settings-bootstrap', error)
+        })
+        loadHistory().catch(error => {
+            logBridgeWarning('lancheck:history-load', error)
+        })
     }, [])
 
     useEffect(() => {
@@ -359,9 +364,19 @@ export default function LanCheck() {
             }
         }
 
-        syncAutoBaseIP().catch(() => {})
-        const offChanged = bridge.onNetworkChanged?.(() => { syncAutoBaseIP().catch(() => {}) })
-        const onOnline = () => { syncAutoBaseIP().catch(() => {}) }
+        syncAutoBaseIP().catch(error => {
+            logBridgeWarning('lancheck:auto-base-init', error)
+        })
+        const offChanged = bridge.onNetworkChanged?.(() => {
+            syncAutoBaseIP().catch(error => {
+                logBridgeWarning('lancheck:auto-base-network-change', error)
+            })
+        })
+        const onOnline = () => {
+            syncAutoBaseIP().catch(error => {
+                logBridgeWarning('lancheck:auto-base-online', error)
+            })
+        }
         window.addEventListener('online', onOnline)
 
         return () => {
@@ -738,7 +753,9 @@ export default function LanCheck() {
             baseIP: safeBase,
             rangeStart: start,
             rangeEnd: end,
-        }).catch(() => {})
+        }).catch(error => {
+            logBridgeWarning('lancheck:settings-persist', error)
+        })
         pushActivity(`LAN check initialized for ${safeBase}.${start}-${end}`, 'info')
         try {
             let discoveredHosts = []

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import bridge from './electronBridge'
+import { logBridgeWarning } from './devLog.js'
 
 /**
  * useNetworkStatus — centralized Context-based hook that tracks the live
@@ -19,6 +20,14 @@ const WIFI_NAME_RE = /(wi-?fi|wlan|wireless|802\.11)/i
 const ETHERNET_NAME_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|intel\(r\).*ethernet|gigabit)/i
 const VPN_NAME_RE = /(vpn|openvpn|wireguard|wg\d+|wintun|nordlynx|tailscale|zerotier|hamachi|ppp|utun\d*|tun\d*|tap\d*|ikev2|l2tp|sstp|pptp)/i
 const VIRTUAL_NAME_RE = /(virtual|vmware|vethernet|hyper-v|loopback|bluetooth|hamachi|zerotier|tailscale|wireguard|wintun|tun|tap)/i
+const DEFAULT_FAST_POLL_MS = 5000
+const DEFAULT_SLOW_POLL_MS = 60000
+
+function normalizePollIntervalMs(rawValue) {
+    const seconds = Number.parseInt(String(rawValue ?? ''), 10)
+    if (!Number.isInteger(seconds)) return DEFAULT_FAST_POLL_MS
+    return Math.max(1, Math.min(seconds, 60)) * 1000
+}
 
 function inferLinkType(iface = {}) {
     const name = String(iface?.name || '')
@@ -69,6 +78,7 @@ export function NetworkStatusProvider({ children }) {
     const [isVpn, setIsVpn] = useState(false)
     const [vpnStatus, setVpnStatus] = useState(null)
     const [loading, setLoading] = useState(true)
+    const [fastPollMs, setFastPollMs] = useState(DEFAULT_FAST_POLL_MS)
     const mountedRef = useRef(true)
     const wifiRef = useRef(null)
     const publicIPRef = useRef(null)
@@ -197,6 +207,15 @@ export function NetworkStatusProvider({ children }) {
         mountedRef.current = true
         fetchAll({ skipWifi: false, skipGeo: false })
 
+        bridge.configGet('pollInterval').then(value => {
+            if (!mountedRef.current) return
+            setFastPollMs(normalizePollIntervalMs(value))
+        }).catch(error => {
+            logBridgeWarning('network-status:poll-interval-load', error)
+            if (!mountedRef.current) return
+            setFastPollMs(DEFAULT_FAST_POLL_MS)
+        })
+
         // Listen for network changes from Electron
         const offChanged = bridge.onNetworkChanged(() => {
             if (!mountedRef.current) return
@@ -208,15 +227,20 @@ export function NetworkStatusProvider({ children }) {
             setWifi(prev => prev ? { ...prev, signal: data.signal } : prev)
         })
 
+        const offConfigChanged = bridge.onConfigChanged?.(({ key, value, deleted }) => {
+            if (!mountedRef.current || key !== 'pollInterval') return
+            setFastPollMs(deleted ? DEFAULT_FAST_POLL_MS : normalizePollIntervalMs(value))
+        })
+
         // Keep Ethernet/Wi-Fi status fresh even if no WLAN event is emitted.
         const fastPoll = setInterval(() => {
             fetchAll({ skipWifi: true, skipGeo: true })
-        }, 5000)
+        }, fastPollMs)
 
         // Refresh public internet identity periodically.
         const slowPoll = setInterval(() => {
             fetchAll({ skipWifi: false, skipGeo: false })
-        }, 60000)
+        }, DEFAULT_SLOW_POLL_MS)
 
         const onOnline = () => fetchAll({ skipWifi: false, skipGeo: true })
         const onOffline = () => fetchAll({ skipWifi: false, skipGeo: true })
@@ -227,13 +251,14 @@ export function NetworkStatusProvider({ children }) {
             mountedRef.current = false
             if (typeof offChanged === 'function') offChanged()
             if (typeof offSignal === 'function') offSignal()
+            if (typeof offConfigChanged === 'function') offConfigChanged()
             bridge.offNetworkEvents?.()
             clearInterval(fastPoll)
             clearInterval(slowPoll)
             window.removeEventListener('online', onOnline)
             window.removeEventListener('offline', onOffline)
         }
-    }, [fetchAll])
+    }, [fastPollMs, fetchAll])
 
     const value = {
         wifi, interfaces, localIP, gateway, ifaceName,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { History as HistoryIcon, Trash2, RefreshCw, Clock, Activity, Gauge, Radar, Wrench, Network, ChevronLeft, ChevronRight } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 
 const MODULE_META = {
     Dashboard: { color: 'var(--color-accent)', Icon: Activity },
@@ -21,7 +22,13 @@ export default function History() {
     const [page, setPage] = useState(0)
 
     useEffect(() => {
-        bridge.historyGet().then(h => { setHistory(h || []); setLoading(false) }).catch(e => { console.warn(e); setLoading(false) })
+        bridge.historyGet().then(h => {
+            setHistory(h || [])
+            setLoading(false)
+        }).catch(error => {
+            logBridgeWarning('history:load', error)
+            setLoading(false)
+        })
     }, [])
 
     const modules = ['All', ...new Set(history.map(h => h.module).filter(Boolean))]
@@ -38,14 +45,24 @@ export default function History() {
     }
 
     async function clearAll() {
-        const h = await bridge.historyClear()
-        setHistory(h || [])
+        try {
+            const h = await bridge.historyClear()
+            setHistory(h || [])
+        } catch (error) {
+            logBridgeWarning('history:clear', error)
+            setHistory([])
+        }
     }
     async function refresh() {
         setLoading(true)
-        const h = await bridge.historyGet()
-        setHistory(h || [])
-        setLoading(false)
+        try {
+            const h = await bridge.historyGet()
+            setHistory(h || [])
+        } catch (error) {
+            logBridgeWarning('history:refresh', error)
+        } finally {
+            setLoading(false)
+        }
     }
 
     return (

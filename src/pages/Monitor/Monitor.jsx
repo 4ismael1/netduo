@@ -5,6 +5,7 @@ import {
     CartesianGrid, Legend, ReferenceLine
 } from 'recharts'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import { normalizeTargetInput, isValidTarget } from '../../lib/validation'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import './Monitor.css'
@@ -51,23 +52,94 @@ export default function Monitor() {
     const [stats, setStats] = useState({})
     const [interval, setIntervalMs] = useState(2000)
     const [inputError, setInputError] = useState(null)
+    const [alertThreshold, setAlertThreshold] = useState(200)
+    const [notificationsEnabled, setNotificationsEnabled] = useState(true)
     const intervalRef = useRef(null)
     const hostsRef = useRef(hosts)
+    const alertedHostsRef = useRef(new Set())
 
     // Keep ref in sync so the interval callback always sees current hosts
     useEffect(() => { hostsRef.current = hosts }, [hosts])
     useEffect(() => () => clearInterval(intervalRef.current), [])
 
+    useEffect(() => {
+        let mounted = true
+
+        bridge.configGetPublic(['latencyThreshold', 'notifications']).then(cfg => {
+            if (!mounted || !cfg) return
+            if (cfg.latencyThreshold !== undefined) {
+                const value = Number.parseInt(String(cfg.latencyThreshold), 10)
+                if (Number.isInteger(value) && value > 0) setAlertThreshold(value)
+            }
+            if (cfg.notifications !== undefined) setNotificationsEnabled(Boolean(cfg.notifications))
+        }).catch(error => {
+            logBridgeWarning('monitor:bootstrap', error)
+        })
+
+        const offConfigChanged = bridge.onConfigChanged?.(({ key, value, deleted }) => {
+            if (key === 'latencyThreshold') {
+                if (deleted) {
+                    setAlertThreshold(200)
+                    alertedHostsRef.current.clear()
+                    return
+                }
+                const parsed = Number.parseInt(String(value), 10)
+                if (Number.isInteger(parsed) && parsed > 0) setAlertThreshold(parsed)
+            }
+            if (key === 'notifications') {
+                setNotificationsEnabled(!deleted && Boolean(value))
+            }
+        })
+
+        return () => {
+            mounted = false
+            if (typeof offConfigChanged === 'function') offConfigChanged()
+        }
+    }, [])
+
+    function sendLatencyNotification(host, latency) {
+        if (!notificationsEnabled || typeof Notification === 'undefined') return
+        if (Notification.permission === 'granted') {
+            new Notification('NetDuo latency alert', {
+                body: `${host} reached ${latency} ms (threshold: ${alertThreshold} ms).`,
+                silent: false,
+            })
+            return
+        }
+        if (Notification.permission !== 'default') return
+        Notification.requestPermission().then(permission => {
+            if (permission !== 'granted') return
+            new Notification('NetDuo latency alert', {
+                body: `${host} reached ${latency} ms (threshold: ${alertThreshold} ms).`,
+                silent: false,
+            })
+        }).catch(error => {
+            logBridgeWarning('monitor:notification-permission', error)
+        })
+    }
+
     function startMonitor() {
         setRunning(true)
         setData([])
         setStats({})
+        alertedHostsRef.current.clear()
         const tick = async () => {
             try {
                 const results = {}
                 for (const h of hostsRef.current) {
                     const r = await bridge.pingSingle(h)
                     results[h] = r?.time ?? null
+                }
+                for (const h of hostsRef.current) {
+                    const latency = results[h]
+                    const isBreached = latency != null && latency >= alertThreshold
+                    const wasBreached = alertedHostsRef.current.has(h)
+                    if (isBreached && !wasBreached) {
+                        alertedHostsRef.current.add(h)
+                        sendLatencyNotification(h, latency)
+                    } else if (!isBreached && wasBreached) {
+                        alertedHostsRef.current.delete(h)
+                    }
                 }
                 const t = new Date().toLocaleTimeString('en-US', { hour12: false })
                 setData(prev => [...prev, { t, ...results }].slice(-MAX_PTS))
@@ -91,6 +163,7 @@ export default function Monitor() {
 
     function stopMonitor() {
         clearInterval(intervalRef.current)
+        alertedHostsRef.current.clear()
         setRunning(false)
     }
 
@@ -195,8 +268,9 @@ export default function Monitor() {
                     const loss = s?.count ? ((s.loss / s.count) * 100).toFixed(0) : '0'
                     const avg = s?.count - s?.loss ? (s.total / (s.count - s.loss)).toFixed(0) : null
                     const lossColor = parseInt(loss) > 10 ? 'var(--color-danger)' : parseInt(loss) > 0 ? 'var(--color-warning)' : 'var(--color-success)'
+                    const isThresholdBreached = s?.last != null && s.last >= alertThreshold
                     return (
-                        <div className="v3-card" key={h} style={{ borderTop: `3px solid ${COLORS[i]}`, position: 'relative', overflow: 'hidden' }}>
+                        <div className="v3-card" key={h} style={{ borderTop: `3px solid ${COLORS[i]}`, position: 'relative', overflow: 'hidden', boxShadow: isThresholdBreached ? '0 0 0 1px rgba(239,68,68,0.35), 0 12px 28px rgba(239,68,68,0.12)' : undefined }}>
                             <div style={{ position: 'absolute', top: 0, right: 0, width: 80, height: 80, background: COLORS[i] + '10', borderRadius: '0 0 0 60px' }} />
                             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                                 {(() => { const Icon = hostIcon(h); return <Icon size={14} style={{ color: COLORS[i] }} /> })()}
@@ -207,6 +281,11 @@ export default function Monitor() {
                             <div style={{ fontSize: 32, fontWeight: 700, fontFamily: 'var(--font-mono)', color: s?.last != null ? COLORS[i] : 'var(--text-muted)', marginBottom: 16 }}>
                                 {s?.last != null ? `${s.last}` : '—'}<span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-muted)', marginLeft: 4 }}>ms</span>
                             </div>
+                            {isThresholdBreached && (
+                                <div style={{ marginBottom: 12, color: 'var(--color-danger)', fontSize: 12, fontWeight: 700 }}>
+                                    Above configured alert threshold ({alertThreshold} ms)
+                                </div>
+                            )}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, fontSize: 12 }}>
                                 <div>
                                     <div style={{ color: 'var(--text-muted)', marginBottom: 4, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Min</div>
@@ -248,6 +327,12 @@ export default function Monitor() {
                             <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: 'var(--font-mono)' }} unit="ms" axisLine={false} tickLine={false} />
                             <Tooltip content={<MonitorTooltip />} />
                             <Legend wrapperStyle={{ fontSize: 13, paddingTop: 16 }} />
+                            <ReferenceLine
+                                y={alertThreshold}
+                                stroke="var(--color-danger)"
+                                strokeDasharray="6 6"
+                                label={{ value: `Alert ${alertThreshold} ms`, fill: 'var(--color-danger)', fontSize: 11 }}
+                            />
                             {hosts.map((h, i) => (
                                 <Line key={h} type="monotone" dataKey={h} stroke={COLORS[i]}
                                     strokeWidth={3} dot={false} isAnimationActive={false}

@@ -28,6 +28,76 @@ function mockPingResult(host) {
 }
 
 const API = window.electronAPI
+const CONFIG_CHANGE_EVENT = 'netduo:config-changed'
+const DEFAULT_PUBLIC_CONFIG_KEYS = ['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold', 'lancheck.settings']
+const SENSITIVE_CONFIG_KEYS = new Set(['wanProbeKey', 'wanProbePool'])
+const WAN_PROBE_CONFIG_KEYS = [
+    'wanProbePool',
+    'wanProbeUrl',
+    'wanProbeKey',
+    'wanProbeConnected',
+    'wanProbeInfo',
+    'wanProbeMode',
+    'wanProbeScope',
+    'wanProbeProfile',
+    'wanProbeTransport',
+    'wanProbeUseCustomTarget',
+    'wanProbeTarget',
+    'wanProbeCustomPorts',
+    'wanProbeUsePortRange',
+    'wanProbeRangeFrom',
+    'wanProbeRangeTo',
+    'wanProbeCustomUdpPorts',
+    'wanProbeUseUdpPortRange',
+    'wanProbeUdpRangeFrom',
+    'wanProbeUdpRangeTo',
+]
+
+function emitConfigChanged(detail) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+    window.dispatchEvent(new CustomEvent(CONFIG_CHANGE_EVENT, { detail }))
+}
+
+function isSensitiveConfigKey(key) {
+    return SENSITIVE_CONFIG_KEYS.has(String(key || '').trim())
+}
+
+function normalizeRequestedConfigKeys(keys, fallbackKeys = DEFAULT_PUBLIC_CONFIG_KEYS) {
+    if (!Array.isArray(keys) || !keys.length) return fallbackKeys
+    return Array.from(new Set(
+        keys
+            .map(key => String(key || '').trim())
+            .filter(Boolean)
+    ))
+}
+
+function readFallbackConfig(keys = DEFAULT_PUBLIC_CONFIG_KEYS) {
+    const output = {}
+    for (const key of normalizeRequestedConfigKeys(keys)) {
+        const raw = localStorage.getItem(`netpulse_cfg_${key}`)
+        if (raw == null) continue
+        try {
+            output[key] = JSON.parse(raw)
+        } catch {
+            output[key] = raw
+        }
+    }
+    return output
+}
+
+function readFallbackPublicConfig(keys = DEFAULT_PUBLIC_CONFIG_KEYS) {
+    return readFallbackConfig(
+        normalizeRequestedConfigKeys(keys).filter(key => !isSensitiveConfigKey(key))
+    )
+}
+
+function writeFallbackConfigEntries(payload, keys) {
+    for (const key of normalizeRequestedConfigKeys(keys, [])) {
+        if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+        localStorage.setItem(`netpulse_cfg_${key}`, JSON.stringify(payload[key]))
+        emitConfigChanged({ key, value: payload[key], deleted: false })
+    }
+}
 
 const bridge = {
     isElectron: !!API,
@@ -96,6 +166,7 @@ const bridge = {
     // Streaming â€” traceroute (Electron uses events, browser uses mock timer)
     startTraceroute: (host, onHop, onDone) => {
         if (API) {
+            API.stopTraceroute?.()
             API.offTraceroute()
             API.onTracerouteHop(onHop)
             API.onTracerouteDone(onDone)
@@ -123,11 +194,21 @@ const bridge = {
             setTimeout(tick, 300)
         }
     },
-    offTraceroute: () => API?.offTraceroute(),
+    onConfigChanged: (callback) => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return () => {}
+        const handler = event => callback(event?.detail || {})
+        window.addEventListener(CONFIG_CHANGE_EVENT, handler)
+        return () => window.removeEventListener(CONFIG_CHANGE_EVENT, handler)
+    },
+    offTraceroute: () => {
+        API?.stopTraceroute?.()
+        API?.offTraceroute?.()
+    },
 
     // Streaming â€” live ping
     startPingLive: (host, count, onReply, onDone) => {
         if (API) {
+            API.stopPingLive?.()
             API.offPingLive()
             API.onPingReply(onReply)
             API.onPingDone(onDone)
@@ -145,7 +226,10 @@ const bridge = {
             setTimeout(tick, 200)
         }
     },
-    offPingLive: () => API?.offPingLive(),
+    offPingLive: () => {
+        API?.stopPingLive?.()
+        API?.offPingLive?.()
+    },
 
     // Streaming â€” MTR
     startMtr: (host, interval, onHops, onUpdate, onSession) => {
@@ -413,6 +497,7 @@ const bridge = {
     },
     historyClear: () => {
         if (API) return API.historyClear()
+        localStorage.removeItem('netduo_history')
         localStorage.removeItem('netpulse_history')
         return Promise.resolve([])
     },
@@ -472,20 +557,48 @@ const bridge = {
     },
 
     // Config (key/value persistence â€” SQLite backed)
-    configGet: key =>
-        API?.configGet ? API.configGet(key)
-            : Promise.resolve(JSON.parse(localStorage.getItem(`netpulse_cfg_${key}`) || 'null')),
+    configGet: key => {
+        if (isSensitiveConfigKey(key)) return Promise.resolve(null)
+        return API?.configGet ? API.configGet(key)
+            : Promise.resolve(JSON.parse(localStorage.getItem(`netpulse_cfg_${key}`) || 'null'))
+    },
     configSet: (key, value) => {
-        if (API?.configSet) return API.configSet(key, value)
+        if (isSensitiveConfigKey(key)) return Promise.resolve(false)
+        if (API?.configSet) {
+            return Promise.resolve(API.configSet(key, value)).then(result => {
+                emitConfigChanged({ key, value, deleted: false })
+                return result
+            })
+        }
         localStorage.setItem(`netpulse_cfg_${key}`, JSON.stringify(value))
+        emitConfigChanged({ key, value, deleted: false })
         return Promise.resolve(true)
     },
-    configGetAll: () =>
-        API?.configGetAll ? API.configGetAll()
-            : Promise.resolve({}),
+    configGetAll: keys =>
+        API?.configGetAll ? API.configGetAll(keys)
+            : Promise.resolve(readFallbackPublicConfig(keys)),
+    configGetPublic: keys =>
+        API?.configGetAll ? API.configGetAll(keys)
+            : Promise.resolve(readFallbackPublicConfig(keys)),
     configDelete: key => {
-        if (API?.configDelete) return API.configDelete(key)
+        if (isSensitiveConfigKey(key)) return Promise.resolve(false)
+        if (API?.configDelete) {
+            return Promise.resolve(API.configDelete(key)).then(result => {
+                emitConfigChanged({ key, value: null, deleted: true })
+                return result
+            })
+        }
         localStorage.removeItem(`netpulse_cfg_${key}`)
+        emitConfigChanged({ key, value: null, deleted: true })
+        return Promise.resolve(true)
+    },
+    wanProbeConfigGet: () => {
+        if (API?.wanProbeConfigGet) return API.wanProbeConfigGet()
+        return Promise.resolve(readFallbackConfig(WAN_PROBE_CONFIG_KEYS))
+    },
+    wanProbeConfigSet: payload => {
+        if (API?.wanProbeConfigSet) return API.wanProbeConfigSet(payload)
+        writeFallbackConfigEntries(payload || {}, WAN_PROBE_CONFIG_KEYS)
         return Promise.resolve(true)
     },
 

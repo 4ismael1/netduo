@@ -7,6 +7,7 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 export default defineConfig([
   globalIgnores([
     'dist',
+    'coverage',
     'node_modules',
     'services/netduo-wan-probe/dist/**',
     'services/netduo-wan-probe/coverage/**',

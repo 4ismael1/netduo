@@ -104,7 +104,9 @@ function showBootErrorPage(win, title, details) {
     if (!win || win.isDestroyed()) return
     const html = renderBootErrorHtml(title, details)
     const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-    win.loadURL(dataUrl).catch(() => {})
+    win.loadURL(dataUrl).catch((error) => {
+        appendStartupLog(`Failed to show boot error page: ${error?.message || String(error)}`)
+    })
     if (!win.isVisible()) win.show()
 }
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -124,6 +126,26 @@ function parseJsonSafe(text, fallback) {
     } catch {
         return fallback
     }
+}
+
+function replaceDisallowedAscii(text) {
+    let output = ''
+    for (const char of String(text || '')) {
+        const code = char.charCodeAt(0)
+        const allowed = code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126)
+        output += allowed ? char : ' '
+    }
+    return output
+}
+
+function stripControlChars(text) {
+    let output = ''
+    for (const char of String(text || '')) {
+        const code = char.charCodeAt(0)
+        if (code === 127 || code < 32) continue
+        output += char
+    }
+    return output
 }
 
 async function getWindowsAdapterHints() {
@@ -511,6 +533,9 @@ function createWindow() {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+            webviewTag: false,
         },
     })
 
@@ -752,6 +777,7 @@ process.on('unhandledRejection', reason => {
 })
 app.on('window-all-closed', () => {
     stopNetworkWatcher()
+    stopAllTrackedProcesses()
     database.close()
     if (process.platform !== 'darwin') app.quit()
 })
@@ -1055,8 +1081,7 @@ async function tcpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
 }
 
 function cleanupBannerText(text) {
-    return String(text || '')
-        .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
+    return replaceDisallowedAscii(text)
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 180)
@@ -1806,8 +1831,8 @@ function normalizeMdnsCandidate(raw) {
     if (value.includes('._')) value = value.split('._')[0]
     value = value.replace(/\.local$/i, '').trim()
     if (!value || /^_/.test(value)) return null
-    // Remove control characters while keeping spaces for friendly names.
-    value = value.replace(/[\u0000-\u001f\u007f]+/g, '').trim()
+    // Remove control characters while keeping printable names intact.
+    value = stripControlChars(value).trim()
     if (!value) return null
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return null
     if (/^[0-9a-f]{12,}$/i.test(value)) return null
@@ -3259,17 +3284,78 @@ function isValidHostname(host) {
     )
 }
 
+const tracerouteProcesses = new Map()
+const pingLiveProcesses = new Map()
+const PROBE_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+const PROBE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+function stopTrackedProcess(processMap, senderId) {
+    const proc = processMap.get(senderId)
+    if (!proc) return
+    try {
+        proc.kill()
+    } catch {
+        // Child may already be gone.
+    }
+    processMap.delete(senderId)
+}
+
+function bindTrackedProcess(processMap, senderId, proc) {
+    stopTrackedProcess(processMap, senderId)
+    processMap.set(senderId, proc)
+    proc.once('close', () => {
+        if (processMap.get(senderId) === proc) processMap.delete(senderId)
+    })
+    proc.once('error', () => {
+        if (processMap.get(senderId) === proc) processMap.delete(senderId)
+    })
+}
+
+function stopAllTrackedProcesses() {
+    for (const senderId of [...tracerouteProcesses.keys()]) {
+        stopTrackedProcess(tracerouteProcesses, senderId)
+    }
+    for (const senderId of [...pingLiveProcesses.keys()]) {
+        stopTrackedProcess(pingLiveProcesses, senderId)
+    }
+}
+
+function sanitizeProbeHeaders(headers) {
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {}
+    const safeHeaders = {}
+    for (const [rawKey, rawValue] of Object.entries(headers)) {
+        const key = String(rawKey || '').trim()
+        if (!key || /[^A-Za-z0-9-]/.test(key)) continue
+        if (rawValue == null) continue
+        const value = Array.isArray(rawValue)
+            ? rawValue.map(item => String(item).replace(/[\r\n]+/g, ' ').trim()).join(', ')
+            : String(rawValue).replace(/[\r\n]+/g, ' ').trim()
+        if (!value) continue
+        safeHeaders[key] = value
+    }
+    return safeHeaders
+}
+
+function normalizeProbeRequestBody(body) {
+    if (body == null) return null
+    if (typeof body === 'string' || Buffer.isBuffer(body)) return body
+    if (typeof body === 'object') return JSON.stringify(body)
+    return String(body)
+}
+
 // ── Live Traceroute ───────────────────────────────────
 ipcMain.on('start-traceroute', (event, rawHost) => {
     const host = sanitizeHost(rawHost)
     if (!host) { event.sender.send('traceroute:done'); return }
     const isWin = process.platform === 'win32'
+    const senderId = event.sender.id
     // -4 forces IPv4 so we always get dotted IPs (systems with IPv6 default to v6)
     const cmd = isWin ? 'tracert' : 'traceroute'
     const args = isWin
         ? ['-4', '-d', '-h', '30', '-w', '2000', host]
         : ['-4', '-m', '30', '-n', '-q', '1', host]
     const proc = spawn(cmd, args, { shell: false, windowsHide: true })
+    bindTrackedProcess(tracerouteProcesses, senderId, proc)
     let buffer = ''
     const seenHops = new Set()
 
@@ -3332,6 +3418,11 @@ ipcMain.on('start-traceroute', (event, rawHost) => {
     proc.on('error', () => {
         if (!event.sender.isDestroyed()) event.sender.send('traceroute:done')
     })
+    event.sender.once('destroyed', () => stopTrackedProcess(tracerouteProcesses, senderId))
+})
+
+ipcMain.on('stop-traceroute', (event) => {
+    stopTrackedProcess(tracerouteProcesses, event.sender.id)
 })
 
 // ── Live Ping (per-packet) ────────────────────────────
@@ -3339,11 +3430,13 @@ ipcMain.on('start-ping-live', (event, rawHost, count = 10) => {
     const host = sanitizeHost(rawHost)
     if (!host) { event.sender.send('ping:done', { seqNum: 0 }); return }
     const isWin = process.platform === 'win32'
+    const senderId = event.sender.id
     const cmd = isWin ? 'ping' : 'ping'
     const args = isWin
         ? ['-4', '-n', String(count), host]
         : ['-c', String(count), host]
     const proc = spawn(cmd, args, { shell: false, windowsHide: true })
+    bindTrackedProcess(pingLiveProcesses, senderId, proc)
     let seqNum = 0
     let buffer = ''
 
@@ -3379,6 +3472,11 @@ ipcMain.on('start-ping-live', (event, rawHost, count = 10) => {
     proc.on('error', () => {
         if (!event.sender.isDestroyed()) event.sender.send('ping:done', { seqNum })
     })
+    event.sender.once('destroyed', () => stopTrackedProcess(pingLiveProcesses, senderId))
+})
+
+ipcMain.on('stop-ping-live', (event) => {
+    stopTrackedProcess(pingLiveProcesses, event.sender.id)
 })
 
 // ── MTR (live per-hop ping) ───────────────────────────
@@ -3494,21 +3592,101 @@ ipcMain.handle('lan-check-history-delete', (_, id) => database.lanCheckHistoryDe
 ipcMain.handle('lan-check-history-clear', () => database.lanCheckHistoryClear())
 
 // Config (key/value)
-ipcMain.handle('config-get', (_, key) => database.configGet(key))
-ipcMain.handle('config-set', (_, key, value) => { database.configSet(key, value); return true })
-ipcMain.handle('config-get-all', () => database.configGetAll())
-ipcMain.handle('config-delete', (_, key) => { database.configDelete(key); return true })
+const WAN_PROBE_CONFIG_KEYS = [
+    'wanProbePool',
+    'wanProbeUrl',
+    'wanProbeKey',
+    'wanProbeConnected',
+    'wanProbeInfo',
+    'wanProbeMode',
+    'wanProbeScope',
+    'wanProbeProfile',
+    'wanProbeTransport',
+    'wanProbeUseCustomTarget',
+    'wanProbeTarget',
+    'wanProbeCustomPorts',
+    'wanProbeUsePortRange',
+    'wanProbeRangeFrom',
+    'wanProbeRangeTo',
+    'wanProbeCustomUdpPorts',
+    'wanProbeUseUdpPortRange',
+    'wanProbeUdpRangeFrom',
+    'wanProbeUdpRangeTo',
+]
+
+function isSensitiveRendererConfigKey(key) {
+    return Boolean(database.isSensitiveConfigKey?.(key))
+}
+
+ipcMain.handle('config-get', (_, key) => {
+    if (isSensitiveRendererConfigKey(key)) return null
+    return database.configGet(key)
+})
+ipcMain.handle('config-set', (_, key, value) => {
+    if (isSensitiveRendererConfigKey(key)) return false
+    database.configSet(key, value)
+    return true
+})
+ipcMain.handle('config-get-all', (_, keys) => database.configGetPublic(keys))
+ipcMain.handle('config-delete', (_, key) => {
+    if (isSensitiveRendererConfigKey(key)) return false
+    database.configDelete(key)
+    return true
+})
+ipcMain.handle('wan-probe-config-get', () => {
+    const output = {}
+    for (const key of WAN_PROBE_CONFIG_KEYS) {
+        const value = database.configGet(key)
+        if (value !== null) output[key] = value
+    }
+    return output
+})
+ipcMain.handle('wan-probe-config-set', (_, payload = {}) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+    for (const key of WAN_PROBE_CONFIG_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+        database.configSet(key, payload[key])
+    }
+    return true
+})
 
 // ======================================================
 //   WAN PROBE - HTTP proxy for remote probe service
 // ======================================================
 ipcMain.handle('wan-probe-request', async (_, opts) => {
-    const { url, method = 'GET', headers = {}, body = null } = opts || {}
-    const isHttps = url.startsWith('https')
+    const url = typeof opts?.url === 'string' ? opts.url.trim() : ''
+    if (!url) return { error: 'Invalid URL' }
+
+    let parsed
+    try {
+        parsed = new URL(url)
+    } catch {
+        return { error: 'Invalid URL' }
+    }
+
+    const protocol = parsed.protocol.toLowerCase()
+    if (protocol !== 'http:' && protocol !== 'https:') {
+        return { error: 'Unsupported protocol' }
+    }
+
+    const method = String(opts?.method || 'GET').trim().toUpperCase()
+    if (!PROBE_HTTP_METHODS.has(method)) {
+        return { error: 'Unsupported HTTP method' }
+    }
+
+    const headers = sanitizeProbeHeaders(opts?.headers)
+    const body = normalizeProbeRequestBody(opts?.body)
+    const isHttps = protocol === 'https:'
+    const allowInsecure = opts?.allowInsecure !== false
     const lib = isHttps ? require('https') : require('http')
-    const parsed = new URL(url)
 
     return new Promise(resolve => {
+        let settled = false
+        const finish = (payload) => {
+            if (settled) return
+            settled = true
+            resolve(payload)
+        }
         const reqOpts = {
             hostname: parsed.hostname,
             port: parsed.port || (isHttps ? 443 : 80),
@@ -3516,21 +3694,29 @@ ipcMain.handle('wan-probe-request', async (_, opts) => {
             method,
             headers,
             timeout: 15000,
-            rejectUnauthorized: false, // probe may use self-signed cert
+            rejectUnauthorized: !allowInsecure,
         }
         const req = lib.request(reqOpts, res => {
             let data = ''
-            res.on('data', chunk => { data += chunk })
+            let size = 0
+            res.on('data', chunk => {
+                size += chunk.length
+                if (size > PROBE_MAX_RESPONSE_BYTES) {
+                    req.destroy(new Error('Response too large'))
+                    return
+                }
+                data += chunk.toString('utf8')
+            })
             res.on('end', () => {
                 try {
-                    resolve({ status: res.statusCode, statusText: res.statusMessage, data: JSON.parse(data) })
+                    finish({ status: res.statusCode, statusText: res.statusMessage, data: JSON.parse(data) })
                 } catch {
-                    resolve({ status: res.statusCode, statusText: res.statusMessage, data })
+                    finish({ status: res.statusCode, statusText: res.statusMessage, data })
                 }
             })
         })
-        req.on('error', err => resolve({ error: err.message }))
-        req.on('timeout', () => { req.destroy(); resolve({ error: 'Request timed out' }) })
+        req.on('error', err => finish({ error: err.message }))
+        req.on('timeout', () => { req.destroy(); finish({ error: 'Request timed out' }) })
         if (body) req.write(body)
         req.end()
     })

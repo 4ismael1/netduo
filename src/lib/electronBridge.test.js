@@ -304,4 +304,43 @@ describe('electronBridge history', () => {
         const h = await bridge.historyGet()
         expect(h.length).toBeLessThanOrEqual(200)
     })
+
+    it('clears stored history entries', async () => {
+        await bridge.historyAdd({ module: 'Test', type: 'Persisted', detail: 'clear-me', results: {} })
+        await bridge.historyClear()
+        const h = await bridge.historyGet()
+        expect(h).toEqual([])
+    })
+})
+
+describe('electronBridge config fallback boundaries', () => {
+    beforeEach(() => {
+        localStorage.clear()
+    })
+
+    it('does not expose sensitive keys through configGet', async () => {
+        localStorage.setItem('netpulse_cfg_wanProbeKey', JSON.stringify('secret-token'))
+
+        const value = await bridge.configGet('wanProbeKey')
+
+        expect(value).toBeNull()
+    })
+
+    it('does not expose sensitive keys through configGetAll', async () => {
+        localStorage.setItem('netpulse_cfg_theme', JSON.stringify('dark'))
+        localStorage.setItem('netpulse_cfg_wanProbePool', JSON.stringify([{ url: 'https://probe.example', apiKey: 'secret' }]))
+
+        const config = await bridge.configGetAll(['theme', 'wanProbePool'])
+
+        expect(config).toEqual({ theme: 'dark' })
+    })
+
+    it('keeps sensitive config available through wanProbeConfigGet', async () => {
+        const storedPool = [{ url: 'https://probe.example', apiKey: 'secret' }]
+        localStorage.setItem('netpulse_cfg_wanProbePool', JSON.stringify(storedPool))
+
+        const config = await bridge.wanProbeConfigGet()
+
+        expect(config.wanProbePool).toEqual(storedPool)
+    })
 })

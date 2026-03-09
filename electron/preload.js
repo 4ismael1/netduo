@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Streaming — traceroute
     startTraceroute: (host) => ipcRenderer.send('start-traceroute', host),
+    stopTraceroute: () => ipcRenderer.send('stop-traceroute'),
     onTracerouteHop: (cb) => ipcRenderer.on('traceroute:hop', (_, data) => cb(data)),
     onTracerouteDone: (cb) => ipcRenderer.once('traceroute:done', () => cb()),
     offTraceroute: () => {
@@ -34,6 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Streaming — live ping
     startPingLive: (host, count) => ipcRenderer.send('start-ping-live', host, count),
+    stopPingLive: () => ipcRenderer.send('stop-ping-live'),
     onPingReply: (cb) => ipcRenderer.on('ping:reply', (_, data) => cb(data)),
     onPingDone: (cb) => ipcRenderer.once('ping:done', (_, data) => cb(data)),
     offPingLive: () => {
@@ -110,8 +112,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Config (key/value persistence)
     configGet: (key) => ipcRenderer.invoke('config-get', key),
     configSet: (key, value) => ipcRenderer.invoke('config-set', key, value),
-    configGetAll: () => ipcRenderer.invoke('config-get-all'),
+    configGetAll: (keys) => ipcRenderer.invoke('config-get-all', keys),
     configDelete: (key) => ipcRenderer.invoke('config-delete', key),
+    wanProbeConfigGet: () => ipcRenderer.invoke('wan-probe-config-get'),
+    wanProbeConfigSet: (payload) => ipcRenderer.invoke('wan-probe-config-set', payload),
 
     // WAN Probe
     wanProbeRequest: (opts) => ipcRenderer.invoke('wan-probe-request', opts),

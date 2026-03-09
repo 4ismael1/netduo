@@ -34,6 +34,7 @@ import {
     Zap,
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import './WanProbe.css'
 
 const TOKEN_PREFIX = 'NDUO_PROBE_V1:'
@@ -1732,55 +1733,66 @@ export default function WanProbe() {
             : `${plannedPortCount} TCP ports`
     const runtimeTransport = resolveRuntimeTransport(scanTransport, effectiveScanMode)
     const scopeLabel = scanScope === 'custom' ? 'Custom' : `Preset - ${formatMode(scanMode)}`
+    const persistedWanProbeConfig = useMemo(() => ({
+        wanProbePool: serializeProbePool(probePool),
+        wanProbeMode: scanMode,
+        wanProbeScope: scanScope,
+        wanProbeProfile: scanProfile,
+        wanProbeTransport: scanTransport,
+        wanProbeUseCustomTarget: useCustomTarget,
+        wanProbeTarget: customTarget,
+        wanProbeCustomPorts: customPortsInput,
+        wanProbeUsePortRange: usePortRange,
+        wanProbeRangeFrom: rangeFrom,
+        wanProbeRangeTo: rangeTo,
+        wanProbeCustomUdpPorts: customUdpPortsInput,
+        wanProbeUseUdpPortRange: useUdpPortRange,
+        wanProbeUdpRangeFrom: udpRangeFrom,
+        wanProbeUdpRangeTo: udpRangeTo,
+    }), [
+        customPortsInput,
+        customTarget,
+        customUdpPortsInput,
+        probePool,
+        rangeFrom,
+        rangeTo,
+        scanMode,
+        scanProfile,
+        scanScope,
+        scanTransport,
+        udpRangeFrom,
+        udpRangeTo,
+        useCustomTarget,
+        usePortRange,
+        useUdpPortRange,
+    ])
 
 
     useEffect(() => {
         let mounted = true
 
-        Promise.all([
-            bridge.configGet('wanProbePool'),
-            bridge.configGet('wanProbeUrl'),
-            bridge.configGet('wanProbeKey'),
-            bridge.configGet('wanProbeConnected'),
-            bridge.configGet('wanProbeInfo'),
-            bridge.configGet('wanProbeMode'),
-            bridge.configGet('wanProbeScope'),
-            bridge.configGet('wanProbeProfile'),
-            bridge.configGet('wanProbeTransport'),
-            bridge.configGet('wanProbeUseCustomTarget'),
-            bridge.configGet('wanProbeTarget'),
-            bridge.configGet('wanProbeCustomPorts'),
-            bridge.configGet('wanProbeUsePortRange'),
-            bridge.configGet('wanProbeRangeFrom'),
-            bridge.configGet('wanProbeRangeTo'),
-            bridge.configGet('wanProbeCustomUdpPorts'),
-            bridge.configGet('wanProbeUseUdpPortRange'),
-            bridge.configGet('wanProbeUdpRangeFrom'),
-            bridge.configGet('wanProbeUdpRangeTo'),
-        ]).then(values => {
+        bridge.wanProbeConfigGet().then(savedConfig => {
             if (!mounted) return
 
-            const [
-                savedPool,
-                legacyUrl,
-                legacyKey,
-                legacyConnected,
-                legacyInfo,
-                savedMode,
-                savedScope,
-                savedProfile,
-                savedTransport,
-                savedUseCustom,
-                savedTarget,
-                savedPorts,
-                savedUsePortRange,
-                savedRangeFrom,
-                savedRangeTo,
-                savedUdpPorts,
-                savedUseUdpPortRange,
-                savedUdpRangeFrom,
-                savedUdpRangeTo,
-            ] = values
+            const savedPool = savedConfig?.wanProbePool
+            const legacyUrl = savedConfig?.wanProbeUrl
+            const legacyKey = savedConfig?.wanProbeKey
+            const legacyConnected = savedConfig?.wanProbeConnected
+            const legacyInfo = savedConfig?.wanProbeInfo
+            const savedMode = savedConfig?.wanProbeMode
+            const savedScope = savedConfig?.wanProbeScope
+            const savedProfile = savedConfig?.wanProbeProfile
+            const savedTransport = savedConfig?.wanProbeTransport
+            const savedUseCustom = savedConfig?.wanProbeUseCustomTarget
+            const savedTarget = savedConfig?.wanProbeTarget
+            const savedPorts = savedConfig?.wanProbeCustomPorts
+            const savedUsePortRange = savedConfig?.wanProbeUsePortRange
+            const savedRangeFrom = savedConfig?.wanProbeRangeFrom
+            const savedRangeTo = savedConfig?.wanProbeRangeTo
+            const savedUdpPorts = savedConfig?.wanProbeCustomUdpPorts
+            const savedUseUdpPortRange = savedConfig?.wanProbeUseUdpPortRange
+            const savedUdpRangeFrom = savedConfig?.wanProbeUdpRangeFrom
+            const savedUdpRangeTo = savedConfig?.wanProbeUdpRangeTo
 
             const hasSavedPool = Array.isArray(savedPool)
             let pool = sanitizeProbePool(savedPool)
@@ -1827,7 +1839,8 @@ export default function WanProbe() {
                 }
             }
             setConfigLoaded(true)
-        }).catch(() => {
+        }).catch(error => {
+            logBridgeWarning('wan-probe:config-bootstrap', error)
             if (mounted) setConfigLoaded(true)
         })
 
@@ -1843,65 +1856,13 @@ export default function WanProbe() {
 
     useEffect(() => {
         if (!configLoaded) return
-        bridge.configSet('wanProbePool', serializeProbePool(probePool)).catch(() => {})
-    }, [configLoaded, probePool])
-
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeMode', scanMode).catch(() => {})
-    }, [configLoaded, scanMode])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeScope', scanScope).catch(() => {})
-    }, [configLoaded, scanScope])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeProfile', scanProfile).catch(() => {})
-    }, [configLoaded, scanProfile])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeTransport', scanTransport).catch(() => {})
-    }, [configLoaded, scanTransport])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeUseCustomTarget', useCustomTarget).catch(() => {})
-    }, [configLoaded, useCustomTarget])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeTarget', customTarget).catch(() => {})
-    }, [configLoaded, customTarget])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeCustomPorts', customPortsInput).catch(() => {})
-    }, [configLoaded, customPortsInput])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeUsePortRange', usePortRange).catch(() => {})
-    }, [configLoaded, usePortRange])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeRangeFrom', rangeFrom).catch(() => {})
-    }, [configLoaded, rangeFrom])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeRangeTo', rangeTo).catch(() => {})
-    }, [configLoaded, rangeTo])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeCustomUdpPorts', customUdpPortsInput).catch(() => {})
-    }, [configLoaded, customUdpPortsInput])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeUseUdpPortRange', useUdpPortRange).catch(() => {})
-    }, [configLoaded, useUdpPortRange])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeUdpRangeFrom', udpRangeFrom).catch(() => {})
-    }, [configLoaded, udpRangeFrom])
-    useEffect(() => {
-        if (!configLoaded) return
-        bridge.configSet('wanProbeUdpRangeTo', udpRangeTo).catch(() => {})
-    }, [configLoaded, udpRangeTo])
+        const timer = setTimeout(() => {
+            bridge.wanProbeConfigSet(persistedWanProbeConfig).catch(error => {
+                logBridgeWarning('wan-probe:config-persist', error)
+            })
+        }, 120)
+        return () => clearTimeout(timer)
+    }, [configLoaded, persistedWanProbeConfig])
 
     useEffect(() => {
         if (!copiedTag) return

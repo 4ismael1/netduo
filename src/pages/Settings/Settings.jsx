@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from 'react'
 import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import './Settings.css'
 
 const ACCENTS = [
@@ -43,6 +44,32 @@ function applyTheme(mode) {
     document.documentElement.style.colorScheme = mode
 }
 
+function persistThemePreference(mode) {
+    try {
+        localStorage.setItem('netduo.theme', mode)
+        return true
+    } catch {
+        return false
+    }
+}
+
+function setThemeMode(mode, setTheme) {
+    setTheme(mode)
+    applyTheme(mode)
+    persistThemePreference(mode)
+    bridge.configSet('theme', mode).catch(error => {
+        logBridgeWarning('settings:theme', error)
+        return false
+    })
+}
+
+function persistSetting(key, value) {
+    return bridge.configSet(key, value).catch(error => {
+        logBridgeWarning(`settings:${key}`, error)
+        return false
+    })
+}
+
 export default function Settings() {
     const [accent, setAccent] = useState(DEFAULT_ACCENT)
     const [theme, setTheme] = useState('light')
@@ -52,24 +79,27 @@ export default function Settings() {
 
     // Load persisted settings on mount
     useEffect(() => {
-        bridge.configGetAll().then(cfg => {
+        bridge.configGetPublic(['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold']).then(cfg => {
             if (!cfg) return
             if (cfg.accentColor) { setAccent(cfg.accentColor); applyCSSAccent(cfg.accentColor) }
             if (cfg.theme) { setTheme(cfg.theme); applyTheme(cfg.theme) }
             if (cfg.pollInterval) setInterval(cfg.pollInterval)
             if (cfg.notifications !== undefined) setNotifs(cfg.notifications)
             if (cfg.latencyThreshold) setLatencyThr(cfg.latencyThreshold)
-        }).catch(() => {})
+        }).catch(error => {
+            logBridgeWarning('settings:bootstrap', error)
+        })
     }, [])
 
     function applyAccent(color) {
         setAccent(color)
         applyCSSAccent(color)
-        bridge.configSet('accentColor', color).catch(() => {})
+        persistSetting('accentColor', color)
     }
 
     function openGithub() {
-        bridge.openExternal('https://github.com/4ismael1').catch(() => {
+        bridge.openExternal('https://github.com/4ismael1').catch(error => {
+            logBridgeWarning('settings:open-github', error)
             window.open('https://github.com/4ismael1', '_blank', 'noopener,noreferrer')
         })
     }
@@ -102,10 +132,10 @@ export default function Settings() {
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', paddingTop: 16, borderTop: '1px solid var(--border-light)' }}>
                     <span className="v3-label-sm" style={{ margin: 0 }}>Theme</span>
                     <div className="theme-toggle-row">
-                        <button className={`theme-opt ${theme === 'light' ? 'active' : ''}`} onClick={() => { setTheme('light'); applyTheme('light'); try { localStorage.setItem('netduo.theme', 'light') } catch {}; bridge.configSet('theme', 'light').catch(() => {}) }}>
+                        <button className={`theme-opt ${theme === 'light' ? 'active' : ''}`} onClick={() => setThemeMode('light', setTheme)}>
                             <Sun size={14} /> Light
                         </button>
-                        <button className={`theme-opt ${theme === 'dark' ? 'active' : ''}`} onClick={() => { setTheme('dark'); applyTheme('dark'); try { localStorage.setItem('netduo.theme', 'dark') } catch {}; bridge.configSet('theme', 'dark').catch(() => {}) }}>
+                        <button className={`theme-opt ${theme === 'dark' ? 'active' : ''}`} onClick={() => setThemeMode('dark', setTheme)}>
                             <Moon size={14} /> Dark
                         </button>
                     </div>
@@ -120,18 +150,18 @@ export default function Settings() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 24 }}>
                     <div className="input-group">
                         <label className="v3-label-sm">Polling Interval (seconds)</label>
-                        <select className="v3-input" value={interval} onChange={e => { setInterval(e.target.value); bridge.configSet('pollInterval', e.target.value).catch(() => {}) }}>
+                        <select className="v3-input" value={interval} onChange={e => { setInterval(e.target.value); persistSetting('pollInterval', e.target.value) }}>
                             {['1', '2', '5', '10', '30'].map(v => <option key={v} value={v}>{v}s</option>)}
                         </select>
                     </div>
                     <div className="input-group">
                         <label className="v3-label-sm">Latency Alert Threshold (ms)</label>
-                        <input className="v3-input" type="number" value={latencyThr} onChange={e => { setLatencyThr(e.target.value); bridge.configSet('latencyThreshold', e.target.value).catch(() => {}) }} />
+                        <input className="v3-input" type="number" value={latencyThr} onChange={e => { setLatencyThr(e.target.value); persistSetting('latencyThreshold', e.target.value) }} />
                     </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 24, padding: '16px 0', borderTop: '1px solid var(--border-light)' }}>
                     <label className="toggle-label">
-                        <input type="checkbox" className="toggle-input" checked={notifs} onChange={e => { setNotifs(e.target.checked); bridge.configSet('notifications', e.target.checked).catch(() => {}) }} />
+                        <input type="checkbox" className="toggle-input" checked={notifs} onChange={e => { setNotifs(e.target.checked); persistSetting('notifications', e.target.checked) }} />
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
                         <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>System notifications</span>
                     </label>

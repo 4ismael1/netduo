@@ -6,6 +6,7 @@ import {
     Shuffle, Home, AlertCircle, Tag
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
 import './Scanner.css'
 
@@ -129,7 +130,9 @@ export default function Scanner() {
             if (ipv4?.address) {
                 const p = ipv4.address.split('.'); p.pop(); setBaseIP(p.join('.'))
             }
-        }).catch(() => {})
+        }).catch(error => {
+            logBridgeWarning('scanner:interfaces-bootstrap', error)
+        })
     }, [])
 
     // Auto-scroll inside device diagnostics when checks are done.

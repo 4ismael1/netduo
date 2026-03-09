@@ -6,6 +6,7 @@ import {
     ChevronLeft, ChevronRight
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { logBridgeWarning } from '../../lib/devLog.js'
 import { deriveProgressMbps, isStalePhaseEvent } from '../../lib/speedMetrics'
 import './SpeedTest.css'
 
@@ -92,8 +93,16 @@ export default function SpeedTest() {
 
     // Load persisted history + servers on mount
     useEffect(() => {
-        bridge.speedHistoryGet().then(h => { if (Array.isArray(h)) setHistory(h.slice(0, 50)) }).catch(() => {})
-        bridge.speedGetServers().then(s => { if (s?.length) setServers(s) })
+        bridge.speedHistoryGet().then(h => {
+            if (Array.isArray(h)) setHistory(h.slice(0, 50))
+        }).catch(error => {
+            logBridgeWarning('speedtest:history-load', error)
+        })
+        bridge.speedGetServers().then(s => {
+            if (s?.length) setServers(s)
+        }).catch(error => {
+            logBridgeWarning('speedtest:servers-load', error)
+        })
     }, [])
 
     const onProgress = useCallback((d) => {
@@ -233,10 +242,18 @@ export default function SpeedTest() {
                 bridge.speedHistoryAdd(h).then(full => {
                     if (Array.isArray(full)) setHistory(full.slice(0, 50))
                     else setHistory(prev => [h, ...prev].slice(0, 50))
-                }).catch(() => setHistory(prev => [h, ...prev].slice(0, 50)))
+                }).catch(error => {
+                    logBridgeWarning('speedtest:history-add', error)
+                    setHistory(prev => [h, ...prev].slice(0, 50))
+                })
                 bridge.historyAdd({ module: 'Speed Test', type: 'Full Test', detail: `↓${r.download} ↑${r.upload} Mbps`, results: h })
             }
-        } catch { phaseRef.current = 'error'; setError('An error occurred.'); setPhase('error') }
+        } catch (error) {
+            logBridgeWarning('speedtest:run', error)
+            phaseRef.current = 'error'
+            setError('An error occurred.')
+            setPhase('error')
+        }
         finally {
             if (typeof unsub === 'function') unsub()
             cleanupRef.current = null
@@ -429,7 +446,7 @@ export default function SpeedTest() {
                     <div className="v3-card-header">
                         <span className="v3-card-title">History</span>
                         <span className="v3-badge accent">{history.length}</span>
-                        <button className="st-hist-clear" onClick={() => { bridge.speedHistoryClear().then(() => { setHistory([]); setHistPage(0) }).catch(() => { setHistory([]); setHistPage(0) }) }} title="Clear history">
+                        <button className="st-hist-clear" onClick={() => { bridge.speedHistoryClear().then(() => { setHistory([]); setHistPage(0) }).catch(error => { logBridgeWarning('speedtest:history-clear', error); setHistory([]); setHistPage(0) }) }} title="Clear history">
                             <Trash2 size={13} /> Clear All
                         </button>
                     </div>
@@ -660,4 +677,5 @@ function Speedometer({ value, phase, isDl, isUl, isDone, running, avgSpeed }) {
         </div>
     )
 }
+
 
