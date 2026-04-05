@@ -81,6 +81,35 @@ export default function Dashboard() {
     const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
     const stateRef = useRef({})
     const [ready, setReady] = useState(!net.loading)
+    const [pollMs, setPollMs] = useState(3000)
+    const [latencyThr, setLatencyThr] = useState(150)
+
+    // Load poll interval & latency threshold from config
+    useEffect(() => {
+        bridge.configGetPublic(['pollInterval', 'latencyThreshold']).then(cfg => {
+            if (!cfg) return
+            if (cfg.pollInterval) {
+                const ms = Number(cfg.pollInterval) * 1000
+                if (ms >= 1000) setPollMs(ms)
+            }
+            if (cfg.latencyThreshold) {
+                const v = Number(cfg.latencyThreshold)
+                if (v > 0) setLatencyThr(v)
+            }
+        }).catch(() => {})
+
+        const off = bridge.onConfigChanged?.(({ key, value, deleted }) => {
+            if (key === 'pollInterval') {
+                const ms = deleted ? 3000 : Number(value) * 1000
+                if (ms >= 1000) setPollMs(ms)
+            }
+            if (key === 'latencyThreshold') {
+                const v = deleted ? 150 : Number(value)
+                if (v > 0) setLatencyThr(v)
+            }
+        })
+        return () => off?.()
+    }, [])
 
     // Mark ready once loading finishes
     useEffect(() => {
@@ -100,7 +129,7 @@ export default function Dashboard() {
         if (!net.connected) { setHealth('bad'); return }
     }, [net.loading, net.connected])
 
-    // Sample WiFi signal dBm every 3s so chart fills at the same rate as latency
+    // Sample WiFi signal dBm at the same rate as latency polling
     const signalRef = useRef(null)
     useEffect(() => {
         function sampleSignal() {
@@ -110,10 +139,10 @@ export default function Dashboard() {
             _signalHistory = _signalHistory.slice(-MAX_SIGNAL_PTS)
             setSignalPts([..._signalHistory])
         }
-        sampleSignal()                          // first point immediately
-        signalRef.current = setInterval(sampleSignal, 3000)
+        sampleSignal()
+        signalRef.current = setInterval(sampleSignal, pollMs)
         return () => clearInterval(signalRef.current)
-    }, [net.wifi?.signal])   // re-syncs when value changes
+    }, [net.wifi?.signal, pollMs])
 
     // Restart gateway probe when network mode changes
     useEffect(() => {
@@ -187,14 +216,15 @@ export default function Dashboard() {
         if (!vals.length) setHealth('bad')
         else {
             const avg = vals.reduce((a, b) => a + b, 0) / vals.length
-            setHealth(avg < 60 ? 'good' : avg < 150 ? 'warning' : 'bad')
+            const warnAt = latencyThr * 0.4    // e.g. 200 * 0.4 = 80ms
+            setHealth(avg < warnAt ? 'good' : avg < latencyThr ? 'warning' : 'bad')
         }
-    }, [net.gateway, net.isVpn, shouldProbeGateway])
+    }, [net.gateway, net.isVpn, shouldProbeGateway, latencyThr])
 
     const startPingLoop = useCallback(() => {
         if (_pingInterval) clearInterval(_pingInterval)
-        _pingInterval = setInterval(doPingRound, 3000)
-    }, [doPingRound])
+        _pingInterval = setInterval(doPingRound, pollMs)
+    }, [doPingRound, pollMs])
 
     useEffect(() => {
         doPingRound()          // fire immediately so charts populate on load
@@ -530,7 +560,7 @@ export default function Dashboard() {
                     </div>
                     <span className="dash-card-meta">
                         {health !== 'loading' && <span className={`live-dot ${health}`} />}
-                        every 3s - {MAX_PTS} samples
+                        every {pollMs / 1000}s - {MAX_PTS} samples
                     </span>
                 </div>
                 <div className="chart-grid">

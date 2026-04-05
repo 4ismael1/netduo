@@ -149,3 +149,15 @@
     .ping-stats-row { grid-template-columns: repeat(3, 1fr); }
     .diag-controls-row { flex-direction: column; align-items: stretch; }
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .ping-terminal { background: #0a0a0a; border-color: #222222; color: #999999; font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .ping-terminal::-webkit-scrollbar-thumb { background: #333333; }
+[data-theme="nothing"] .diag-hop-list { border-color: #222222; }
+[data-theme="nothing"] .diag-hop-header { background: #0a0a0a; border-color: #222222; font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+[data-theme="nothing"] .diag-hop-row { border-color: #1a1a1a; }
+[data-theme="nothing"] .diag-hop-row:hover { background: #1a1a1a; }
+[data-theme="nothing"] .dns-card { background: #111111; border-color: #222222; border-radius: 6px; box-shadow: none; }
+[data-theme="nothing"] .dns-card:hover { box-shadow: none; background: #1a1a1a; }
+[data-theme="nothing"] .dns-type { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .ping-stats-row > div { background: #0a0a0a; border-radius: 4px; }

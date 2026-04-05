@@ -69,6 +69,41 @@
     color: white;
 }
 
+/* ── Sidebar Toggle ── */
+.sidebar-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: var(--gray-400);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+    padding: 0;
+}
+.sidebar-toggle-btn:hover {
+    background: var(--gray-100);
+    color: var(--text-primary);
+}
+.sidebar-toggle-btn:active {
+    transform: scale(0.92);
+}
+
 /* Dark mode overrides */
 [data-theme="dark"] .topbar { background: var(--bg-app); border-color: var(--border-subtle); }
 [data-theme="dark"] .wc-btn:hover { background: var(--gray-200); }
+[data-theme="dark"] .sidebar-toggle-btn:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
+
+/* Nothing theme overrides */
+[data-theme="nothing"] .topbar { background: #000000; border-color: #1a1a1a; }
+[data-theme="nothing"] .topbar-brand { font-family: "Space Grotesk", sans-serif; font-weight: 700; letter-spacing: -0.02em; }
+[data-theme="nothing"] .topbar-time { font-family: "Space Mono", monospace; color: #555555; }
+[data-theme="nothing"] .topbar-sep { color: #333333; }
+[data-theme="nothing"] .wc-btn { color: #555555; }
+[data-theme="nothing"] .wc-btn:hover { background: #1a1a1a; color: #e8e8e8; }
+[data-theme="nothing"] .wc-close:hover { background: #D71921; color: white; }
+[data-theme="nothing"] .sidebar-toggle-btn { color: #555555; }
+[data-theme="nothing"] .sidebar-toggle-btn:hover { background: #1a1a1a; color: #e8e8e8; }

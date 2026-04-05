@@ -52,7 +52,7 @@
     word-break: break-all;
 }
 
-/* ── Terminal Output (Whois) ── */
+/* ── Terminal Output (Whois, Headers) ── */
 .terminal-output {
     background: var(--gray-900);
     color: var(--gray-300);
@@ -72,7 +72,103 @@
 .terminal-output::-webkit-scrollbar-track { background: transparent; }
 .terminal-output::-webkit-scrollbar-thumb { background: var(--gray-600); border-radius: 4px; }
 
+/* ── HTTP Timing Grid ── */
+.http-timing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+}
+.http-timing-item {
+    padding: 12px 14px;
+    background: var(--gray-50);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+    text-align: center;
+}
+.http-timing-item .v3-label-sm { margin-bottom: 4px; }
+
+/* ── Port Quick Chips ── */
+.port-quick-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+.port-quick-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-full);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+.port-quick-chip:hover {
+    background: var(--gray-100);
+    border-color: var(--gray-300);
+}
+.port-quick-chip.active {
+    background: var(--color-accent-ghost);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+
+/* ── Dark mode ── */
+[data-theme="dark"] .ssl-grid-item,
+[data-theme="dark"] .http-timing-item {
+    background: var(--bg-inset);
+    border-color: var(--border-light);
+}
+[data-theme="dark"] .port-quick-chip {
+    background: var(--bg-inset);
+    border-color: var(--border-light);
+    color: var(--text-secondary);
+}
+[data-theme="dark"] .port-quick-chip:hover {
+    background: var(--bg-surface-hover);
+}
+[data-theme="dark"] .tool-alert.success { color: #22c55e; }
+[data-theme="dark"] .tool-alert.error { color: #f87171; }
+
+/* ── Nothing theme ── */
+[data-theme="nothing"] .ssl-grid-item,
+[data-theme="nothing"] .http-timing-item {
+    background: #0a0a0a;
+    border-color: #222222;
+    border-radius: 6px;
+}
+[data-theme="nothing"] .port-quick-chip {
+    background: #0a0a0a;
+    border-color: #222222;
+    color: #999999;
+    border-radius: 4px;
+    font-family: "Space Mono", monospace;
+}
+[data-theme="nothing"] .port-quick-chip:hover {
+    background: #1a1a1a;
+    border-color: #444444;
+}
+[data-theme="nothing"] .port-quick-chip.active {
+    background: var(--color-accent-ghost);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+[data-theme="nothing"] .tool-alert.success { color: #4A9E5C; }
+[data-theme="nothing"] .tool-alert.error { color: #D71921; }
+[data-theme="nothing"] .terminal-output {
+    background: #0a0a0a;
+    border-color: #222222;
+    border-radius: 6px;
+}
+
 @media (max-width: 700px) {
     .tool-controls-row { flex-direction: column; align-items: stretch; }
     .ssl-grid { grid-template-columns: 1fr; }
+    .http-timing-grid { grid-template-columns: repeat(2, 1fr); }
+    .port-quick-row { gap: 4px; }
 }

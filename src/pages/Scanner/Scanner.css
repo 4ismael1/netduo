@@ -268,3 +268,17 @@
     .dev-detail { width: 100%; max-height: none; }
     .dev-list { max-height: none; }
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .scan-config { background: #111111; border-color: #222222; border-radius: 8px; }
+[data-theme="nothing"] .dev-list { background: #111111; border-color: #222222; border-radius: 8px; }
+[data-theme="nothing"] .dev-list-header { background: #0a0a0a; font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+[data-theme="nothing"] .dev-list-meta { background: #0a0a0a; font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .dev-row { border-color: #1a1a1a; }
+[data-theme="nothing"] .dev-row:hover { background: #1a1a1a; }
+[data-theme="nothing"] .dev-row.sel { background: rgba(215,25,33,.06); border-color: rgba(215,25,33,.20); }
+[data-theme="nothing"] .dev-detail { background: #111111; border-color: #222222; border-radius: 8px; }
+[data-theme="nothing"] .dd-field { background: #0a0a0a; border-color: #1a1a1a; border-radius: 4px; }
+[data-theme="nothing"] .dd-field-label { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+[data-theme="nothing"] .dd-field-value { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .port-chip { border-radius: 4px; font-family: "Space Mono", monospace; }

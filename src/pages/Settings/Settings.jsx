@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from 'react'
-import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink } from 'lucide-react'
+import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import './Settings.css'
@@ -18,9 +18,11 @@ const ACCENTS = [
     { name: 'Orange', value: '#F97316' },
     { name: 'Amber', value: '#F59E0B' },
     { name: 'Sky', value: '#0EA5E9' },
+    { name: 'Nothing Red', value: '#D71921' },
 ]
 
 const DEFAULT_ACCENT = '#3b82f6'
+const NOTHING_ACCENT = '#D71921'
 
 function applyCSSAccent(color) {
     document.documentElement.style.setProperty('--color-accent', color)
@@ -41,7 +43,7 @@ function shiftColor(hex, amount) {
 
 function applyTheme(mode) {
     document.documentElement.setAttribute('data-theme', mode)
-    document.documentElement.style.colorScheme = mode
+    document.documentElement.style.colorScheme = mode === 'light' ? 'light' : 'dark'
 }
 
 function persistThemePreference(mode) {
@@ -53,10 +55,16 @@ function persistThemePreference(mode) {
     }
 }
 
-function setThemeMode(mode, setTheme) {
+function setThemeMode(mode, setTheme, setAccent) {
     setTheme(mode)
     applyTheme(mode)
     persistThemePreference(mode)
+    // When switching to Nothing, apply Nothing Red as default accent
+    if (mode === 'nothing' && setAccent) {
+        setAccent(NOTHING_ACCENT)
+        applyCSSAccent(NOTHING_ACCENT)
+        bridge.configSet('accentColor', NOTHING_ACCENT).catch(() => {})
+    }
     bridge.configSet('theme', mode).catch(error => {
         logBridgeWarning('settings:theme', error)
         return false
@@ -132,11 +140,14 @@ export default function Settings() {
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', paddingTop: 16, borderTop: '1px solid var(--border-light)' }}>
                     <span className="v3-label-sm" style={{ margin: 0 }}>Theme</span>
                     <div className="theme-toggle-row">
-                        <button className={`theme-opt ${theme === 'light' ? 'active' : ''}`} onClick={() => setThemeMode('light', setTheme)}>
+                        <button className={`theme-opt ${theme === 'light' ? 'active' : ''}`} onClick={() => setThemeMode('light', setTheme, setAccent)}>
                             <Sun size={14} /> Light
                         </button>
-                        <button className={`theme-opt ${theme === 'dark' ? 'active' : ''}`} onClick={() => setThemeMode('dark', setTheme)}>
+                        <button className={`theme-opt ${theme === 'dark' ? 'active' : ''}`} onClick={() => setThemeMode('dark', setTheme, setAccent)}>
                             <Moon size={14} /> Dark
+                        </button>
+                        <button className={`theme-opt ${theme === 'nothing' ? 'active' : ''}`} onClick={() => setThemeMode('nothing', setTheme, setAccent)}>
+                            <CircleDot size={14} /> Nothing
                         </button>
                     </div>
                 </div>

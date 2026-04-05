@@ -112,3 +112,26 @@
     font-weight: 600;
     box-shadow: var(--shadow-xs);
 }
+
+/* Nothing theme */
+[data-theme="nothing"] .theme-toggle-row {
+    background: #0a0a0a;
+    border-color: #222222;
+    border-radius: 6px;
+}
+[data-theme="nothing"] .theme-opt {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .theme-opt.active {
+    background: #e8e8e8;
+    color: #000000;
+    box-shadow: none;
+}
+[data-theme="nothing"] .accent-chip { background: #0a0a0a; border-color: #222222; border-radius: 6px; }
+[data-theme="nothing"] .accent-chip:hover { border-color: #444444; }
+[data-theme="nothing"] .accent-chip.selected { border-color: #e8e8e8; box-shadow: none; }
+[data-theme="nothing"] .input-group .v3-label-sm { font-family: "Space Mono", monospace; }

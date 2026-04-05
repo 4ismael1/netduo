@@ -8,6 +8,7 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
+import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import './Scanner.css'
 
 /* ═══════════════════════════════════════
@@ -109,11 +110,19 @@ function classifyDevice(d) {
     return { ...DEF }
 }
 
+function extractSubnet(ip) {
+    if (!ip) return null
+    const p = ip.split('.')
+    if (p.length === 4) { p.pop(); return p.join('.') }
+    return null
+}
+
 export default function Scanner() {
+    const net = useNetworkStatus()
     const [scanning, setScanning] = useState(false)
     const [devices, setDevices] = useState([])
     const [progress, setProgress] = useState(0)
-    const [baseIP, setBaseIP] = useState('192.168.1')
+    const [baseIP, setBaseIP] = useState(() => extractSubnet(net.gateway) || extractSubnet(net.localIP) || '192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
     const [selected, setSelected] = useState(null)
@@ -123,17 +132,17 @@ export default function Scanner() {
     const detailScrollRef = useRef(null)
     const prevDetailLoadingRef = useRef(false)
     const scanRunRef = useRef(0)
+    const subnetInitRef = useRef(false)
 
+    // Update subnet from network context once available (only if user hasn't manually changed it)
     useEffect(() => {
-        bridge.getNetworkInterfaces().then(ifaces => {
-            const ipv4 = ifaces?.find(i => i.family === 'IPv4' && !i.internal)
-            if (ipv4?.address) {
-                const p = ipv4.address.split('.'); p.pop(); setBaseIP(p.join('.'))
-            }
-        }).catch(error => {
-            logBridgeWarning('scanner:interfaces-bootstrap', error)
-        })
-    }, [])
+        if (subnetInitRef.current) return
+        const subnet = extractSubnet(net.gateway) || extractSubnet(net.localIP)
+        if (subnet) {
+            subnetInitRef.current = true
+            setBaseIP(subnet)
+        }
+    }, [net.gateway, net.localIP])
 
     // Auto-scroll inside device diagnostics when checks are done.
     useEffect(() => {

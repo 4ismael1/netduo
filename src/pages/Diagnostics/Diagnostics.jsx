@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import {
     Activity, Shield, Server, Globe, Search, ChevronRight,
-    CheckCircle, XCircle, Loader2, TerminalSquare, Rss, AlertCircle
+    CheckCircle, XCircle, Loader2, TerminalSquare, Rss, AlertCircle, RadioReceiver, ArrowRight
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { isValidHostname, isValidPortRange, isValidTarget, normalizeTargetInput, parseInteger } from '../../lib/validation'
@@ -379,11 +379,179 @@ function PortScanPanel() {
     )
 }
 
+// ─── MTR (My Traceroute) ─────────────────────────────────────────────────
+function MtrPanel() {
+    const [host, setHost] = useState('8.8.8.8')
+    const [hops, setHops] = useState([])
+    const [session, setSession] = useState(null)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+
+    useEffect(() => {
+        return () => { if (session) bridge.stopMtr(session) }
+    }, [session])
+
+    function start() {
+        if (session) { bridge.stopMtr(session); setSession(null); return }
+        const h = normalizeTargetInput(host)
+        if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 8.8.8.8)'); return }
+        setError(null); setHops([]); setLoading(true)
+        bridge.startMtr(
+            h, 1000,
+            initialHops => { setHops(initialHops); setLoading(false) },
+            updatedHops => setHops(updatedHops),
+            sid => setSession(sid)
+        )
+    }
+
+    return (
+        <DiagPanel title="MTR Analysis" icon={RadioReceiver} description="Combines traceroute and ping into a continuous connection quality monitor">
+            <div className="diag-controls-row">
+                <div style={{ flex: 1, position: 'relative' }}>
+                    <RadioReceiver size={16} style={{ position: 'absolute', left: 12, top: 11, color: 'var(--text-muted)' }} />
+                    <input className="v3-input" style={{ paddingLeft: 38 }} value={host} onChange={e => setHost(e.target.value)}
+                        disabled={!!session} onKeyDown={e => e.key === 'Enter' && !session && start()}
+                        placeholder="Target Host or IP" />
+                </div>
+                <button className={`v3-btn ${session ? 'v3-btn-secondary' : 'v3-btn-primary'}`} style={session ? { color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' } : {}} onClick={start} disabled={loading || !host.trim()}>
+                    {loading ? <Loader2 size={16} className="spin-icon" /> : session ? 'Stop Analysis' : 'Start Analysis'}
+                </button>
+            </div>
+
+            {error && <div style={{ color:'var(--color-danger)', fontSize:13, display:'flex', alignItems:'center', gap:6, marginBottom:16 }}><AlertCircle size={14}/>{error}</div>}
+
+            {loading && <div style={{ color: 'var(--text-muted)', paddingBottom: 20 }}><Loader2 size={16} className="spin-icon" style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} /> Mapping route hops before ping cycle...</div>}
+
+            {hops.length > 0 && (
+                <div style={{ border: '1px solid var(--border-light)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 13 }}>
+                        <thead style={{ background: 'var(--bg-app)', borderBottom: '1px solid var(--border-strong)' }}>
+                            <tr>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>#</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Host Node</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Loss</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Sent</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Last</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Avg</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Best</th>
+                                <th style={{ padding: '10px', color: 'var(--text-muted)' }}>Wrst</th>
+                            </tr>
+                        </thead>
+                        <tbody className="mono" style={{ background: 'var(--bg-surface)' }}>
+                            {hops.map(h => (
+                                <tr key={h.hop} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                                    <td style={{ padding: '10px', color: 'var(--text-muted)' }}>{h.hop}</td>
+                                    <td style={{ padding: '10px', color: 'var(--color-info)' }}>{h.ip === '*' ? 'Unknown Gateway' : h.ip}</td>
+                                    <td style={{ padding: '10px', color: parseFloat(h.loss) > 0 ? 'var(--color-danger)' : 'var(--color-success)', fontWeight: 600 }}>{h.loss}%</td>
+                                    <td style={{ padding: '10px' }}>{h.sent}</td>
+                                    <td style={{ padding: '10px' }}>{h.times.length ? `${h.times[h.times.length - 1]}ms` : '—'}</td>
+                                    <td style={{ padding: '10px' }}>{h.avg ? `${h.avg}ms` : '—'}</td>
+                                    <td style={{ padding: '10px', color: 'var(--color-success)' }}>{h.min !== Infinity ? `${h.min}ms` : '—'}</td>
+                                    <td style={{ padding: '10px', color: 'var(--color-warning)' }}>{h.max ? `${h.max}ms` : '—'}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </DiagPanel>
+    )
+}
+
+// ─── Port Checker (single port) ──────────────────────────────────────────
+const COMMON_PORTS = [
+    { p: 21, l: 'FTP' }, { p: 22, l: 'SSH' }, { p: 25, l: 'SMTP' },
+    { p: 53, l: 'DNS' }, { p: 80, l: 'HTTP' }, { p: 443, l: 'HTTPS' },
+    { p: 3306, l: 'MySQL' }, { p: 3389, l: 'RDP' }, { p: 5432, l: 'Postgres' },
+    { p: 8080, l: 'Alt HTTP' },
+]
+
+function PortCheckPanel() {
+    const [host, setHost] = useState('')
+    const [port, setPort] = useState('443')
+    const [result, setResult] = useState(null)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+
+    async function check() {
+        const pureHost = normalizeTargetInput(host)
+        const portNum = parseInt(port, 10)
+        if (!isValidTarget(pureHost)) { setError('Enter a valid host or IP'); return }
+        if (!portNum || portNum < 1 || portNum > 65535) { setError('Enter a valid port (1-65535)'); return }
+        setError(null); setLoading(true); setResult(null)
+        try {
+            const res = await bridge.checkPort(pureHost, portNum, 5000)
+            setResult({ host: pureHost, port: portNum, ...res })
+        } catch (err) {
+            setResult({ host: pureHost, port: portNum, open: false, error: err?.message })
+        }
+        setLoading(false)
+    }
+
+    return (
+        <DiagPanel title="Port Checker" icon={ArrowRight} description="Quick connectivity test for a specific port on any host">
+            <div className="diag-controls-row">
+                <div style={{ flex: 1, position: 'relative' }}>
+                    <Server size={16} style={{ position: 'absolute', left: 12, top: 11, color: 'var(--text-muted)' }} />
+                    <input className="v3-input" style={{ paddingLeft: 38 }} value={host} onChange={e => setHost(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && check()} placeholder="Host or IP (e.g. google.com)" />
+                </div>
+                <input className="v3-input mono" style={{ width: 90 }} value={port} onChange={e => setPort(e.target.value.replace(/\D/g, ''))}
+                    onKeyDown={e => e.key === 'Enter' && check()} placeholder="Port" />
+                <button className="v3-btn v3-btn-primary" onClick={check} disabled={loading || !host.trim() || !port}>
+                    {loading ? <Loader2 size={16} className="spin-icon" /> : 'Check'}
+                </button>
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+                {COMMON_PORTS.map(cp => (
+                    <button key={cp.p}
+                        style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            padding: '4px 10px', fontSize: 12, fontFamily: 'var(--font-mono)',
+                            border: `1px solid ${port === String(cp.p) ? 'var(--color-accent)' : 'var(--border-light)'}`,
+                            borderRadius: 'var(--radius-full)',
+                            background: port === String(cp.p) ? 'var(--color-accent-ghost)' : 'var(--bg-surface)',
+                            color: port === String(cp.p) ? 'var(--color-accent)' : 'var(--text-secondary)',
+                            cursor: 'pointer', transition: 'all 120ms ease',
+                        }}
+                        onClick={() => setPort(String(cp.p))}>
+                        {cp.p} <span style={{ opacity: 0.6 }}>{cp.l}</span>
+                    </button>
+                ))}
+            </div>
+
+            {error && <div style={{ color:'var(--color-danger)', fontSize:13, display:'flex', alignItems:'center', gap:6, marginBottom:16 }}><AlertCircle size={14}/>{error}</div>}
+
+            {loading && <div style={{ color: 'var(--text-muted)', margin: '12px 0' }}><Loader2 size={16} className="spin-icon" style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} /> Testing {host}:{port}...</div>}
+
+            {result && (
+                <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 12, padding: '14px 18px',
+                    borderRadius: 'var(--radius-md)', fontSize: 13, lineHeight: 1.5,
+                    background: result.open ? 'var(--color-success-bg)' : 'var(--color-danger-bg)',
+                    color: result.open ? '#15803d' : '#dc2626',
+                    border: `1px solid ${result.open ? 'var(--color-success-border)' : 'var(--color-danger-border)'}`,
+                }}>
+                    {result.open ? <CheckCircle size={20} /> : <XCircle size={20} />}
+                    <div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>{result.host}:{result.port} is {result.open ? 'Open' : 'Closed / Filtered'}</div>
+                        {result.time != null && <div style={{ fontSize: 13, opacity: 0.9 }}>Response in {result.time} ms</div>}
+                        {result.error && <div style={{ fontSize: 13, opacity: 0.9 }}>{result.error}</div>}
+                    </div>
+                </div>
+            )}
+        </DiagPanel>
+    )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────
 const SECTIONS = [
     { id: 'traceroute', label: 'Traceroute Explorer', Icon: Rss, Panel: TraceroutePanel },
     { id: 'ping', label: 'Live Ping Terminal', Icon: TerminalSquare, Panel: PingPanel },
+    { id: 'mtr', label: 'MTR Analysis', Icon: RadioReceiver, Panel: MtrPanel },
     { id: 'dns', label: 'DNS Resolution', Icon: Globe, Panel: DnsPanel },
+    { id: 'portcheck', label: 'Port Checker', Icon: ArrowRight, Panel: PortCheckPanel },
     { id: 'ports', label: 'Port Scanner', Icon: Server, Panel: PortScanPanel },
 ]
 

@@ -712,3 +712,115 @@
     flex-direction: column;
     gap: 4px;
 }
+
+/* ══ Nothing Theme ══ */
+[data-theme="nothing"] .dash-title {
+    font-family: "Space Grotesk", sans-serif;
+    letter-spacing: -0.03em;
+}
+[data-theme="nothing"] .dash-subtitle {
+    font-family: "Space Mono", monospace;
+    font-size: 12px;
+    color: #555555;
+}
+[data-theme="nothing"] .status-pill {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .dash-banner {
+    border-radius: 8px;
+}
+[data-theme="nothing"] .dash-banner.good { border-left-color: #4A9E5C; }
+[data-theme="nothing"] .dash-banner.warning { border-left-color: #D4A843; }
+[data-theme="nothing"] .dash-banner.bad { border-left-color: #D71921; }
+[data-theme="nothing"] .stat-tile {
+    border-radius: 8px;
+    border-color: #222222;
+    background: #111111;
+}
+[data-theme="nothing"] .stat-tile-label {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+[data-theme="nothing"] .detail-chip {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .dash-card {
+    background: #111111;
+    border-color: #222222;
+    border-radius: 8px;
+    box-shadow: none;
+}
+[data-theme="nothing"] .dash-card-head {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+}
+[data-theme="nothing"] .dash-card-meta {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+}
+[data-theme="nothing"] .chart-host {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    font-size: 11px;
+}
+[data-theme="nothing"] .chart-ms {
+    font-family: "Space Mono", monospace;
+}
+[data-theme="nothing"] .action-card {
+    border-radius: 8px;
+    border-color: #222222;
+}
+[data-theme="nothing"] .action-label {
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 600;
+}
+[data-theme="nothing"] .action-desc {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+    color: #555555;
+}
+[data-theme="nothing"] .signal-badge {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .signal-badge[data-quality="excellent"] { background: rgba(74,158,92,.12); color: #5cb870; }
+[data-theme="nothing"] .signal-badge[data-quality="good"]      { background: rgba(153,153,153,.12); color: #b3b3b3; }
+[data-theme="nothing"] .signal-badge[data-quality="fair"]      { background: rgba(212,168,67,.12); color: #D4A843; }
+[data-theme="nothing"] .signal-badge[data-quality="weak"]      { background: rgba(215,25,33,.12); color: #D71921; }
+[data-theme="nothing"] .sq-dot[data-q="excellent"] { background: #4A9E5C; }
+[data-theme="nothing"] .sq-dot[data-q="good"]      { background: #999999; }
+[data-theme="nothing"] .sq-dot[data-q="fair"]      { background: #D4A843; }
+[data-theme="nothing"] .sq-dot[data-q="weak"]      { background: #D71921; }
+[data-theme="nothing"] .banner-ping .ping-val { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .banner-ping .ping-unit { font-family: "Space Mono", monospace; font-size: 11px; }
+/* Nothing: fix hardcoded status colors */
+[data-theme="nothing"] .status-pill.good    { background: rgba(74,158,92,.10); color: #4A9E5C; }
+[data-theme="nothing"] .status-pill.warning { background: rgba(212,168,67,.10); color: #D4A843; }
+[data-theme="nothing"] .status-pill.bad     { background: rgba(215,25,33,.10); color: #D71921; }
+[data-theme="nothing"] .status-pill.loading { background: #1a1a1a; color: #666666; }
+[data-theme="nothing"] .dash-banner { background: #111111; border-color: #222222; border-radius: 8px; box-shadow: none; }
+[data-theme="nothing"] .banner-icon { background: #0a0a0a; }
+[data-theme="nothing"] .stat-tile-icon { background: #0a0a0a !important; }
+[data-theme="nothing"] .chart-cell { background: #0a0a0a; border-radius: 6px; }
+[data-theme="nothing"] .action-card { box-shadow: none; }
+[data-theme="nothing"] .action-card:hover { box-shadow: none; background: #1a1a1a; }
+[data-theme="nothing"] .action-icon { border-radius: 6px; }
+[data-theme="nothing"] .link-status-panel { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .link-status-row span { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+[data-theme="nothing"] .dash-extra-label { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em; }
+[data-theme="nothing"] .dash-extra-item { background: #0a0a0a; border-color: #222222; border-radius: 6px; }

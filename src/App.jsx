@@ -1,5 +1,5 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import Sidebar from './components/Sidebar/Sidebar'
 import TopBar from './components/TopBar/TopBar'
@@ -74,7 +74,7 @@ export default function App() {
       }
       if (cfg.theme) {
         document.documentElement.setAttribute('data-theme', cfg.theme)
-        document.documentElement.style.colorScheme = cfg.theme
+        document.documentElement.style.colorScheme = cfg.theme === 'light' ? 'light' : 'dark'
         persistThemePreference(cfg.theme)
       }
     }).catch(error => {
@@ -84,16 +84,25 @@ export default function App() {
       clearBootTheme()
     })
   }, [])
+  const [sidebarExpanded, setSidebarExpanded] = useState(() => {
+    try { return localStorage.getItem('sidebar-expanded') === 'true' } catch { return false }
+  })
+
+  useEffect(() => {
+    localStorage.setItem('sidebar-expanded', sidebarExpanded)
+    document.documentElement.style.setProperty('--rail-w', sidebarExpanded ? '200px' : '64px')
+  }, [sidebarExpanded])
+
   return (
     <HashRouter>
       <NetworkStatusProvider>
       <div className="app-layout">
         <div className="sidebar-region">
-          <Sidebar />
+          <Sidebar expanded={sidebarExpanded} />
         </div>
         <div className="content-region">
           <div className="topbar-region">
-            <TopBar />
+            <TopBar onToggleSidebar={() => setSidebarExpanded(e => !e)} sidebarExpanded={sidebarExpanded} />
           </div>
           <div className="route-content">
             <ErrorBoundary>

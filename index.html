@@ -5,24 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://localhost:5173 ws://localhost:5173; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173 https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://localhost:5173 ws://localhost:5173; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     />
     <title>NetDuo - Network Diagnostics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
     <script>
       (function () {
         try {
           var params = new URLSearchParams(window.location.search || '')
           var bootTheme = params.get('bootTheme')
           var cached = localStorage.getItem('netduo.theme')
-          var theme = (bootTheme === 'dark' || bootTheme === 'light')
+          var validThemes = ['dark', 'light', 'nothing']
+          var theme = validThemes.indexOf(bootTheme) >= 0
             ? bootTheme
-            : (cached === 'dark' || cached === 'light')
+            : validThemes.indexOf(cached) >= 0
             ? cached
             : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          var bg = theme === 'dark' ? '#050507' : '#f1f5f9'
+          var bg = theme === 'nothing' ? '#000000' : theme === 'dark' ? '#050507' : '#f1f5f9'
           document.documentElement.setAttribute('data-theme', theme)
           document.documentElement.style.backgroundColor = bg
-          document.documentElement.style.colorScheme = theme
+          document.documentElement.style.colorScheme = theme === 'light' ? 'light' : 'dark'
           var style = document.createElement('style')
           style.setAttribute('data-netduo-boot-theme', 'true')
           style.textContent = 'html,body,#root{background:' + bg + ';}'

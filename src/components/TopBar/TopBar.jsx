@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
-import { Minus, Square, X } from 'lucide-react'
+import { Minus, Square, X, PanelLeft } from 'lucide-react'
 import './TopBar.css'
 
-export default function TopBar() {
+export default function TopBar({ onToggleSidebar, sidebarExpanded }) {
     const [time, setTime] = useState(new Date())
 
     useEffect(() => {
@@ -13,6 +13,15 @@ export default function TopBar() {
     return (
         <header className="topbar" style={{ WebkitAppRegion: 'drag' }}>
             <div className="topbar-left">
+                <button
+                    className="sidebar-toggle-btn"
+                    onClick={onToggleSidebar}
+                    title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+                    aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+                    style={{ WebkitAppRegion: 'no-drag' }}
+                >
+                    <PanelLeft size={16} strokeWidth={1.8} />
+                </button>
                 <span className="topbar-brand">NetDuo</span>
                 <span className="topbar-sep">&middot;</span>
                 <span className="topbar-time mono">

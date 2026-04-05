@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
     LayoutDashboard, Radar, Stethoscope, Gauge,
@@ -24,7 +23,7 @@ const BOTTOM = [
     { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
-function NavBtn({ path, icon: Icon, label, expanded }) {
+function NavBtn({ path, icon: Icon, label }) {
     return (
         <NavLink
             to={path}
@@ -32,40 +31,31 @@ function NavBtn({ path, icon: Icon, label, expanded }) {
             data-tip={label}
         >
             <Icon size={19} strokeWidth={1.8} />
-            {expanded && <span className="nav-label">{label}</span>}
+            <span className="nav-label">{label}</span>
         </NavLink>
     )
 }
 
-export default function Sidebar() {
-    const [expanded, setExpanded] = useState(() => {
-        try { return localStorage.getItem('sidebar-expanded') === 'true' } catch { return false }
-    })
-
-    useEffect(() => {
-        localStorage.setItem('sidebar-expanded', expanded)
-        document.documentElement.style.setProperty('--rail-w', expanded ? '200px' : '64px')
-    }, [expanded])
-
+export default function Sidebar({ expanded }) {
     return (
         <nav className={`sidebar-rail ${expanded ? 'expanded' : ''}`}>
             <div className="rail-top">
-                <div className="rail-logo" onClick={() => setExpanded(e => !e)} title={expanded ? 'Collapse' : 'Expand'}>
+                <div className="rail-logo">
                     <span className="logo-mark">
                         <NetDuoAppIcon size={34} mode="accent" />
                     </span>
-                    {expanded && <span className="logo-text">NetDuo</span>}
+                    <span className="logo-text">NetDuo</span>
                 </div>
             </div>
 
             <div className="rail-nav">
-                {expanded && <div className="nav-section-label">Navigation</div>}
-                {NAV.map(n => <NavBtn key={n.path} {...n} expanded={expanded} />)}
+                <div className="nav-section-label">Navigation</div>
+                {NAV.map(n => <NavBtn key={n.path} {...n} />)}
             </div>
 
             <div className="rail-bottom">
-                {expanded && <div className="nav-section-label">System</div>}
-                {BOTTOM.map(n => <NavBtn key={n.path} {...n} expanded={expanded} />)}
+                <div className="nav-section-label">System</div>
+                {BOTTOM.map(n => <NavBtn key={n.path} {...n} />)}
             </div>
         </nav>
     )

@@ -84,3 +84,8 @@
     background: color-mix(in oklab, var(--color-info) 10%, var(--bg-app));
     color: var(--color-info);
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .host-tag { font-family: "Space Mono", monospace; background: #0a0a0a; border-color: #222222; border-radius: 4px; }
+[data-theme="nothing"] .monitor-net-chip { background: #0a0a0a; border-color: #222222; font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; border-radius: 4px; }
+[data-theme="nothing"] .monitor-net-chip-vpn { background: rgba(153,153,153,.08); border-color: #333333; color: #999999; }

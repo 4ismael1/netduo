@@ -276,8 +276,11 @@ select.v3-input {
     background: var(--bg-inset);
     border-radius: var(--radius-md);
     margin-bottom: 20px;
-    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;          /* Firefox */
 }
+.pill-tabs::-webkit-scrollbar { display: none; }
 .pill-tab {
     display: flex;
     align-items: center;
@@ -320,20 +323,14 @@ select.v3-input {
 @keyframes pulse-dot  { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 @keyframes page-enter-soft {
-    from {
-        opacity: 0;
-        transform: translateY(8px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+    from { opacity: 0; }
+    to   { opacity: 1; }
 }
 
 .page-enter {
     opacity: 0;
-    animation: page-enter-soft 220ms var(--ease-out) both;
-    will-change: opacity, transform;
+    animation: page-enter-soft 160ms ease-out both;
+    will-change: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -432,4 +429,263 @@ select.v3-input {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2394a3b8' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
 }
 
+/* ===========================================================
+   NOTHING THEME — Monochrome industrial, Nothing OS inspired
+   =========================================================== */
+[data-theme="nothing"] {
+    /* -- Typography -- */
+    --font-sans: "Space Grotesk", "DM Sans", system-ui, sans-serif;
+    --font-mono: "Space Mono", "JetBrains Mono", "SF Mono", monospace;
+
+    /* -- Palette (pure monochrome, no blue tint) -- */
+    --white: #000000;
+    --gray-50: #0a0a0a;
+    --gray-100: #111111;
+    --gray-200: #1a1a1a;
+    --gray-300: #222222;
+    --gray-400: #666666;
+    --gray-500: #999999;
+    --gray-600: #b3b3b3;
+    --gray-700: #cccccc;
+    --gray-800: #e0e0e0;
+    --gray-900: #e8e8e8;
+
+    /* -- Semantic -- */
+    --bg-app: #000000;
+    --bg-surface: #111111;
+    --bg-surface-hover: #1a1a1a;
+    --bg-inset: #0a0a0a;
+
+    --border-subtle: #1a1a1a;
+    --border-light: #222222;
+    --border-strong: #333333;
+
+    --text-primary: #e8e8e8;
+    --text-secondary: #999999;
+    --text-muted: #666666;
+
+    /* -- Status -- */
+    --color-success: #4A9E5C;
+    --color-success-bg: rgba(74, 158, 92, 0.08);
+    --color-success-border: rgba(74, 158, 92, 0.20);
+    --color-warning: #D4A843;
+    --color-warning-bg: rgba(212, 168, 67, 0.08);
+    --color-warning-border: rgba(212, 168, 67, 0.20);
+    --color-danger: #D71921;
+    --color-danger-bg: rgba(215, 25, 33, 0.08);
+    --color-danger-border: rgba(215, 25, 33, 0.20);
+    --color-info: #999999;
+    --color-info-bg: rgba(153, 153, 153, 0.08);
+    --color-info-border: rgba(153, 153, 153, 0.20);
+
+    /* -- No shadows (flat industrial) -- */
+    --shadow-xs: none;
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: none;
+
+    /* -- Sharper radii -- */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+
+    /* -- Motion -- */
+    --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+    --dur-fast: 150ms;
+    --dur-normal: 250ms;
+
+    color-scheme: dark;
+}
+
+/* ── Nothing: Badge overrides ── */
+[data-theme="nothing"] .v3-badge.success { background: rgba(74, 158, 92, 0.15); color: #5cb870; }
+[data-theme="nothing"] .v3-badge.warning { background: rgba(212, 168, 67, 0.15); color: #D4A843; }
+[data-theme="nothing"] .v3-badge.danger  { background: rgba(215, 25, 33, 0.15); color: #ef4444; }
+[data-theme="nothing"] .v3-badge.info    { background: rgba(153, 153, 153, 0.15); color: #b3b3b3; }
+
+/* ── Nothing: Scrollbar ── */
+[data-theme="nothing"] ::-webkit-scrollbar-thumb { background: #333333; }
+[data-theme="nothing"] ::-webkit-scrollbar-thumb:hover { background: #444444; }
+
+/* ── Nothing: Table ── */
+[data-theme="nothing"] .np-table th { background: var(--bg-inset); }
+[data-theme="nothing"] .np-table tbody tr:hover td { background: var(--bg-surface-hover); }
+
+/* ── Nothing: Pill tabs — ALL CAPS monospace ── */
+[data-theme="nothing"] .pill-tabs {
+    background: #0a0a0a;
+    border: 1px solid #222222;
+    border-radius: 6px;
+}
+[data-theme="nothing"] .pill-tab {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    font-weight: 400;
+    border-radius: 4px;
+    padding: 7px 14px;
+}
+[data-theme="nothing"] .pill-tab:hover { background: rgba(255,255,255,0.04); }
+[data-theme="nothing"] .pill-tab.active {
+    background: #e8e8e8;
+    color: #000000;
+    font-weight: 700;
+}
+
+/* ── Nothing: Inputs — underline style ── */
+[data-theme="nothing"] .v3-input {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #333333;
+    border-radius: 0;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    transition: border-color 200ms ease;
+}
+[data-theme="nothing"] .v3-input:focus {
+    border-bottom-color: var(--text-primary);
+    box-shadow: none;
+    outline: none;
+}
+[data-theme="nothing"] select.v3-input {
+    border: 1px solid #333333;
+    border-radius: 4px;
+    background: #111111 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23999999' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E") no-repeat right 12px center;
+}
+
+/* ── Nothing: Buttons ── */
+[data-theme="nothing"] .v3-btn {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 999px;
+    min-height: 38px;
+    padding: 8px 20px;
+}
+[data-theme="nothing"] .v3-btn-primary {
+    background: #e8e8e8;
+    color: #000000;
+    border: none;
+}
+[data-theme="nothing"] .v3-btn-primary:hover {
+    background: #ffffff;
+}
+[data-theme="nothing"] .v3-btn-primary:disabled {
+    background: #333333;
+    color: #666666;
+}
+[data-theme="nothing"] .v3-btn-secondary {
+    background: transparent;
+    border: 1px solid #333333;
+    color: var(--text-primary);
+}
+[data-theme="nothing"] .v3-btn-secondary:hover {
+    border-color: #555555;
+    background: rgba(255,255,255,0.03);
+}
+
+/* ── Nothing: Cards — flat, bordered ── */
+[data-theme="nothing"] .v3-card {
+    background: #111111;
+    border: 1px solid #222222;
+    box-shadow: none;
+    border-radius: 12px;
+}
+[data-theme="nothing"] .v3-card-header {
+    border-bottom-color: #1a1a1a;
+}
+[data-theme="nothing"] .v3-card-title {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 13px;
+}
+
+/* ── Nothing: Labels ── */
+[data-theme="nothing"] .v3-label-sm {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* ── Nothing: Page titles ── */
+[data-theme="nothing"] .v3-page-title {
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+[data-theme="nothing"] .v3-page-subtitle {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    color: #666666;
+}
+
+/* ── Nothing: Dot-grid motif (signature visual) ── */
+[data-theme="nothing"] .v3-page-layout {
+    background-image: radial-gradient(circle, #1c1c1c 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+/* Cards: NO dot-grid (inherits to children and breaks selects/inputs) */
+[data-theme="nothing"] .dash {
+    background-image: radial-gradient(circle, #1c1c1c 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+
+/* ── Nothing: Status pill ── */
+[data-theme="nothing"] .status-pill {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+
+/* ── Nothing: Terminal output ── */
+[data-theme="nothing"] .terminal-output {
+    background: #0a0a0a;
+    border-color: #222222;
+    color: #999999;
+    font-family: var(--font-mono);
+}
+
+/* ── Nothing: Toggle switches ── */
+[data-theme="nothing"] .toggle-track {
+    background: #222222;
+}
+[data-theme="nothing"] .toggle-input:checked + .toggle-track {
+    background: #e8e8e8;
+}
+[data-theme="nothing"] .toggle-thumb {
+    background: #666666;
+}
+[data-theme="nothing"] .toggle-input:checked + .toggle-track .toggle-thumb {
+    background: #000000;
+}
+
+/* ── Nothing: Segmented progress bars (signature element) ── */
+[data-theme="nothing"] progress,
+[data-theme="nothing"] .progress-bar {
+    border-radius: 2px;
+}
+
+/* ── Nothing: Hover states — minimal, no glow ── */
+[data-theme="nothing"] .v3-card:hover {
+    box-shadow: none;
+}
+
+/* ── Nothing: Disabled states ── */
+[data-theme="nothing"] .v3-input:disabled {
+    opacity: 0.4;
+    border-bottom-color: #1a1a1a;
+}
+
+/* ── Nothing: Mono class ── */
+[data-theme="nothing"] .mono {
+    font-family: "Space Mono", monospace;
+}
 

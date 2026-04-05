@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
     AlertCircle,
@@ -3415,23 +3416,14 @@ export default function WanProbe() {
                 </motion.div>
             )}
 
-            {/* Add Probe Modal */}
-            <AnimatePresence>
-                {showAddModal && (
-                    <motion.div
-                        className="wp2-modal-overlay"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.18 }}
+            {/* Add Probe Modal — portaled to body so it covers sidebar & topbar */}
+            {showAddModal && createPortal(
+                    <div
+                        className="wp2-modal-overlay wp2-modal-open"
                         onClick={() => setShowAddModal(false)}
                     >
-                        <motion.div
-                            className="wp2-modal"
-                            initial={{ opacity: 0, scale: 0.95, y: 16 }}
-                            animate={{ opacity: 1, scale: 1, y: 0 }}
-                            exit={{ opacity: 0, scale: 0.95, y: 16 }}
-                            transition={{ duration: 0.2 }}
+                        <div
+                            className="wp2-modal wp2-modal-enter"
                             onClick={e => e.stopPropagation()}
                         >
                             <div className="wp2-modal-header">
@@ -3520,10 +3512,10 @@ export default function WanProbe() {
                                     Add Probe
                                 </button>
                             </div>
-                        </motion.div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
+                        </div>
+                    </div>,
+                document.body
+            )}
         </div>
     )
 }

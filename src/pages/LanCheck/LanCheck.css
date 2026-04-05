@@ -112,6 +112,12 @@
     overflow: hidden;
 }
 
+.lchk-setup-card,
+.lchk-plan-card,
+.lchk-live-card,
+.lchk-history-card {
+    contain: layout style paint;
+}
 .lchk-setup-card::after,
 .lchk-plan-card::after,
 .lchk-live-card::after,
@@ -124,6 +130,7 @@
     height: 170px;
     pointer-events: none;
     background: radial-gradient(circle, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 70%);
+    will-change: opacity;
 }
 
 .lchk-profile-grid {
@@ -1023,3 +1030,14 @@
 
     .lchk-open-ports-card .np-table { min-width: 760px; }
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .lchk-page { --lchk-panel: #111111; }
+[data-theme="nothing"] .lchk-setup-card,
+[data-theme="nothing"] .lchk-plan-card,
+[data-theme="nothing"] .lchk-live-card,
+[data-theme="nothing"] .lchk-history-card { background: #111111; border-color: #222222; box-shadow: none; border-radius: 8px; }
+[data-theme="nothing"] .lchk-setup-card::after,
+[data-theme="nothing"] .lchk-plan-card::after,
+[data-theme="nothing"] .lchk-live-card::after,
+[data-theme="nothing"] .lchk-history-card::after { opacity: 0; }

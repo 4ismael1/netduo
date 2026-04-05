@@ -102,6 +102,9 @@
     overflow: hidden;
 }
 
+.wp2-card {
+    contain: layout style paint;
+}
 .wp2-card::after {
     content: '';
     position: absolute;
@@ -112,6 +115,7 @@
     pointer-events: none;
     opacity: .55;
     transition: opacity .3s ease;
+    will-change: opacity;
 }
 
 .wp2-label {
@@ -1910,16 +1914,26 @@
 }
 
 /* ═══ Add Probe Modal ═══ */
+@keyframes modal-overlay-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+@keyframes modal-panel-in {
+    from { opacity: 0; transform: scale(0.96) translateY(10px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
 .wp2-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: 999;
+    z-index: 9999;
     display: grid;
     place-items: center;
     background: rgba(0, 0, 0, .45);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     padding: 24px;
+    animation: modal-overlay-in 180ms ease-out both;
 }
 
 .wp2-modal {
@@ -1930,6 +1944,7 @@
     border-radius: 16px;
     box-shadow: 0 24px 64px rgba(0, 0, 0, .25);
     overflow: hidden;
+    animation: modal-panel-in 200ms cubic-bezier(0.25, 1, 0.5, 1) both;
 }
 
 .wp2-modal-header {
@@ -2009,3 +2024,47 @@
 [data-theme="dark"] .wp2-modal-footer {
     background: var(--bg-inset);
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .wp2-page {
+    --wp2-panel: #111111;
+    --wp2-glow: rgba(215, 25, 33, 0.10);
+}
+[data-theme="nothing"] .wp2-card { background: #111111; border-color: #222222; box-shadow: none; border-radius: 8px; }
+[data-theme="nothing"] .wp2-card::after { opacity: 0; }
+[data-theme="nothing"] .wp2-run-card { background: #111111; }
+[data-theme="nothing"] .wp2-mode-card,
+[data-theme="nothing"] .wp2-profile-card,
+[data-theme="nothing"] .wp2-flow-block,
+[data-theme="nothing"] .wp2-custom-scope-panel,
+[data-theme="nothing"] .wp2-probe-item,
+[data-theme="nothing"] .wp2-step,
+[data-theme="nothing"] .wp2-metric,
+[data-theme="nothing"] .wp2-stat-item,
+[data-theme="nothing"] .wp2-risk-card,
+[data-theme="nothing"] .wp2-probe-run,
+[data-theme="nothing"] .wp2-finding,
+[data-theme="nothing"] .wp2-detail-box,
+[data-theme="nothing"] .wp2-report-probe-tab,
+[data-theme="nothing"] .wp2-filter-btn,
+[data-theme="nothing"] .wp2-summary-pill { background: #0a0a0a; border-color: #222222; }
+[data-theme="nothing"] .wp2-mode-card.active,
+[data-theme="nothing"] .wp2-profile-card.active,
+[data-theme="nothing"] .wp2-probe-item.selected { background: var(--color-accent-ghost); border-color: var(--color-accent); }
+[data-theme="nothing"] .wp2-stage-chip.active { background: var(--color-accent-ghost); color: var(--color-accent); }
+[data-theme="nothing"] .wp2-progress-dial { box-shadow: none; }
+[data-theme="nothing"] .wp2-progress-dial::before { background: #111111; border-color: #222222; }
+[data-theme="nothing"] .wp2-modal-overlay { background: rgba(0, 0, 0, .80); }
+[data-theme="nothing"] .wp2-modal { background: #111111; border-color: #333333; box-shadow: none; border-radius: 12px; }
+[data-theme="nothing"] .wp2-modal-header h3 { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 13px; }
+[data-theme="nothing"] .wp2-modal-footer { background: #0a0a0a; }
+[data-theme="nothing"] .wp2-label { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+[data-theme="nothing"] .wp2-finding.sev-critical { border-left-color: #D71921; }
+[data-theme="nothing"] .wp2-finding.sev-high { border-left-color: #D4A843; }
+[data-theme="nothing"] .wp2-mini-chip.critical { color: #D71921; background: rgba(215,25,33,.1); }
+[data-theme="nothing"] .wp2-sev-chip.sev-critical { color: #D71921; background: rgba(215,25,33,.1); }
+[data-theme="nothing"] .wp2-state-badge.open { color: #D71921; background: rgba(215,25,33,.1); }
+[data-theme="nothing"] .wp2-state-badge.closed { color: #4A9E5C; background: rgba(74,158,92,.1); }
+[data-theme="nothing"] .wp2-recommendation { color: #4A9E5C; }
+[data-theme="nothing"] .wp2-token-meta { color: #4A9E5C; }
+[data-theme="nothing"] .wp2-advanced-panel { background: #0a0a0a; border-color: #222222; }

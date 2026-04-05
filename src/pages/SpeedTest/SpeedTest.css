@@ -583,3 +583,25 @@
         padding-bottom: 6px;
     }
 }
+
+/* ═══ Nothing Theme ═══ */
+[data-theme="nothing"] .st-server-btn { background: #111111; border-color: #222222; border-radius: 6px; }
+[data-theme="nothing"] .st-server-btn:hover:not(:disabled) { border-color: #444444; }
+[data-theme="nothing"] .st-server-dropdown { background: #111111; border-color: #222222; border-radius: 6px; box-shadow: none; }
+[data-theme="nothing"] .st-server-opt:hover { background: #1a1a1a; }
+[data-theme="nothing"] .st-server-opt.active { background: var(--color-accent-ghost); }
+[data-theme="nothing"] .st-server-opt-name { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .st-server-opt-loc { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .st-live-tag { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; }
+[data-theme="nothing"] .st-live-tag.dl { color: #e8e8e8; }
+[data-theme="nothing"] .st-live-tag.ul { color: #999999; }
+[data-theme="nothing"] .st-prog-track { background: #1a1a1a; border-radius: 2px; }
+[data-theme="nothing"] .st-prog-fill { border-radius: 2px; }
+[data-theme="nothing"] .st-prog-fill.dl { background: #e8e8e8; }
+[data-theme="nothing"] .st-prog-fill.ul { background: #666666; }
+[data-theme="nothing"] .st-stat { background: #111111; border-color: #222222; border-radius: 6px; }
+[data-theme="nothing"] .st-stat.active { border-color: var(--color-accent); background: var(--color-accent-ghost); }
+[data-theme="nothing"] .st-stat-label { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+[data-theme="nothing"] .st-stat-value { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .st-hist-row { border-color: #1a1a1a; }
+[data-theme="nothing"] .st-hist-row:hover { background: #0a0a0a; }
