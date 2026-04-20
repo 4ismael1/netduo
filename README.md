@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-3b82f6" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
@@ -28,6 +28,7 @@ It combines real-time diagnostics, LAN discovery, WAN exposure testing, and hist
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
 - [WAN Probe Integration](#wan-probe-integration)
+- [Privacy](#privacy)
 - [Security and Responsible Use](#security-and-responsible-use)
 - [License](#license)
 
@@ -49,26 +50,29 @@ Main value:
 ## Key Features
 
 - Real-time latency, packet loss, and host monitoring.
-- LAN device discovery and host-level diagnostics.
+- LAN device discovery with vendor, hostname, and MAC identification.
 - LAN Check with staged scan pipeline and report history.
 - WAN Check with synchronized multi-probe scanning.
 - TCP/UDP transport modes with profile-based execution.
-- Speed test engine with historical trend tracking.
-- Built-in protocol utilities (SSL, WHOIS, MTR, WoL, ARP).
+- Adaptive speed test (M-Lab NDT7, Cloudflare, Hetzner, OVH) with historical trends.
+- Built-in protocol utilities (SSL, WHOIS, MTR, WoL, ARP, DNS benchmark, subnet calc).
+- **Cancel anywhere**: every long-running operation (scan, speed test, probe, trace) can be stopped instantly from the UI.
+- No telemetry, no analytics, no tracking — fully local.
 - Desktop-native persistence and settings management.
 
 ## Modules
 
-- `Dashboard`: health summary, local/public IP, gateway/DNS, quick actions.
-- `Scanner`: LAN sweep, host detail modal, ping and open-port diagnostics.
-- `LAN Check`: setup -> scanning -> report -> history workflow.
+- `Dashboard`: health summary, local/public IP, gateway/DNS, Wi-Fi signal, quick actions.
+- `Speed Test`: download/upload stages, latency/jitter, cancellable, per-run history.
+- `Scanner`: LAN sweep with vendor detection, host detail modal, ping and open-port diagnostics.
+- `Monitor`: continuous host telemetry for latency and packet loss with configurable alerts.
+- `Diagnostics`: traceroute, live ping, MTR, parallel DNS resolution, port checker, port scanner.
+- `Tools`: SSL inspector, HTTP tester, WHOIS, DNS benchmark, subnet calculator, ARP cache, Wake-on-LAN.
+- `LAN Check`: setup → scanning → report → history workflow for local security auditing.
 - `WAN Check`: quick/advanced/deep profiles, multi-probe orchestration, normalized findings.
-- `Speed Test`: download/upload stages, latency/jitter, per-run history.
-- `Monitor`: continuous host telemetry for latency and packet loss.
-- `Diagnostics`: traceroute, live ping, DNS resolver, TCP port scan.
-- `Tools`: SSL checker, WHOIS, ARP cache, MTR, Wake-on-LAN.
-- `History`: centralized activity timeline.
-- `Settings`: theme, accents, polling and alert preferences.
+- `Network`: full interface inventory, public IP with geolocation, Wi-Fi, VPN, DNS config.
+- `History`: centralized activity timeline across every module.
+- `Settings`: theme, accents, polling, alert thresholds, privacy policy link.
 
 ## Screenshots
 
@@ -195,6 +199,14 @@ Operational recommendation:
 
 - Keep all probes on the same API version before running multi-probe scans.
 - Validate probe versions via each probe `/version` endpoint.
+
+## Privacy
+
+NetDuo has no backend and collects no personal data. There is no telemetry, no analytics, and no tracking. All test history and settings live locally in SQLite inside the Windows user-data directory.
+
+External requests are only made to public services you explicitly use (speed-test servers, DNS resolvers, WHOIS, MAC vendor lookup, public IP/geolocation).
+
+Full policy: [4ismael1.github.io/netduo/privacy](https://4ismael1.github.io/netduo/privacy)
 
 ## Security and Responsible Use
 
