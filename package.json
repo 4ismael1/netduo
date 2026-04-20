@@ -69,9 +69,9 @@
       "uninstallerIcon": "electron/assets/icon.ico"
     },
     "appx": {
-      "identityName": "4Ismael1.NetDuo",
-      "publisher": "CN=4Ismael1",
-      "publisherDisplayName": "4Ismael1",
+      "identityName": "Tyr.NetDuo",
+      "publisher": "CN=66B3CC9B-1117-477F-87D8-26DBF0D9ED4F",
+      "publisherDisplayName": "Tyr",
       "applicationId": "NetDuo",
       "displayName": "NetDuo",
       "backgroundColor": "#111111",
