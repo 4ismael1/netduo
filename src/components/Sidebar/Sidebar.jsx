@@ -8,14 +8,14 @@ import './Sidebar.css'
 
 const NAV = [
     { path: '/dashboard',   icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/network',     icon: Globe,           label: 'Network' },
-    { path: '/monitor',     icon: Activity,        label: 'Monitor' },
     { path: '/speedtest',   icon: Gauge,           label: 'Speed Test' },
-    { path: '/diagnostics', icon: Stethoscope,     label: 'Diagnostics' },
     { path: '/scanner',     icon: Radar,           label: 'Scanner' },
+    { path: '/monitor',     icon: Activity,        label: 'Monitor' },
+    { path: '/diagnostics', icon: Stethoscope,     label: 'Diagnostics' },
+    { path: '/tools',       icon: Wrench,          label: 'Tools' },
     { path: '/lan-check',   icon: ShieldCheck,     label: 'LAN Check' },
     { path: '/wan-probe',   icon: ShieldAlert,     label: 'WAN Check' },
-    { path: '/tools',       icon: Wrench,          label: 'Tools' },
+    { path: '/network',     icon: Globe,           label: 'Network' },
 ]
 
 const BOTTOM = [

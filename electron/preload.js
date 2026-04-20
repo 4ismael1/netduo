@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Tools
     scanPorts: (host, start, end) => ipcRenderer.invoke('scan-ports', host, start, end),
+    stopPortScan: () => ipcRenderer.send('stop-port-scan'),
     httpTest: (url, method, headers) => ipcRenderer.invoke('http-test', url, method, headers),
     lanScan: (base, start, end) => ipcRenderer.invoke('lan-scan', base, start, end),
     lanScanEnrich: (payload) => ipcRenderer.invoke('lan-scan-enrich', payload),
@@ -71,6 +72,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     speedLatency: () => ipcRenderer.invoke('speed-latency'),
     speedGetServers: () => ipcRenderer.invoke('speed-get-servers'),
     speedTestFull: (serverId) => ipcRenderer.invoke('speed-test-full', serverId),
+    stopSpeedTest: () => ipcRenderer.send('stop-speed-test'),
     onSpeedProgress: (callback) => {
         const handler = (_event, data) => callback(data)
         ipcRenderer.on('speed-progress', handler)

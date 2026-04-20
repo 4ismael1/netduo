@@ -49,6 +49,14 @@ function TraceroutePanel() {
         )
     }
 
+    function stop() {
+        bridge.offTraceroute()
+        setRunning(false)
+        setDone(true)
+    }
+
+    useEffect(() => () => { bridge.offTraceroute() }, [])
+
     function latencyColor(avg) {
         if (!avg) return 'var(--text-muted)'
         const v = parseFloat(avg)
@@ -66,9 +74,15 @@ function TraceroutePanel() {
                         onKeyDown={e => e.key === 'Enter' && !running && start()}
                         placeholder="Target Host or IP address" />
                 </div>
-                <button className="v3-btn v3-btn-primary" onClick={start} disabled={running || !host.trim()}>
-                    {running ? <><Loader2 size={16} className="spin-icon" /> Tracing Path...</> : <><Rss size={16} /> Start Trace</>}
-                </button>
+                {running ? (
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={stop}>
+                        <XCircle size={16} /> Stop Trace
+                    </button>
+                ) : (
+                    <button className="v3-btn v3-btn-primary" onClick={start} disabled={!host.trim()}>
+                        <Rss size={16} /> Start Trace
+                    </button>
+                )}
             </div>
 
             {error && <div style={{ color:'var(--color-danger)', fontSize:13, display:'flex', alignItems:'center', gap:6, marginBottom:16 }}><AlertCircle size={14}/>{error}</div>}
@@ -126,6 +140,13 @@ function PingPanel() {
         if (replyRef.current) replyRef.current.scrollTop = replyRef.current.scrollHeight
     }, [replies])
 
+    useEffect(() => () => { bridge.offPingLive() }, [])
+
+    function stop() {
+        bridge.offPingLive()
+        setRunning(false)
+    }
+
     function start() {
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 1.1.1.1 or google.com)'); return }
@@ -165,9 +186,15 @@ function PingPanel() {
                 <select className="v3-input" style={{ width: 120, paddingLeft: 12 }} value={count} onChange={e => setCount(Number(e.target.value))}>
                     {[5, 10, 15, 30, 50, 100].map(n => <option key={n} value={n}>{n} packets</option>)}
                 </select>
-                <button className="v3-btn v3-btn-primary" onClick={start} disabled={running || !host.trim()}>
-                    {running ? <><Loader2 size={16} className="spin-icon" /> Pinging...</> : <><Activity size={16} /> Start Ping</>}
-                </button>
+                {running ? (
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={stop}>
+                        <XCircle size={16} /> Stop Ping
+                    </button>
+                ) : (
+                    <button className="v3-btn v3-btn-primary" onClick={start} disabled={!host.trim()}>
+                        <Activity size={16} /> Start Ping
+                    </button>
+                )}
             </div>
 
             {error && <div style={{ color:'var(--color-danger)', fontSize:13, display:'flex', alignItems:'center', gap:6, marginBottom:16 }}><AlertCircle size={14}/>{error}</div>}
@@ -336,9 +363,15 @@ function PortScanPanel() {
                     <span style={{ color: 'var(--text-muted)' }}>to</span>
                     <input className="v3-input mono" type="number" value={endP} onChange={e => setEndP(+e.target.value)} style={{ width: 80, paddingLeft: 12 }} min={1} max={65535} />
                 </div>
-                <button className="v3-btn v3-btn-primary" onClick={scan} disabled={loading}>
-                    {loading ? <><Loader2 size={16} className="spin-icon" /> Scanning...</> : <><Search size={16} /> Scan Ports</>}
-                </button>
+                {loading ? (
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => bridge.stopPortScan?.()}>
+                        <XCircle size={16} /> Stop Scan
+                    </button>
+                ) : (
+                    <button className="v3-btn v3-btn-primary" onClick={scan}>
+                        <Search size={16} /> Scan Ports
+                    </button>
+                )}
             </div>
 
             {error && <div style={{ color:'var(--color-danger)', fontSize:13, display:'flex', alignItems:'center', gap:6, marginBottom:16 }}><AlertCircle size={14}/>{error}</div>}

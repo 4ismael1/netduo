@@ -3,7 +3,7 @@ import {
     Gauge, Play, RotateCcw, ArrowDown, ArrowUp, Clock,
     Waves, Loader2, CheckCircle, Zap, Server, Activity,
     Trophy, RefreshCw, ChevronDown, Globe, MapPin, Trash2,
-    ChevronLeft, ChevronRight
+    ChevronLeft, ChevronRight, XCircle
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
@@ -80,6 +80,7 @@ export default function SpeedTest() {
     const [ulSpeed, setUlSpeed] = useState(null)
     const [error, setError] = useState(null)
     const [history, setHistory] = useState([])
+    const [cancelling, setCancelling] = useState(false)
     const cleanupRef = useRef(null)
     const phaseRef = useRef('idle')
 
@@ -201,6 +202,17 @@ export default function SpeedTest() {
             }
             return
         }
+        if (p === 'cancelled') {
+            phaseRef.current = 'idle'
+            setPhase('idle')
+            setCancelling(false)
+            setError(null)
+            setServer(null)
+            setLatency(null); setJitter(null)
+            setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
+            setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
+            return
+        }
         if (p === 'error') {
             phaseRef.current = 'error'
             setPhase('error')
@@ -215,7 +227,7 @@ export default function SpeedTest() {
 
         // Full state reset
         phaseRef.current = 'init'
-        setPhase('init'); setError(null); setServer(null)
+        setPhase('init'); setError(null); setServer(null); setCancelling(false)
         setLatency(null); setJitter(null); setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
         setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
 
@@ -224,7 +236,8 @@ export default function SpeedTest() {
         try {
             const r = await bridge.speedTestFull(selectedServerId)
             // Only apply result if listener hasn't already pushed us to 'done'
-            if (r?.error) { phaseRef.current = 'error'; setError('Speed test failed — check your connection.'); setPhase('error') }
+            if (r?.error === 'cancelled') { /* cancellation handled via 'cancelled' progress event */ }
+            else if (r?.error) { phaseRef.current = 'error'; setError('Speed test failed — check your connection.'); setPhase('error') }
             else if (r) {
                 phaseRef.current = 'done'
                 setPhase('done')
@@ -257,6 +270,7 @@ export default function SpeedTest() {
         finally {
             if (typeof unsub === 'function') unsub()
             cleanupRef.current = null
+            setCancelling(false)
         }
     }
 
@@ -387,9 +401,14 @@ export default function SpeedTest() {
                     {/* CTA — always visible */}
                     <div className="st-cta">
                         {running ? (
-                            <button className="st-btn st-btn-testing" disabled>
-                                <Loader2 size={16} className="st-spin" />{phaseText(phase)}
-                            </button>
+                            <>
+                                <button className="st-btn st-btn-testing" disabled>
+                                    <Loader2 size={16} className="st-spin" />{cancelling ? 'Cancelling…' : phaseText(phase)}
+                                </button>
+                                <button className="st-btn-icon" onClick={() => { setCancelling(true); bridge.stopSpeedTest?.() }} disabled={cancelling} title="Cancel test" style={{ color: 'var(--color-danger)' }}>
+                                    <XCircle size={14} />
+                                </button>
+                            </>
                         ) : (
                             <button className="st-btn st-btn-start" onClick={runTest}>
                                 <Play size={16} />{isDone || phase === 'error' ? 'Test Again' : 'Start Test'}

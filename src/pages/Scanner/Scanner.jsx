@@ -3,7 +3,7 @@ import {
     Radar, Search, Router, Monitor, Smartphone, Laptop, Printer,
     Tv, HardDrive, Cpu, Wifi, Server, HelpCircle, Loader2,
     X, Globe, Clock, Signal, Shield, ChevronRight, RefreshCw,
-    Shuffle, Home, AlertCircle, Tag
+    Shuffle, Home, AlertCircle, Tag, XCircle
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
@@ -257,6 +257,11 @@ export default function Scanner() {
         bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: `${safeBaseIP}.0/24`, results: { found: found.length } })
         void enrichUnknownDevices(found, scanId)
     }
+
+    function stopScan() {
+        scanRunRef.current += 1
+        setScanning(false)
+    }
     async function openDetail(device) {
         setSelected(device); setDetailLoading(true); setDetailData(null)
         detailScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' })
@@ -362,10 +367,15 @@ export default function Scanner() {
                     <input className="v3-input sc-range mono" type="number" value={rangeStart} onChange={e=>{ setRangeStart(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
                     <span className="sc-sep">–</span>
                     <input className="v3-input sc-range mono" type="number" value={rangeEnd} onChange={e=>{ setRangeEnd(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
-                    <button className="v3-btn v3-btn-primary" onClick={startScan} disabled={scanning}>
-                        {scanning ? <Loader2 size={15} className="spin-icon" /> : <Search size={15} />}
-                        {scanning ? 'Scanning…' : 'Scan'}
-                    </button>
+                    {scanning ? (
+                        <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={stopScan}>
+                            <XCircle size={15} /> Stop
+                        </button>
+                    ) : (
+                        <button className="v3-btn v3-btn-primary" onClick={startScan}>
+                            <Search size={15} /> Scan
+                        </button>
+                    )}
                 </div>
             </div>
             {inputError && <div className="scan-error"><AlertCircle size={14} />{inputError}</div>}

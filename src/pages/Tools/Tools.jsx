@@ -442,6 +442,11 @@ function DnsBenchmark() {
     const [results, setResults] = useState(null)
     const runRef = useRef(0)
 
+    const stopBench = useCallback(() => {
+        runRef.current += 1
+        setRunning(false)
+    }, [])
+
     const runBench = useCallback(async () => {
         setRunning(true)
         setResults(null)
@@ -482,9 +487,15 @@ function DnsBenchmark() {
     return (
         <ToolCard title="DNS Benchmark" icon={Clock} description="Compare DNS resolver performance across multiple lookups">
             <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 20 }}>
-                <button className="v3-btn v3-btn-primary" onClick={runBench} disabled={running}>
-                    {running ? <><Loader2 size={16} className="spin-icon" /> Benchmarking...</> : <><Clock size={14} /> Run Benchmark</>}
-                </button>
+                {running ? (
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={stopBench}>
+                        <XCircle size={14} /> Stop Benchmark
+                    </button>
+                ) : (
+                    <button className="v3-btn v3-btn-primary" onClick={runBench}>
+                        <Clock size={14} /> Run Benchmark
+                    </button>
+                )}
             </div>
 
             {sorted && (

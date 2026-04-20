@@ -1435,21 +1435,39 @@ ipcMain.handle('lan-security-scan', async (_, payload = {}) => {
 })
 
 // ── Port Scanner ──────────────────────────────────────
+let portScanCtrl = null
+ipcMain.on('stop-port-scan', () => {
+    if (portScanCtrl) {
+        portScanCtrl.cancelled = true
+        for (const s of portScanCtrl.sockets) { try { s.destroy() } catch { /* noop */ } }
+        portScanCtrl.sockets.clear()
+    }
+})
 ipcMain.handle('scan-ports', async (_, host, startPort, endPort) => {
+    const ctrl = { cancelled: false, sockets: new Set() }
+    portScanCtrl = ctrl
     const results = []
     const ports = []
     for (let p = startPort; p <= endPort; p++) ports.push(p)
-    for (let i = 0; i < ports.length; i += 50) {
-        const batch = ports.slice(i, i + 50)
-        const res = await Promise.all(batch.map(port => new Promise(r => {
-            const s = new net.Socket()
-            s.setTimeout(800)
-            s.on('connect', () => { s.destroy(); r({ port, open: true }) })
-            s.on('timeout', () => { s.destroy(); r({ port, open: false }) })
-            s.on('error', () => r({ port, open: false }))
-            s.connect(port, host)
-        })))
-        results.push(...res.filter(r => r.open))
+    try {
+        for (let i = 0; i < ports.length; i += 50) {
+            if (ctrl.cancelled) break
+            const batch = ports.slice(i, i + 50)
+            const res = await Promise.all(batch.map(port => new Promise(r => {
+                if (ctrl.cancelled) return r({ port, open: false })
+                const s = new net.Socket()
+                ctrl.sockets.add(s)
+                const done = (payload) => { ctrl.sockets.delete(s); s.destroy(); r(payload) }
+                s.setTimeout(800)
+                s.on('connect', () => done({ port, open: true }))
+                s.on('timeout', () => done({ port, open: false }))
+                s.on('error', () => done({ port, open: false }))
+                s.connect(port, host)
+            })))
+            results.push(...res.filter(r => r.open))
+        }
+    } finally {
+        if (portScanCtrl === ctrl) portScanCtrl = null
     }
     return results
 })
@@ -2555,6 +2573,25 @@ const SPEED_SERVERS = [
     },
 ]
 
+// -- Speed test cancellation controller --------------------
+let speedTestCtrl = null
+function newSpeedTestCtrl() {
+    speedTestCtrl = { cancelled: false, closers: [] }
+    return speedTestCtrl
+}
+function registerSpeedCloser(ctrl, fn) {
+    if (!ctrl || ctrl.cancelled) { try { fn() } catch { /* noop */ } return }
+    ctrl.closers.push(fn)
+}
+function cancelSpeedTest() {
+    const ctrl = speedTestCtrl
+    if (!ctrl || ctrl.cancelled) return
+    ctrl.cancelled = true
+    for (const fn of ctrl.closers) { try { fn() } catch { /* noop */ } }
+    ctrl.closers.length = 0
+}
+ipcMain.on('stop-speed-test', () => cancelSpeedTest())
+
 // -- M-Lab NDT7 Protocol -----------------------------------
 const NDT7_LOCATE_URL = 'https://locate.measurementlab.net/v2/nearest/ndt/ndt7'
 const NDT7_TEST_DURATION = 10000 // 10 seconds per direction
@@ -2586,7 +2623,7 @@ function ndt7Locate() {
 }
 
 /** NDT7 download test via WebSocket */
-function ndt7Download(send, downloadUrl) {
+function ndt7Download(send, downloadUrl, ctrl) {
     return new Promise((resolve) => {
         const start = Date.now()
         let totalBytes = 0
@@ -2598,6 +2635,7 @@ function ndt7Download(send, downloadUrl) {
         const ws = new WsClient(downloadUrl, 'net.measurementlab.ndt.v7', {
             handshakeTimeout: 10000,
         })
+        registerSpeedCloser(ctrl, () => { try { ws.terminate() } catch { /* noop */ } })
 
         const timeout = setTimeout(() => { ws.close() }, NDT7_TEST_DURATION + 5000)
 
@@ -2661,7 +2699,7 @@ function ndt7Download(send, downloadUrl) {
 }
 
 /** NDT7 upload test via WebSocket */
-function ndt7Upload(send, uploadUrl) {
+function ndt7Upload(send, uploadUrl, ctrl) {
     return new Promise((resolve) => {
         const start = Date.now()
         let totalSent = 0
@@ -2674,6 +2712,7 @@ function ndt7Upload(send, uploadUrl) {
         const ws = new WsClient(uploadUrl, 'net.measurementlab.ndt.v7', {
             handshakeTimeout: 10000,
         })
+        registerSpeedCloser(ctrl, () => { try { ws.terminate() } catch { /* noop */ } })
 
         let uploading = false
         const endTime = Date.now() + NDT7_TEST_DURATION
@@ -2744,7 +2783,15 @@ function ndt7Upload(send, uploadUrl) {
 }
 
 /** Full NDT7 speed test flow (uses WebSocket protocol, no calibration needed) */
-async function runNdt7Test(send) {
+async function runNdt7Test(send, ctrl) {
+    const abortIfCancelled = () => {
+        if (ctrl?.cancelled) {
+            send('speed-progress', { phase: 'cancelled', message: 'Test cancelled' })
+            return true
+        }
+        return false
+    }
+
     // Discover server
     send('speed-progress', { phase: 'init', message: 'Discovering M-Lab server...' })
     let located
@@ -2754,6 +2801,7 @@ async function runNdt7Test(send) {
         send('speed-progress', { phase: 'error', message: 'Could not find M-Lab server' })
         return { error: 'M-Lab locate failed: ' + e.message }
     }
+    if (abortIfCancelled()) return { error: 'cancelled' }
 
     const SERVER_INFO = {
         name: 'M-Lab NDT7',
@@ -2766,12 +2814,14 @@ async function runNdt7Test(send) {
     const pings = []
     const pingTarget = located.hostname
     for (let i = 0; i < 5; i++) {
+        if (abortIfCancelled()) return { error: 'cancelled' }
         const t0 = Date.now()
         await new Promise(r => {
             const sock = net.createConnection({ host: pingTarget, port: 443, timeout: 3000 }, () => {
                 sock.destroy()
                 r()
             })
+            registerSpeedCloser(ctrl, () => { try { sock.destroy() } catch { /* noop */ } })
             sock.on('error', () => { sock.destroy(); r() })
             sock.on('timeout', () => { sock.destroy(); r() })
         })
@@ -2789,9 +2839,12 @@ async function runNdt7Test(send) {
     send('speed-progress', { phase: 'calibrating', message: 'NDT7 protocol - adaptive' })
     send('speed-progress', { phase: 'calibrated', probeSpeed: null, dlTarget: 0, ulTarget: 0 })
 
+    if (abortIfCancelled()) return { error: 'cancelled' }
+
     // Download via WebSocket
     send('speed-progress', { phase: 'download-start' })
-    const dlResult = await ndt7Download(send, located.downloadUrl)
+    const dlResult = await ndt7Download(send, located.downloadUrl, ctrl)
+    if (ctrl?.cancelled) { send('speed-progress', { phase: 'cancelled', message: 'Test cancelled' }); return { error: 'cancelled' } }
     if (dlResult.error) {
         send('speed-progress', { phase: 'error', message: 'NDT7 download failed' })
         return { error: 'NDT7 download failed' }
@@ -2799,10 +2852,12 @@ async function runNdt7Test(send) {
     send('speed-progress', { phase: 'download-done', speed: dlResult.speedMbps })
 
     await new Promise(r => setTimeout(r, 600))
+    if (abortIfCancelled()) return { error: 'cancelled' }
 
     // Upload via WebSocket
     send('speed-progress', { phase: 'upload-start' })
-    const ulResult = await ndt7Upload(send, located.uploadUrl)
+    const ulResult = await ndt7Upload(send, located.uploadUrl, ctrl)
+    if (ctrl?.cancelled) { send('speed-progress', { phase: 'cancelled', message: 'Test cancelled' }); return { error: 'cancelled' } }
     send('speed-progress', { phase: 'upload-done', speed: ulResult.speedMbps })
 
     const result = {
@@ -2829,7 +2884,7 @@ ipcMain.handle('speed-get-servers', () =>
 )
 
 /** Calibration probe - downloads a small amount for ~3 s to estimate speed */
-function runCalibrationProbe(server) {
+function runCalibrationProbe(server, ctrl) {
     return new Promise(resolve => {
         const PROBE_BYTES = 4 * 1024 * 1024      // 4 MB probe
         const MAX_PROBE_MS = 5000                 // 5 s max
@@ -2873,6 +2928,7 @@ function runCalibrationProbe(server) {
             res.on('end', finish)
             res.on('error', finish)
         })
+        registerSpeedCloser(ctrl, finish)
         req.on('error', finish)
         req.setTimeout(MAX_PROBE_MS + 1000, finish)
         setTimeout(finish, MAX_PROBE_MS)
@@ -2903,10 +2959,19 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
     if (!win) return { error: 'No window' }
     const send = (ch, data) => { try { win.webContents.send(ch, data) } catch { /* noop */ } }
 
+    const ctrl = newSpeedTestCtrl()
+    const abortIfCancelled = () => {
+        if (ctrl.cancelled) {
+            send('speed-progress', { phase: 'cancelled', message: 'Test cancelled' })
+            return true
+        }
+        return false
+    }
+
     const server = getSpeedServer(serverId)
 
     // -- NDT7 branch: entirely different protocol --
-    if (server.ndt7) return runNdt7Test(send)
+    if (server.ndt7) return runNdt7Test(send, ctrl)
 
     const SERVER_INFO = { name: server.name, location: server.location, host: server.id, sponsor: server.sponsor }
 
@@ -2916,9 +2981,11 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
     const serverPings = []
     const pingUrl = server.pingUrl || server.getDownloadUrl(1)
     for (let i = 0; i < 5; i++) {
+        if (abortIfCancelled()) return { error: 'cancelled' }
         const t0 = Date.now()
         await new Promise(r => {
             const req = https.get(pingUrl, res => { res.resume(); res.on('end', r) })
+            registerSpeedCloser(ctrl, () => { try { req.destroy() } catch { /* noop */ } })
             req.on('error', r)
             req.setTimeout(3000, () => { req.destroy(); r() })
         })
@@ -2933,10 +3000,12 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
         : null
 
     send('speed-progress', { phase: 'latency', latency: svrLatency, jitter: svrJitter, server: SERVER_INFO })
+    if (abortIfCancelled()) return { error: 'cancelled' }
 
     // Phase 1: Calibration probe
     send('speed-progress', { phase: 'calibrating', message: 'Calibrating...' })
-    const probe = await runCalibrationProbe(server)
+    const probe = await runCalibrationProbe(server, ctrl)
+    if (abortIfCancelled()) return { error: 'cancelled' }
     const probeMbps = Math.max(probe.speedMbps, 1)
 
     const dlTargetBytes = calcDownloadBytes(probeMbps)
@@ -2950,7 +3019,8 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
 
     // Phase 2: Download
     send('speed-progress', { phase: 'download-start' })
-    const dlResult = await runDownloadTest(send, server, dlTargetBytes)
+    const dlResult = await runDownloadTest(send, server, dlTargetBytes, ctrl)
+    if (abortIfCancelled()) return { error: 'cancelled' }
     if (dlResult.error) {
         send('speed-progress', { phase: 'error', message: 'Download test failed' })
         return { error: 'Download failed' }
@@ -2959,10 +3029,12 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
 
     const smartUlBytes = calcUploadBytes(dlResult.speedMbps)
     await new Promise(r => setTimeout(r, 600))
+    if (abortIfCancelled()) return { error: 'cancelled' }
 
     // Phase 3: Upload
     send('speed-progress', { phase: 'upload-start' })
-    const ulResult = await runUploadTest(send, server, smartUlBytes)
+    const ulResult = await runUploadTest(send, server, smartUlBytes, ctrl)
+    if (abortIfCancelled()) return { error: 'cancelled' }
     send('speed-progress', { phase: 'upload-done', speed: ulResult.speedMbps })
 
     // Done
@@ -2982,7 +3054,7 @@ ipcMain.handle('speed-test-full', async (event, serverId) => {
 })
 
 /** Adaptive download test with live progress */
-function runDownloadTest(send, server, targetBytes) {
+function runDownloadTest(send, server, targetBytes, ctrl) {
     return new Promise(resolve => {
         const url = server.variableSize
             ? server.getDownloadUrl(targetBytes)
@@ -3016,6 +3088,7 @@ function runDownloadTest(send, server, targetBytes) {
 
             res.on('data', chunk => {
                 totalBytes += chunk.length
+                if (ctrl?.cancelled) { finish(); return }
 
                 // Track warmup
                 if (measureStart === 0 && totalBytes >= WARMUP) {
@@ -3058,13 +3131,14 @@ function runDownloadTest(send, server, targetBytes) {
             res.on('end', finish)
             res.on('error', () => { if (!done) resolve({ error: true }) })
         })
+        registerSpeedCloser(ctrl, finish)
         req.on('error', () => { if (!done) resolve({ error: true }) })
         req.setTimeout(45000, () => { req.destroy(); if (!done) resolve({ error: true }) })
     })
 }
 
 /** Adaptive upload test with live progress */
-function runUploadTest(send, server, targetBytes) {
+function runUploadTest(send, server, targetBytes, ctrl) {
     return new Promise(resolve => {
         const payload = Buffer.alloc(targetBytes, 0x41)
         const start = Date.now()
@@ -3103,11 +3177,13 @@ function runUploadTest(send, server, targetBytes) {
             }
         })
         req.setTimeout(45000, () => { req.destroy() })
+        registerSpeedCloser(ctrl, () => { try { req.destroy() } catch { /* noop */ } })
 
         const CHUNK = 64 * 1024
         let offset = 0
 
         function writeNext() {
+            if (ctrl?.cancelled) { try { req.destroy() } catch { /* noop */ } return }
             let ok = true
             while (ok && offset < targetBytes) {
                 const end = Math.min(offset + CHUNK, targetBytes)

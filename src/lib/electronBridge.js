@@ -303,6 +303,7 @@ const bridge = {
                 const open = [21, 22, 25, 53, 80, 110, 143, 443, 587, 993, 995, 3306, 3389, 5432, 8080].filter(p => p >= start && p <= end)
                 r(open.map(port => ({ port, open: true })))
             }, 1500 + (end - start) * 5)),
+    stopPortScan: () => API?.stopPortScan?.(),
 
     // HTTP test
     httpTest: (url, method, headers) =>
@@ -461,6 +462,7 @@ const bridge = {
                 download: rnd(45, 180), upload: rnd(15, 80),
                 dlBytes: 25000000, ulBytes: 10000000, dlTime: rnd(1, 4), ulTime: rnd(1, 5),
             }), 8000)),
+    stopSpeedTest: () => API?.stopSpeedTest?.(),
     onSpeedProgress: (callback) => {
         if (API?.onSpeedProgress) return API.onSpeedProgress(callback)
         // Mock: simulate live progress events
