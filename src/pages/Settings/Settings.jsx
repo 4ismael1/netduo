@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from 'react'
-import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot } from 'lucide-react'
+import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import './Settings.css'
@@ -112,6 +112,14 @@ export default function Settings() {
         })
     }
 
+    function openPrivacyPolicy() {
+        const url = 'https://4ismael1.github.io/netduo/privacy'
+        bridge.openExternal(url).catch(error => {
+            logBridgeWarning('settings:open-privacy', error)
+            window.open(url, '_blank', 'noopener,noreferrer')
+        })
+    }
+
     return (
         <div className="v3-page-layout page-enter">
             <div className="v3-page-header">
@@ -203,21 +211,33 @@ export default function Settings() {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                v1
+                                v1.2
                             </span>
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>
                         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>Developer: Ismael (@4ismael1)</div>
-                        <button
-                            type="button"
-                            onClick={openGithub}
-                            className="v3-btn v3-btn-secondary"
-                            style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8 }}
-                        >
-                            <Github size={14} />
-                            <ExternalLink size={13} />
-                            Visit GitHub
-                        </button>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                            <button
+                                type="button"
+                                onClick={openGithub}
+                                className="v3-btn v3-btn-secondary"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                            >
+                                <Github size={14} />
+                                <ExternalLink size={13} />
+                                Visit GitHub
+                            </button>
+                            <button
+                                type="button"
+                                onClick={openPrivacyPolicy}
+                                className="v3-btn v3-btn-secondary"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                            >
+                                <Shield size={14} />
+                                <ExternalLink size={13} />
+                                Privacy Policy
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
