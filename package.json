@@ -1,6 +1,6 @@
 {
   "name": "netduo",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "author": "4Ismael1",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -42,6 +42,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
+    "sharp": "^0.34.5",
     "vite": "^7.3.1",
     "vitest": "^4.0.18",
     "wait-on": "^9.0.4"
@@ -74,7 +75,8 @@
       "publisherDisplayName": "Tyr",
       "applicationId": "NetDuo",
       "displayName": "NetDuo",
-      "backgroundColor": "#111111",
+      "backgroundColor": "#7DC2EE",
+      "showNameOnTiles": false,
       "languages": [
         "en-US",
         "es-ES"
