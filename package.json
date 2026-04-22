@@ -2,7 +2,7 @@
   "name": "netduo",
   "version": "1.2.1",
   "private": true,
-  "author": "4Ismael1",
+  "author": "Ismael Paulino",
   "license": "PolyForm-Noncommercial-1.0.0",
   "main": "electron/main.js",
   "scripts": {
@@ -50,7 +50,7 @@
   "build": {
     "appId": "com.netduo.app",
     "productName": "NetDuo",
-    "copyright": "Copyright © 2026 4Ismael1",
+    "copyright": "Copyright © 2026 Ismael Paulino",
     "directories": {
       "output": "dist-electron"
     },

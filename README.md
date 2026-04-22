@@ -8,7 +8,10 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0-3b82f6" />
+  <a href="https://apps.microsoft.com/detail/9PP5SB94FD03">
+    <img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-Download-0078D4?logo=microsoft&logoColor=white" />
+  </a>
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.1-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
@@ -18,8 +21,20 @@
 NetDuo is a production-oriented desktop app for network operations and security validation.
 It combines real-time diagnostics, LAN discovery, WAN exposure testing, and historical reporting in a single workflow.
 
+## Install
+
+<p align="center">
+  <a href="https://apps.microsoft.com/detail/9PP5SB94FD03">
+    <img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="52" />
+  </a>
+</p>
+
+- **Microsoft Store (recommended):** [apps.microsoft.com/detail/9PP5SB94FD03](https://apps.microsoft.com/detail/9PP5SB94FD03) — auto-updates, clean install, no SmartScreen prompts.
+- **Standalone installer:** grab the latest `NetDuo Setup X.Y.Z.exe` from [GitHub Releases](https://github.com/4ismael1/netduo/releases).
+
 ## Table of Contents
 
+- [Install](#install)
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Modules](#modules)
