@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
@@ -12,6 +12,7 @@ import {
     EyeOff,
     Github,
     Globe,
+    History,
     Info,
     KeyRound,
     Loader2,
@@ -20,6 +21,7 @@ import {
     Plus,
     Plug,
     Radar,
+    RefreshCw,
     RotateCcw,
     Search,
     Server,
@@ -29,11 +31,13 @@ import {
     SlidersHorizontal,
     Sparkles,
     Target,
+    Trash2,
     Unplug,
     Wifi,
     X,
     Zap,
 } from 'lucide-react'
+import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import './WanProbe.css'
@@ -1159,11 +1163,19 @@ async function probeRequest(baseUrl, path, apiKey, method = 'GET', body = null) 
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`
     if (body != null) headers['Content-Type'] = 'application/json'
 
+    // The WAN probe handler in main.js defaults to a strict policy
+    // (HTTPS only, cert verification on) as a general SSRF shield. Probe
+    // pool entries are user-configured endpoints with an API key, so the
+    // user has already declared intent — we opt in explicitly here. A
+    // misuse from the renderer would have to forge THIS exact call path
+    // to bypass the defaults, which is acceptable defense-in-depth.
     const response = await bridge.wanProbeRequest({
         url: `${cleanUrl}${finalPath}`,
         method,
         headers,
         body: body != null ? JSON.stringify(body) : null,
+        allowHttp: true,
+        allowInsecure: true,
     })
 
     if (!response) {
@@ -1387,6 +1399,8 @@ export default function WanProbe() {
     const [portProtocolFilter, setPortProtocolFilter] = useState('all')
     const [portSearch, setPortSearch] = useState('')
     const [reportPage, setReportPage] = useState(1)
+    const [historyRows, setHistoryRows] = useState([])
+    const [historyLoading, setHistoryLoading] = useState(false)
 
     const scanStartedAtRef = useRef(0)
     const scanClockRef = useRef(null)
@@ -1651,6 +1665,205 @@ export default function WanProbe() {
         if (!completedRuns.length) return null
         return completedRuns.find(run => run.probeId === activeReportProbeId) || completedRuns[0]
     }, [completedRuns, activeReportProbeId])
+
+    /**
+     * Shape the current scan into the payload consumed by both the
+     * history persistence layer and the PDF/CSV export templates.
+     * Kept in a single place so the saved and the exported artefacts
+     * always agree.
+     *
+     * Target resolution priority, per probe:
+     *   1. `run.target` — resolved by the probe server (authoritative;
+     *      auto-mode echoes back the caller's public IP, custom mode
+     *      echoes back the supplied value).
+     *   2. `run.observedIp` — fallback if the server didn't echo target.
+     *   3. `customTarget` — whatever the user typed locally.
+     *
+     * Aggregate `report.target`:
+     *   - If every probe saw the same target → that single string.
+     *   - If probes saw different targets (rare, but possible when
+     *     one is custom and another is auto) → a comma-joined list.
+     *   - Otherwise fall back to the user-supplied customTarget, or
+     *     'auto' as a last resort so History never shows a bare dash.
+     */
+    const buildReportPayload = useCallback(() => {
+        const probes = completedRuns.map(run => {
+            const probeTarget = run.result?.target || run.target || run.observedIp
+                || (customTarget || '').trim() || null
+            return {
+                probeId: run.probeId,
+                label: run.probeLabel || run.probeName || run.probeUrl || run.probeId,
+                url: run.probeUrl || null,
+                region: run.probeRegion || run.result?.probe?.region || run.node?.region || null,
+                country: run.probeCountry || run.result?.probe?.country || run.node?.country || null,
+                target: probeTarget,
+                // Full run metadata needed by the Report view chips
+                // (Target · Observed · Duration · Mode/Profile · Transport).
+                // Persisting these is what makes a history entry
+                // indistinguishable from a fresh scan when re-opened.
+                observedIp: run.result?.observedIp || run.observedIp || null,
+                durationMs: run.result?.durationMs ?? null,
+                mode: run.result?.mode || null,
+                profile: run.result?.profile || null,
+                transport: run.result?.transport || null,
+                riskScore: run.result?.riskScore ?? null,
+                confidenceScore: run.result?.confidenceScore ?? null,
+                open: run.result?.openCount ?? null,
+                closed: run.result?.closedCount ?? null,
+                filtered: run.result?.filteredCount ?? null,
+                results: Array.isArray(run.result?.results) ? run.result.results.map(r => ({
+                    port: r.port,
+                    protocol: r.protocol || 'tcp',
+                    state: r.state || null,
+                    service: r.service || null,
+                    banner: r.banner || null,
+                    detail: r.detail || null,
+                })) : [],
+                findings: Array.isArray(run.result?.findings) ? run.result.findings : [],
+            }
+        })
+
+        const uniqueTargets = [...new Set(probes.map(p => p.target).filter(Boolean))]
+        const typed = (customTarget || '').trim()
+        const aggregateTarget = uniqueTargets.length === 1
+            ? uniqueTargets[0]
+            : uniqueTargets.length > 1
+                ? uniqueTargets.join(', ')
+                : (typed || 'auto')
+
+        return {
+            target: aggregateTarget,
+            generatedAt: new Date().toISOString(),
+            summary: {
+                probes: probes.length,
+                findingsCount: allFindings.length,
+                riskScore: aggregateSummary.avgRisk,
+                avgConfidence: aggregateSummary.avgConfidence,
+                open: aggregateSummary.open,
+                closed: aggregateSummary.closed,
+                filtered: aggregateSummary.filtered,
+            },
+            probes,
+            findings: allFindings,
+        }
+    }, [completedRuns, allFindings, aggregateSummary, customTarget])
+
+    // Auto-save every completed scan into wan_probe_history once the
+    // scan finishes. Guarded by a ref so a re-render of the same
+    // completion doesn't write twice. Failures are silent (best-effort)
+    // — the scan UX shouldn't break if persistence hiccups.
+    const savedRunSignatureRef = useRef(null)
+    useEffect(() => {
+        if (scanState !== 'done') return
+        if (!completedRuns.length) return
+        const signature = completedRuns.map(r => r.probeId).sort().join('|') + ':' + (customTarget || '')
+        if (savedRunSignatureRef.current === signature) return
+        savedRunSignatureRef.current = signature
+        const payload = buildReportPayload()
+        bridge.wanProbeHistoryAdd?.({ report: payload }).then(rows => {
+            if (Array.isArray(rows)) setHistoryRows(rows)
+        }).catch(() => { /* best-effort */ })
+    }, [scanState, completedRuns, customTarget, buildReportPayload])
+
+    async function loadHistory() {
+        setHistoryLoading(true)
+        try {
+            const rows = await bridge.wanProbeHistoryGet?.()
+            setHistoryRows(Array.isArray(rows) ? rows : [])
+        } catch {
+            setHistoryRows([])
+        } finally {
+            setHistoryLoading(false)
+        }
+    }
+
+    async function deleteHistoryEntry(id) {
+        try {
+            const updated = await bridge.wanProbeHistoryDelete?.(id)
+            if (Array.isArray(updated)) setHistoryRows(updated)
+        } catch { await loadHistory() }
+    }
+
+    async function clearHistoryEntries() {
+        try {
+            const updated = await bridge.wanProbeHistoryClear?.()
+            setHistoryRows(Array.isArray(updated) ? updated : [])
+        } catch { setHistoryRows([]) }
+    }
+
+    /**
+     * Hydrate the report view with a previously-saved payload. The
+     * saved shape comes from buildReportPayload() above, so every
+     * probe entry already carries the per-port results needed to render
+     * the detail tables AND the resolved target that the report
+     * header cards read.
+     *
+     * We also mirror the payload target into `customTarget` so the UI
+     * bits that surface "Target" from that state (scan cards, copy
+     * JSON, etc.) match what was saved. Marking the flag to disable
+     * auto-save keeps the hydration side-effect-free against the
+     * history we just loaded from.
+     */
+    function openHistoryReport(entry) {
+        const payload = entry?.report
+        if (!payload || !Array.isArray(payload.probes)) return
+        const rebuilt = {}
+        for (const probe of payload.probes) {
+            const resolvedTarget = probe.target || payload.target || null
+            // The Report view reads `run.probeName` (set by the live
+            // scan via probeDisplayName()). Populating only `probeLabel`
+            // left the probe card header blank when reopening from
+            // history — UI mirrors what scan flow writes, not the
+            // payload field naming convention.
+            rebuilt[probe.probeId] = {
+                probeId: probe.probeId,
+                probeName: probe.label || probe.url || probe.probeId,
+                probeLabel: probe.label,
+                probeUrl: probe.url,
+                probeRegion: probe.region,
+                probeCountry: probe.country,
+                target: resolvedTarget,
+                observedIp: probe.observedIp || resolvedTarget,
+                status: 'done',
+                result: {
+                    riskScore: probe.riskScore,
+                    confidenceScore: probe.confidenceScore,
+                    openCount: probe.open,
+                    closedCount: probe.closed,
+                    filteredCount: probe.filtered,
+                    results: probe.results || [],
+                    findings: probe.findings || [],
+                    probe: { region: probe.region, country: probe.country },
+                    // Mirror every chip the Report view reads from
+                    // `result.*` so a rehydrated history row renders
+                    // identically to a fresh scan — otherwise the user
+                    // sees "Target —" / "Duration —" / etc.
+                    target: resolvedTarget,
+                    observedIp: probe.observedIp || resolvedTarget,
+                    durationMs: probe.durationMs ?? null,
+                    mode: probe.mode || null,
+                    profile: probe.profile || null,
+                    transport: probe.transport || null,
+                },
+                progress: {},
+            }
+        }
+        // Preseed the signature so the auto-save effect treats this
+        // hydration as already-persisted and doesn't rewrite the row.
+        savedRunSignatureRef.current = payload.probes.map(p => p.probeId).sort().join('|')
+            + ':' + (payload.target || '')
+        setProbeRuns(rebuilt)
+        setActiveReportProbeId(payload.probes[0]?.probeId || '')
+        if (payload.target && payload.target !== 'auto') {
+            setCustomTarget(payload.target)
+        }
+        setScanState('done')
+        setView('report')
+    }
+
+    useEffect(() => {
+        loadHistory().catch(() => { /* noop */ })
+    }, [])
 
     const filteredRows = useMemo(() => {
         const rows = asArray(activeReportRun?.result?.results)
@@ -2569,22 +2782,44 @@ export default function WanProbe() {
                             <Github size={14} />
                             Agent GitHub
                         </button>
-                        <button className="v3-btn v3-btn-secondary" onClick={goToSetup}>
+                        <button
+                            className="v3-btn v3-btn-secondary"
+                            onClick={() => setView('history')}
+                            title="View past scan reports"
+                        >
+                            <History size={14} />
+                            History
+                        </button>
+                        <button
+                            className="v3-btn v3-btn-secondary"
+                            onClick={goToSetup}
+                            title="Go to setup to configure a new scan"
+                        >
                             <SlidersHorizontal size={14} />
-                            Setup
+                            New Scan
                         </button>
                         <button
                             className="v3-btn v3-btn-secondary"
                             onClick={resetResultsView}
                             disabled={scanState === 'running' || !Object.keys(probeRuns).length}
+                            title="Clear the current results and return to setup"
                         >
                             <RotateCcw size={14} />
-                            Reset Results
+                            Clear Results
                         </button>
+                        {view === 'report' && (
+                            <ExportMenu
+                                kind="wan-probe"
+                                size="md"
+                                payload={buildReportPayload()}
+                                disabled={!completedRuns.length}
+                            />
+                        )}
                         <button
                             className="v3-btn v3-btn-secondary"
                             onClick={copyAggregateReport}
                             disabled={!completedRuns.length}
+                            title="Copy the full report payload as JSON to clipboard"
                         >
                             <Copy size={14} />
                             {copiedTag === 'all-json' ? 'Copied' : 'Copy JSON'}
@@ -2599,6 +2834,12 @@ export default function WanProbe() {
                     { key: 'running', label: 'Scanning', icon: <Radar size={13} /> },
                     { key: 'report', label: 'Report', icon: <ShieldCheck size={13} /> },
                 ].map(item => {
+                    // The stage strip is a read-only breadcrumb of the
+                    // current scan's flow — it tracks Setup → Scan →
+                    // Report. History is a lateral view (saved reports,
+                    // not a scan stage) so it lives in the header
+                    // actions only; including it here confused users
+                    // into clicking chips that can't navigate.
                     const active = item.key === 'setup'
                         ? view === 'setup'
                         : item.key === 'running'
@@ -3413,6 +3654,99 @@ export default function WanProbe() {
                             </div>
                         </>
                     )}
+                </motion.div>
+            )}
+
+            {view === 'history' && (
+                <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.22 }}
+                    className="wp2-history"
+                >
+                    <div className="v3-card">
+                        <div className="v3-card-header">
+                            <div className="v3-card-title">
+                                <History size={16} color="var(--color-accent)" />
+                                Scan history
+                            </div>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button
+                                    className="v3-btn v3-btn-secondary"
+                                    onClick={loadHistory}
+                                    disabled={historyLoading}
+                                    title="Refresh the history list"
+                                >
+                                    <RefreshCw size={14} className={historyLoading ? 'spin-icon' : ''} />
+                                    Refresh
+                                </button>
+                                <button
+                                    className="v3-btn v3-btn-secondary"
+                                    onClick={clearHistoryEntries}
+                                    disabled={!historyRows.length || historyLoading}
+                                    title="Delete every saved report"
+                                    style={{ color: 'var(--color-danger, #ef4444)' }}
+                                >
+                                    <Trash2 size={14} />
+                                    Clear All
+                                </button>
+                            </div>
+                        </div>
+
+                        {!historyRows.length ? (
+                            <div className="wp2-empty" style={{ padding: '22px 12px', textAlign: 'center' }}>
+                                {historyLoading
+                                    ? <>Loading…</>
+                                    : <>No saved scans yet. Reports are auto-saved when a scan completes.</>
+                                }
+                            </div>
+                        ) : (
+                            <div className="wp2-history-list">
+                                {historyRows.map(row => {
+                                    const report = row.report
+                                    const ts = row.timestamp ? new Date(row.timestamp) : null
+                                    const tsLabel = ts && !isNaN(ts) ? ts.toLocaleString() : '—'
+                                    const target = row.target || report?.target || '—'
+                                    const probes = row.probes ?? (Array.isArray(report?.probes) ? report.probes.length : 0)
+                                    const findings = row.findings ?? (Array.isArray(report?.findings) ? report.findings.length : 0)
+                                    const risk = row.risk_score ?? report?.summary?.riskScore ?? 0
+                                    return (
+                                        <div key={row.id} className="wp2-history-item">
+                                            <div className="wp2-history-item-main">
+                                                <div className="wp2-history-item-top">
+                                                    <strong className="mono">{target}</strong>
+                                                    <span className={`wp2-history-risk wp2-history-risk-${risk >= 70 ? 'high' : risk >= 40 ? 'mid' : risk >= 15 ? 'low' : 'ok'}`}>
+                                                        Risk {risk}/100
+                                                    </span>
+                                                </div>
+                                                <div className="wp2-history-item-sub">
+                                                    {tsLabel} · {probes} probe{probes === 1 ? '' : 's'} · {findings} finding{findings === 1 ? '' : 's'}
+                                                </div>
+                                            </div>
+                                            <div className="wp2-history-item-actions">
+                                                <button
+                                                    className="v3-btn v3-btn-secondary"
+                                                    onClick={() => openHistoryReport(row)}
+                                                    title="Load this report into the Report tab"
+                                                >
+                                                    <ShieldCheck size={14} />
+                                                    Open
+                                                </button>
+                                                <button
+                                                    className="v3-btn v3-btn-secondary"
+                                                    onClick={() => deleteHistoryEntry(row.id)}
+                                                    title="Delete this saved report"
+                                                    style={{ color: 'var(--color-danger, #ef4444)' }}
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        )}
+                    </div>
                 </motion.div>
             )}
 

@@ -300,6 +300,60 @@
     gap: 8px;
 }
 
+/* Pagination controls for long device lists (Discovered Hosts + Asset
+   Snapshot). Keeps the card compact when there are 100+ hosts. */
+.lchk-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border, rgba(148, 163, 184, 0.15));
+}
+
+.lchk-pagination-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--color-border, rgba(148, 163, 184, 0.2));
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.lchk-pagination-btn:hover:not(:disabled) {
+    background: var(--bg-hover, rgba(148, 163, 184, 0.08));
+    color: var(--text-primary);
+    border-color: var(--color-accent);
+}
+
+.lchk-pagination-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.lchk-pagination-status {
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 90px;
+    text-align: right;
+}
+
+/* Report history can grow large over time — cap it and let the inner
+   list scroll so older entries remain reachable without pushing the
+   rest of the page (filter controls, Clear button) off-screen. */
+.lchk-history-list {
+    max-height: 560px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
 .lchk-recent-list {
     max-height: 260px;
     overflow: auto;

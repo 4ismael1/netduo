@@ -31,6 +31,7 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
+import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './LanCheck.css'
 
 const PROFILE_PRESETS = {
@@ -284,10 +285,81 @@ function StepPill({ step, status }) {
     )
 }
 
+/**
+ * Paginated list of discovered / inventoried devices for the LAN Check
+ * views. Purely a display concern — the underlying `devices` array is
+ * always passed intact to report exports (PDF/CSV templates read it as
+ * a whole), so pagination here NEVER changes what gets exported.
+ *
+ * Page size is fixed at 15 because that fits one vertical scroll of
+ * the report card without forcing a second scrollbar on the container.
+ * Controls hide automatically when the list fits in one page.
+ */
+function PaginatedDeviceList({ devices }) {
+    const PAGE_SIZE = 15
+    const list = Array.isArray(devices) ? devices : []
+    const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
+    const [page, setPage] = useState(1)
+
+    // Clamp page whenever the list shrinks (e.g. filter changes upstream).
+    useEffect(() => {
+        if (page > totalPages) setPage(totalPages)
+    }, [page, totalPages])
+
+    const start = (page - 1) * PAGE_SIZE
+    const slice = list.slice(start, start + PAGE_SIZE)
+
+    return (
+        <>
+            <div className="lchk-assets-list">
+                {slice.map(device => (
+                    <div key={device.ip || device.mac || `${start}-${device.hostname || 'row'}`} className="lchk-asset-row">
+                        <div>
+                            <strong>{device.displayName || device.hostname || device.vendor || 'Unknown device'}</strong>
+                            <p className="mono">{device.ip}{device.mac ? ` - ${device.mac}` : ''}</p>
+                        </div>
+                        <div className="lchk-asset-tags">
+                            {device.isGateway && <span className="lchk-role-chip"><Router size={11} /> GW</span>}
+                            {device.isLocal && <span className="lchk-role-chip"><Shield size={11} /> You</span>}
+                            {device.isRandomized && <span className="lchk-sev-chip info">RND</span>}
+                        </div>
+                    </div>
+                ))}
+            </div>
+            {totalPages > 1 && (
+                <div className="lchk-pagination">
+                    <button
+                        type="button"
+                        className="lchk-pagination-btn"
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page <= 1}
+                        aria-label="Previous page"
+                    >
+                        <ChevronLeft size={14} />
+                    </button>
+                    <span className="lchk-pagination-status mono">
+                        {start + 1}-{Math.min(start + PAGE_SIZE, list.length)} of {list.length}
+                    </span>
+                    <button
+                        type="button"
+                        className="lchk-pagination-btn"
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page >= totalPages}
+                        aria-label="Next page"
+                    >
+                        <ChevronRight size={14} />
+                    </button>
+                </div>
+            )}
+        </>
+    )
+}
+
 export default function LanCheck() {
     const [profile, setProfile] = useState('standard')
     const [enableDiscovery, setEnableDiscovery] = useState(true)
     const [extendedSweep, setExtendedSweep] = useState(true)
+    const [safeMode, setSafeMode] = useState(false)
     const [baseIP, setBaseIP] = useState('192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
@@ -343,10 +415,22 @@ export default function LanCheck() {
         }).catch(error => {
             logBridgeWarning('lancheck:settings-bootstrap', error)
         })
+        // Shared with Scanner — reusing the same "safeScanDefault" preference.
+        bridge.configGet('safeScanDefault').then(v => {
+            if (v === true || v === 'true') setSafeMode(true)
+        }).catch(() => { /* noop */ })
         loadHistory().catch(error => {
             logBridgeWarning('lancheck:history-load', error)
         })
     }, [])
+
+    function toggleSafeMode() {
+        setSafeMode(prev => {
+            const next = !prev
+            bridge.configSet?.('safeScanDefault', next).catch(() => { /* noop */ })
+            return next
+        })
+    }
 
     useEffect(() => {
         let disposed = false
@@ -765,7 +849,7 @@ export default function LanCheck() {
                     const chunkStart = cursor
                     const chunkEnd = Math.min(cursor + cfg.batchSize - 1, end)
                     pushActivity(`Discovery sweep: ${safeBase}.${chunkStart}-${chunkEnd}`, 'info')
-                    const chunk = await bridge.lanScan(safeBase, chunkStart, chunkEnd)
+                    const chunk = await bridge.lanScan(safeBase, chunkStart, chunkEnd, { safeMode })
                     discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
                     setDiscovered(discoveredHosts)
                     const doneRatio = (chunkEnd - start + 1) / span
@@ -1079,6 +1163,18 @@ export default function LanCheck() {
                                         <span>Adds extra high-risk service ports for a more complete LAN security audit.</span>
                                     </div>
                                 </label>
+                                <label className="lchk-option">
+                                    <input
+                                        type="checkbox"
+                                        checked={safeMode}
+                                        onChange={toggleSafeMode}
+                                        disabled={running}
+                                    />
+                                    <div>
+                                        <strong>Safe Scan mode</strong>
+                                        <span>Gentler discovery for sensitive or legacy networks. Lower concurrency, skips TCP preheat and multicast probes.</span>
+                                    </div>
+                                </label>
                             </div>
 
                             <div className="lchk-scope-meta">
@@ -1199,21 +1295,7 @@ export default function LanCheck() {
                                     Discovering hosts in selected subnet...
                                 </div>
                             ) : (
-                                <div className="lchk-assets-list">
-                                    {discovered.slice(0, 30).map(device => (
-                                        <div key={device.ip} className="lchk-asset-row">
-                                            <div>
-                                                <strong>{device.displayName || device.hostname || device.vendor || 'Unknown device'}</strong>
-                                                <p className="mono">{device.ip}{device.mac ? ` - ${device.mac}` : ''}</p>
-                                            </div>
-                                            <div className="lchk-asset-tags">
-                                                {device.isGateway && <span className="lchk-role-chip"><Router size={11} /> GW</span>}
-                                                {device.isLocal && <span className="lchk-role-chip"><Shield size={11} /> You</span>}
-                                                {device.isRandomized && <span className="lchk-sev-chip info">RND</span>}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                <PaginatedDeviceList devices={discovered} />
                             )}
                         </div>
                     </motion.section>
@@ -1254,6 +1336,11 @@ export default function LanCheck() {
                                                 <Copy size={14} />
                                                 Copy JSON
                                             </button>
+                                            <ExportMenu
+                                                kind="lan-check"
+                                                size="md"
+                                                payload={report}
+                                            />
                                         </div>
                                     </div>
                                     <div className="lchk-report-glance">
@@ -1271,7 +1358,11 @@ export default function LanCheck() {
                                         </span>
                                         <span className="lchk-report-glance-item">
                                             <Clock3 size={13} />
-                                            Runtime {formatDuration((scanFinishedAt || Date.now()) - (scanStartedAt || Date.now()))}
+                                            Runtime {formatDuration(
+                                                Number.isFinite(report?.summary?.durationMs)
+                                                    ? report.summary.durationMs
+                                                    : (scanFinishedAt || Date.now()) - (scanStartedAt || Date.now())
+                                            )}
                                         </span>
                                     </div>
                                 </div>
@@ -1304,7 +1395,11 @@ export default function LanCheck() {
                                     </div>
                                     <div className="v3-card lchk-summary-card">
                                         <div className="v3-label-sm"><Clock3 size={12} /> Duration</div>
-                                        <strong>{formatDuration((scanFinishedAt || Date.now()) - (scanStartedAt || Date.now()))}</strong>
+                                        <strong>{formatDuration(
+                                            Number.isFinite(report?.summary?.durationMs)
+                                                ? report.summary.durationMs
+                                                : (scanFinishedAt || Date.now()) - (scanStartedAt || Date.now())
+                                        )}</strong>
                                         <span className="lchk-summary-sub">Total scan runtime</span>
                                         <span className="mono lchk-summary-meta">Scope: {report.range}</span>
                                         <span className="lchk-summary-meta">Discovery: {report.summary.discoveryEnabled ? 'enabled' : 'focused targets'}</span>
@@ -1449,21 +1544,7 @@ export default function LanCheck() {
                                             <div className="v3-card-title"><House size={16} color="var(--color-accent)" /> Asset Snapshot</div>
                                             <span className="v3-badge accent">{report.devices.length} hosts</span>
                                         </div>
-                                        <div className="lchk-assets-list">
-                                            {report.devices.slice(0, 20).map(device => (
-                                                <div key={device.ip} className="lchk-asset-row">
-                                                    <div>
-                                                        <strong>{device.displayName || device.hostname || device.vendor || 'Unknown device'}</strong>
-                                                        <p className="mono">{device.ip}{device.mac ? ` - ${device.mac}` : ''}</p>
-                                                    </div>
-                                                    <div className="lchk-asset-tags">
-                                                        {device.isGateway && <span className="lchk-role-chip"><Router size={11} /> GW</span>}
-                                                        {device.isLocal && <span className="lchk-role-chip"><Shield size={11} /> You</span>}
-                                                        {device.isRandomized && <span className="lchk-sev-chip info">RND</span>}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                        <PaginatedDeviceList devices={report.devices} />
                                     </div>
                                 </div>
                             </div>

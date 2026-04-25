@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanPorts: (host, start, end) => ipcRenderer.invoke('scan-ports', host, start, end),
     stopPortScan: () => ipcRenderer.send('stop-port-scan'),
     httpTest: (url, method, headers) => ipcRenderer.invoke('http-test', url, method, headers),
-    lanScan: (base, start, end) => ipcRenderer.invoke('lan-scan', base, start, end),
+    lanScan: (base, start, end, options) => ipcRenderer.invoke('lan-scan', base, start, end, options),
     lanScanEnrich: (payload) => ipcRenderer.invoke('lan-scan-enrich', payload),
     lanUpnpScan: (base, start, end) => ipcRenderer.invoke('lan-upnp-scan', base, start, end),
     lanSecurityScan: (payload) => ipcRenderer.invoke('lan-security-scan', payload),
@@ -95,6 +95,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     lanCheckHistoryDelete: (id) => ipcRenderer.invoke('lan-check-history-delete', id),
     lanCheckHistoryClear: () => ipcRenderer.invoke('lan-check-history-clear'),
 
+    wanProbeHistoryGet: () => ipcRenderer.invoke('wan-probe-history-get'),
+    wanProbeHistoryAdd: (entry) => ipcRenderer.invoke('wan-probe-history-add', entry),
+    wanProbeHistoryDelete: (id) => ipcRenderer.invoke('wan-probe-history-delete', id),
+    wanProbeHistoryClear: () => ipcRenderer.invoke('wan-probe-history-clear'),
+
+    // Report exports
+    reportExport: (kind, format, payload) => ipcRenderer.invoke('report-export', kind, format, payload),
+    reportReveal: (filePath) => ipcRenderer.invoke('report-reveal', filePath),
+
+    // Device snapshots (LAN scan change tracking)
+    deviceSnapshotAdd: (baseIP, devices) => ipcRenderer.invoke('device-snapshot-add', baseIP, devices),
+    deviceSnapshotLatest: (baseIP, beforeTs) => ipcRenderer.invoke('device-snapshot-latest', baseIP, beforeTs),
+    deviceSnapshotList: (baseIP, limit) => ipcRenderer.invoke('device-snapshot-list', baseIP, limit),
+    deviceSnapshotGet: (id) => ipcRenderer.invoke('device-snapshot-get', id),
+    deviceSnapshotClear: (baseIP) => ipcRenderer.invoke('device-snapshot-clear', baseIP),
+
+    // Device inventory (persistent known-device registry, per-NETWORK)
+    deviceInventoryList: (networkId) => ipcRenderer.invoke('device-inventory-list', networkId),
+    deviceInventoryGet: (deviceKey) => ipcRenderer.invoke('device-inventory-get', deviceKey),
+    deviceInventoryMerge: (networkId, baseIP, devices) => ipcRenderer.invoke('device-inventory-merge', networkId, baseIP, devices),
+    deviceInventoryUpdate: (deviceKey, patch) => ipcRenderer.invoke('device-inventory-update', deviceKey, patch),
+    deviceInventoryRemove: (deviceKey) => ipcRenderer.invoke('device-inventory-remove', deviceKey),
+    deviceInventoryClear: (networkId) => ipcRenderer.invoke('device-inventory-clear', networkId),
+    deviceInventoryPurgeGhosts: (networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey) =>
+        ipcRenderer.invoke('device-inventory-purge-ghosts', networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey),
+
     // Network change events
     onNetworkChanged: (cb) => {
         const handler = (_event, data) => cb(data)
@@ -113,6 +139,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Config (key/value persistence)
     configGet: (key) => ipcRenderer.invoke('config-get', key),
+    dbRecoveryFlag: () => ipcRenderer.invoke('db-recovery-flag'),
     configSet: (key, value) => ipcRenderer.invoke('config-set', key, value),
     configGetAll: (keys) => ipcRenderer.invoke('config-get-all', keys),
     configDelete: (key) => ipcRenderer.invoke('config-delete', key),

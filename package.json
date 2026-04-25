@@ -1,6 +1,6 @@
 {
   "name": "netduo",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "author": "Ismael Paulino",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -13,6 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
+    "test:audit": "vitest run --config test/vitest.audit.config.js",
+    "lint": "eslint .",
     "postinstall": "electron-builder install-app-deps",
     "test:coverage": "vitest run --coverage"
   },

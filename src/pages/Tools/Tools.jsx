@@ -383,11 +383,12 @@ function SubnetCalc() {
     const [cidr, setCidr] = useState('192.168.1.0/24')
     const [result, setResult] = useState(() => calcSubnet('192.168.1.0/24'))
 
-    function compute() {
+    // Recompute on every CIDR change. `compute` is intentionally
+    // redefined each render (tiny closure, no benefit to useCallback)
+    // so we depend on `cidr` alone to avoid a stale-closure loop.
+    useEffect(() => {
         setResult(calcSubnet(cidr.trim()))
-    }
-
-    useEffect(() => { compute() }, [cidr])
+    }, [cidr])
 
     return (
         <ToolCard title="Subnet Calculator" icon={Calculator} description="Calculate network ranges, masks, and host capacity from CIDR notation">

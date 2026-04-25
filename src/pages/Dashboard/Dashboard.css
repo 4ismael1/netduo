@@ -209,9 +209,24 @@
     color: var(--color-accent);
 }
 .copied-flash {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    background: var(--bg-card, #fff);
+    padding: 2px 8px;
+    border-radius: 4px;
     color: var(--color-success);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
+    pointer-events: none;
+    animation: copied-flash-in 160ms ease-out;
+    z-index: 2;
+    white-space: nowrap;
+}
+@keyframes copied-flash-in {
+    from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+    to   { opacity: 1; transform: translateY(-50%) translateX(0); }
 }
 .stat-tile-sub {
     font-size: 11px;
@@ -574,29 +589,58 @@
 }
 .sq-label:last-child { margin-right: 0; }
 
-/* ── Public IP eye toggle ── */
+/* ── Public IP row ──
+   Split copy-target (the IP text itself) and eye toggle into two
+   distinct, non-overlapping buttons so a click near the eye icon never
+   fires the copy action by accident. */
+.ip-value-row {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ip-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 2px 6px;
+    margin: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+.ip-copy-btn.copyable:hover { background: var(--bg-hover); }
+.ip-copy-btn:disabled { cursor: default; }
+.ip-copy-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
 .ip-eye-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: none;
+    background: transparent;
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 4px;
-    margin-left: 4px;
+    /* Hit area is 36x36 — comfortably bigger than the 16x16 icon so
+       users don't need pixel accuracy to toggle visibility. */
+    width: 36px;
+    height: 36px;
+    padding: 0;
     border-radius: var(--radius-sm);
-    vertical-align: middle;
-    transition: color .15s, background .15s;
-    min-width: 24px;
-    min-height: 24px;
+    transition: color 120ms ease, background 120ms ease;
     flex-shrink: 0;
-    position: relative;
-    z-index: 1;
 }
 .ip-eye-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
+}
+.ip-eye-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
 }
 
 @keyframes fade-in-up {

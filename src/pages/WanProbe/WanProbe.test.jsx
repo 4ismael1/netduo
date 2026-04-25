@@ -641,11 +641,11 @@ describe('WanProbe scan flow', () => {
         fireEvent.click(screen.getByRole('button', { name: /Start Multi-Probe Scan/i }))
         await waitFor(() => expect(screen.getByText('Probe Reports')).toBeInTheDocument())
 
-        const resetButton = screen.getByRole('button', { name: /Reset Results/i })
+        const resetButton = screen.getByRole('button', { name: /Clear Results/i })
         fireEvent.click(resetButton)
 
         await waitFor(() => expect(screen.getByText('Scan Profile')).toBeInTheDocument())
         expect(screen.queryByText('Probe Reports')).not.toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Reset Results/i })).toBeDisabled()
+        expect(screen.getByRole('button', { name: /Clear Results/i })).toBeDisabled()
     })
 })

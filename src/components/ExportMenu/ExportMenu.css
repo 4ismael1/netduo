@@ -1,0 +1,141 @@
+/* ═══════════════════════════════════════════════
+   ExportMenu — reusable trigger + popover + status
+   Fully themed via existing CSS custom properties.
+   ═══════════════════════════════════════════════ */
+
+.export-menu {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.export-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.export-menu-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+    height: auto;
+}
+
+/* ── Popover ──────────────────────────────── */
+.export-menu-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 220px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15), 0 2px 6px rgba(15, 23, 42, 0.08);
+    padding: 4px;
+    z-index: 40;
+    animation: export-menu-pop-in 120ms ease-out;
+}
+
+@keyframes export-menu-pop-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.export-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    border-radius: var(--radius-sm, 8px);
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+
+.export-menu-item:hover {
+    background: var(--color-accent-ghost, rgba(59, 130, 246, 0.08));
+}
+
+.export-menu-item > svg {
+    color: var(--color-accent);
+    flex-shrink: 0;
+}
+
+.export-menu-item-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.export-menu-item-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* ── Status pill (post-action) ──────────────
+   Absolute-positioned so it floats below the trigger without
+   affecting surrounding layout — the Export button must stay put
+   whether the status is showing or not. */
+.export-menu-status {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    background: var(--bg-surface);
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.06);
+    z-index: 35;
+    animation: export-menu-pop-in 160ms ease-out;
+    white-space: nowrap;
+    pointer-events: auto;
+}
+
+.export-menu-status-ok {
+    background: var(--color-success-bg, rgba(16, 185, 129, 0.1));
+    color: var(--color-success, #059669);
+    border: 1px solid var(--color-success-border, rgba(16, 185, 129, 0.3));
+}
+
+.export-menu-status-error {
+    background: var(--color-danger-bg, rgba(239, 68, 68, 0.1));
+    color: var(--color-danger, #dc2626);
+    border: 1px solid var(--color-danger-border, rgba(239, 68, 68, 0.3));
+}
+
+.export-menu-status-text {
+    line-height: 1;
+}
+
+.export-menu-status-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 11px;
+    padding: 0 0 0 4px;
+    margin-left: 2px;
+    cursor: pointer;
+    text-decoration: underline;
+    opacity: 0.85;
+}
+
+.export-menu-status-link:hover {
+    opacity: 1;
+}
+
+.export-menu-busy .export-menu-trigger { opacity: 0.8; }

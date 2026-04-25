@@ -1,7 +1,9 @@
 ﻿const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { exec, spawn } = require('child_process')
+const { exec, execFile, spawn } = require('child_process')
+const validators = require('./validators')
+const { filterGhosts } = require('./scanner/ghostFilter')
 const os = require('os')
 const dns = require('dns')
 const net = require('net')
@@ -11,6 +13,7 @@ const https = require('https')
 const http = require('http')
 const WsClient = require('ws')
 const database = require('./database')
+const reports = require('./reports')
 
 // Use Electron packaging state instead of NODE_ENV.
 // In installed builds NODE_ENV is often undefined, and relying on it can
@@ -573,6 +576,41 @@ function createWindow() {
             'NetDuo preload failed',
             `${detail}\nLog file: ${startupLogName}`
         )
+    })
+
+    // SECURITY: lock the window to its trusted origin. Any navigation
+    // attempt (malicious link, compromised script, accidental `<a
+    // href>`) to a foreign URL is cancelled and, if it was an intended
+    // external link, opened in the user's default browser instead. This
+    // prevents an attacker from replacing the renderer's origin to slip
+    // past contextIsolation boundaries.
+    const isTrustedInternalURL = (rawUrl) => {
+        if (!rawUrl) return false
+        try {
+            const u = new URL(rawUrl)
+            if (u.protocol === 'file:') return true
+            if (isDev && u.protocol === 'http:' && u.hostname === 'localhost') return true
+            return false
+        } catch {
+            return false
+        }
+    }
+    win.webContents.on('will-navigate', (event, targetUrl) => {
+        if (isTrustedInternalURL(targetUrl)) return
+        event.preventDefault()
+        // Forward the click to the OS default browser (validators +
+        // shell.openExternal already filter dangerous schemes elsewhere).
+        try {
+            if (/^https?:\/\//i.test(targetUrl)) shell.openExternal(targetUrl)
+        } catch { /* drop silently */ }
+    })
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        // No window.open from the renderer. Links requesting a new
+        // window are redirected to the OS browser.
+        try {
+            if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+        } catch { /* drop silently */ }
+        return { action: 'deny' }
     })
 
     if (isDev) {
@@ -1444,6 +1482,18 @@ ipcMain.on('stop-port-scan', () => {
     }
 })
 ipcMain.handle('scan-ports', async (_, host, startPort, endPort) => {
+    // SECURITY: sanitize host (IPv4 / hostname) and clamp the port range
+    // before allocating the port array. Without clamping, a renderer
+    // could request endPort = 2**31 and balloon memory / tie up the
+    // event loop before any socket even opens.
+    const safeHost = sanitizeHost(host)
+    if (!safeHost) return []
+    const lo = Math.max(1, Math.min(65535, Number.parseInt(startPort, 10) || 1))
+    const hi = Math.max(lo, Math.min(65535, Number.parseInt(endPort, 10) || lo))
+    startPort = lo
+    endPort = hi
+    host = safeHost
+
     const ctrl = { cancelled: false, sockets: new Set() }
     portScanCtrl = ctrl
     const results = []
@@ -1564,8 +1614,9 @@ function reverseDNS(ip) {
 
 /** Reverse lookup via nslookup (useful when dns.reverse fails on Windows). */
 function nslookupReverse(ip) {
+    if (!validators.isIPv4(ip)) return Promise.resolve(null)
     return new Promise((resolve) => {
-        exec(`nslookup ${ip}`, { timeout: 3200, windowsHide: true, encoding: 'utf8' }, (_err, stdout) => {
+        execFile('nslookup', [ip], { timeout: 3200, windowsHide: true, encoding: 'utf8' }, (_err, stdout) => {
             if (!stdout) return resolve(null)
             const lines = stdout.split(/\r?\n/)
             for (const raw of lines) {
@@ -1593,8 +1644,9 @@ function lookupServiceName(ip) {
 
 /** Windows hostname resolution through ping -a */
 function pingResolveName(ip) {
+    if (!validators.isIPv4(ip)) return Promise.resolve(null)
     return new Promise((resolve) => {
-        exec(`ping -a -4 -n 1 -w 1200 ${ip}`, { timeout: 3000, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
+        execFile('ping', ['-a', '-4', '-n', '1', '-w', '1200', ip], { timeout: 3000, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
             if (err && !stdout) return resolve(null)
             const escapedIp = ip.replace(/\./g, '\\.')
             const m = (stdout || '').match(new RegExp(`^[^\\r\\n]*?\\s([^\\s\\[]+)\\s*\\[${escapedIp}\\]`, 'im'))
@@ -1606,8 +1658,9 @@ function pingResolveName(ip) {
 
 /** NetBIOS name lookup via nbtstat (Windows only) */
 function netbiosLookup(ip) {
+    if (!validators.isIPv4(ip)) return Promise.resolve(null)
     return new Promise((resolve) => {
-        exec(`nbtstat -A ${ip}`, { timeout: 3500, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
+        execFile('nbtstat', ['-A', ip], { timeout: 3500, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
             if (err || !stdout) return resolve(null)
             // Parse <00> NetBIOS entries in a locale-tolerant way.
             const lines = stdout.split(/\r?\n/)
@@ -1678,12 +1731,33 @@ function lookupVendorOnline(mac) {
     return p
 }
 
+/**
+ * Resolve the vendor for a MAC address.
+ *
+ * Priority:
+ *   1. Local OUI table (offline, instant)
+ *   2. Randomized-MAC heuristic (clear local-admin bit, retry OUI)
+ *   3. macvendors.com HTTPS API (network call)
+ *
+ * Step 3 is skipped when:
+ *   - `skipOnline` is passed true (randomized/empty MACs where the API
+ *     call would be wasted)
+ *   - The user has disabled online lookups via the `macVendorLookupOnline`
+ *     config flag (Settings → Privacy). Read once per call so changes
+ *     take effect on the next scan without restarting the app.
+ */
 async function resolveVendor(mac, skipOnline = false) {
     const localVendor = ouiLookup(mac)
     if (localVendor) return { vendor: localVendor, vendorSource: 'oui' }
     const derivedVendor = deriveVendorFromRandomized(mac)
     if (derivedVendor) return { vendor: derivedVendor, vendorSource: 'oui-derived' }
     if (!mac || skipOnline) return { vendor: null, vendorSource: 'unknown' }
+
+    // User opt-out: "Consultas online de fabricante" in Settings. The
+    // flag is stored as a boolean; null / undefined = opted in (default).
+    const onlineAllowed = database.configGet('macVendorLookupOnline')
+    if (onlineAllowed === false) return { vendor: null, vendorSource: 'unknown' }
+
     const onlineVendor = await withTimeout(lookupVendorOnline(mac), 2800, null)
     if (onlineVendor) return { vendor: onlineVendor, vendorSource: 'macvendors' }
     return { vendor: null, vendorSource: 'unknown' }
@@ -2275,24 +2349,52 @@ function getLocalMAC() {
     return { ip: null, mac: null }
 }
 
-ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
+ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {}) => {
+    // SECURITY: revalidate every value received from the renderer before
+    // it ever reaches a shell. Even though preload narrows the API, an
+    // XSS inside our own content would hand the renderer a bypass; these
+    // validators are the last line. The old code interpolated `baseIP`
+    // directly into `exec('ping ...')` which was a full RCE path.
+    if (!validators.isSubnetBase(baseIP)) throw validators.invalidArg('baseIP', baseIP)
+    if (!validators.isNonNegInt(rangeStart)) throw validators.invalidArg('rangeStart', rangeStart)
+    if (!validators.isNonNegInt(rangeEnd)) throw validators.invalidArg('rangeEnd', rangeEnd)
+
     let results = []
     const isWin = process.platform === 'win32'
     const local = getLocalMAC()
     const localHostname = os.hostname()
 
-    // Clamp range
-    rangeStart = Math.max(1, Math.min(254, parseInt(rangeStart) || 1))
-    rangeEnd = Math.max(rangeStart, Math.min(254, parseInt(rangeEnd) || 254))
+    // Safe Scan mode: gentler profile for sensitive / legacy networks.
+    // - Lower ping concurrency (4 vs 24)
+    // - Longer per-ping timeout (2000 ms vs 600 ms)
+    // - Skip TCP-touch preheat (264 concurrent SYNs)
+    // - Skip SSDP/mDNS multicast discovery
+    const safeMode = options && options.safeMode === true
+    const PING_CONCURRENCY = safeMode ? 4 : 24
+    const PING_TIMEOUT_WIN = safeMode ? 2000 : 600
+    const PING_TIMEOUT_UNIX = safeMode ? 2 : 1  // seconds for -W on Unix
 
-    // Phase 1: Ping sweep (batches of 24)
+    // Clamp range (post-validation defence: even valid ints beyond 1-254
+    // would produce invalid IPs, so we clamp here before composing).
+    rangeStart = Math.max(1, Math.min(254, Number(rangeStart) || 1))
+    rangeEnd = Math.max(rangeStart, Math.min(254, Number(rangeEnd) || 254))
+
+    // Phase 1: Ping sweep (batches sized by mode)
     const targets = []
-    for (let i = rangeStart; i <= rangeEnd; i++) targets.push(`${baseIP}.${i}`)
-    for (let i = 0; i < targets.length; i += 24) {
-        const batch = targets.slice(i, i + 24)
+    for (let i = rangeStart; i <= rangeEnd; i++) {
+        const ip = `${baseIP}.${i}`
+        // Paranoid: validate each composed IP before pushing — catches
+        // any unexpected interaction with `baseIP` content.
+        if (validators.isIPv4(ip)) targets.push(ip)
+    }
+    const pingArgs = (ip) => isWin
+        ? ['-4', '-n', '1', '-w', String(PING_TIMEOUT_WIN), ip]
+        : ['-c', '1', '-W', String(PING_TIMEOUT_UNIX), ip]
+    for (let i = 0; i < targets.length; i += PING_CONCURRENCY) {
+        const batch = targets.slice(i, i + PING_CONCURRENCY)
         const res = await Promise.all(batch.map(ip => new Promise(resolve => {
-            exec(isWin ? `ping -4 -n 1 -w 600 ${ip}` : `ping -c 1 -W 1 ${ip}`,
-                { timeout: 3000, windowsHide: true, encoding: 'utf8' },
+            execFile('ping', pingArgs(ip),
+                { timeout: Math.max(3000, PING_TIMEOUT_WIN + 1000), windowsHide: true, encoding: 'utf8' },
                 (err, stdout) => {
                     const m = stdout && stdout.match(PING_TIME_RE)
                     const txt = String(stdout || '')
@@ -2310,10 +2412,14 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
     const byIp = new Map(results.map(r => [r.ip, r]))
 
     // Phase 2: Warm neighbor cache on silent hosts with quick TCP touches.
-    const silentTargets = targets.filter(ip => !byIp.has(ip))
-    await preheatNeighborCache(silentTargets)
+    // Skipped in Safe Scan mode — this is the 264-concurrent-SYN burst.
+    if (!safeMode) {
+        const silentTargets = targets.filter(ip => !byIp.has(ip))
+        await preheatNeighborCache(silentTargets)
+    }
 
     // Phase 3: Enrich using ARP + OS neighbor table and include silent neighbors.
+    // Runs even in Safe Scan — it's a local system call with no network traffic.
     try {
         const neighborMap = await collectNeighborMap(baseIP, rangeStart, rangeEnd)
         for (const [ip, mac] of Object.entries(neighborMap)) {
@@ -2328,11 +2434,14 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
     results = Array.from(byIp.values())
     if (results.length === 0) return results
 
-    // Phase 4: Discovery intel (cached across scanner batch calls on same subnet)
-    const [ssdpByIp, mdnsByIp] = await Promise.all([
-        withTimeout(collectSsdpInfoCached(baseIP, rangeStart, rangeEnd), 4300, {}),
-        withTimeout(collectMdnsInfoCached(baseIP, rangeStart, rangeEnd), 2400, {}),
-    ])
+    // Phase 4: Discovery intel via multicast (SSDP + mDNS).
+    // Skipped in Safe Scan mode — multicast can be noisy on legacy switches.
+    const [ssdpByIp, mdnsByIp] = safeMode
+        ? [{}, {}]
+        : await Promise.all([
+            withTimeout(collectSsdpInfoCached(baseIP, rangeStart, rangeEnd), 4300, {}),
+            withTimeout(collectMdnsInfoCached(baseIP, rangeStart, rangeEnd), 2400, {}),
+        ])
 
     // Phase 5: Parallel name resolution + vendor lookup (concurrency = 8)
     await parallelMap(results, async (r) => {
@@ -2378,6 +2487,11 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd) => {
         else r.displayName = null
     }, 8)
 
+    // Proxy-ARP ghost filter. See electron/scanner/ghostFilter.js for
+    // the deterministic Rule A + Rule B specification. Keeping it as a
+    // pure module makes the logic unit-testable without touching Electron.
+    results = filterGhosts(results)
+
     results.sort((a, b) => {
         const av = parseInt((a.ip || '').split('.').pop(), 10)
         const bv = parseInt((b.ip || '').split('.').pop(), 10)
@@ -2393,7 +2507,9 @@ ipcMain.handle('lan-scan-enrich', async (_, payload = {}) => {
 
     const enriched = await parallelMap(items, async (item) => {
         const ip = String(item?.ip || '').trim()
-        if (!ip) return null
+        // SECURITY: reject anything that is not a pure IPv4 literal before
+        // it propagates into pingResolveName / netbiosLookup / nslookup.
+        if (!validators.isIPv4(ip)) return null
 
         const existingHost = normalizeResolvedHost(item?.hostname)
         const hasHostname = !!existingHost
@@ -3365,6 +3481,40 @@ const pingLiveProcesses = new Map()
 const PROBE_HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
 const PROBE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
+/**
+ * Return true when the given hostname resolves (syntactically) to a
+ * private / loopback / link-local target. Used by the WAN probe to
+ * block SSRF by default: the probe is meant to reach the public WAN,
+ * not any local service.
+ *
+ * We intentionally check the literal form — we don't resolve DNS. The
+ * probe will fail if the hostname resolves to a private range at runtime
+ * but syntactically looks public; that's acceptable (fail closed with a
+ * clear error) and avoids DNS-rebinding races between check and request.
+ */
+function isPrivateHost(hostname) {
+    if (!hostname) return true
+    const h = String(hostname).toLowerCase()
+    if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true
+    // IPv6 loopback / link-local / unique-local.
+    if (h === '::1') return true
+    if (h.startsWith('[fc') || h.startsWith('[fd') || h.startsWith('fc') || h.startsWith('fd')) return true
+    if (h.startsWith('[fe80') || h.startsWith('fe80')) return true
+    // IPv4 literal ranges.
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+    if (!m) return false
+    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)]
+    if (a === 10) return true                                   // 10/8
+    if (a === 127) return true                                  // loopback
+    if (a === 0) return true                                    // 0/8
+    if (a === 169 && b === 254) return true                     // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true            // 172.16/12
+    if (a === 192 && b === 168) return true                     // 192.168/16
+    if (a === 100 && b >= 64 && b <= 127) return true           // 100.64/10 carrier-grade NAT
+    if (a >= 224) return true                                   // multicast / reserved
+    return false
+}
+
 function stopTrackedProcess(processMap, senderId) {
     const proc = processMap.get(senderId)
     if (!proc) return
@@ -3667,6 +3817,67 @@ ipcMain.handle('lan-check-history-add', (_, entry) => database.lanCheckHistoryAd
 ipcMain.handle('lan-check-history-delete', (_, id) => database.lanCheckHistoryDelete(id))
 ipcMain.handle('lan-check-history-clear', () => database.lanCheckHistoryClear())
 
+ipcMain.handle('wan-probe-history-get', () => database.wanProbeHistoryGetAll())
+ipcMain.handle('wan-probe-history-add', (_, entry) => database.wanProbeHistoryAdd(entry))
+ipcMain.handle('wan-probe-history-delete', (_, id) => database.wanProbeHistoryDelete(id))
+ipcMain.handle('wan-probe-history-clear', () => database.wanProbeHistoryClear())
+
+// Report exports (PDF / CSV)
+ipcMain.handle('report-export', (_, kind, format, payload) =>
+    reports.exportReport(kind, format, payload)
+)
+ipcMain.handle('report-reveal', (_, filePath) => {
+    // SECURITY: reveal is only permitted for paths we ourselves
+    // exported in this session (see reports/save.js for the whitelist,
+    // which uses path.resolve + fs.realpathSync + fs.existsSync to
+    // canonicalise before consulting the allowed set). We also return
+    // the library's boolean so the renderer can surface a failure toast
+    // when the path was rejected.
+    return reports.revealInFolder(filePath)
+})
+
+// Device snapshots (LAN scan change tracking)
+ipcMain.handle('device-snapshot-add', (_, baseIP, devices) =>
+    database.deviceSnapshotAdd(baseIP, devices)
+)
+ipcMain.handle('device-snapshot-latest', (_, baseIP, beforeTs) =>
+    database.deviceSnapshotLatest(baseIP, beforeTs)
+)
+ipcMain.handle('device-snapshot-list', (_, baseIP, limit) =>
+    database.deviceSnapshotList(baseIP, limit)
+)
+ipcMain.handle('device-snapshot-get', (_, id) =>
+    database.deviceSnapshotGet(id)
+)
+ipcMain.handle('device-snapshot-clear', (_, baseIP) =>
+    database.deviceSnapshotClear(baseIP)
+)
+
+// Device inventory (persistent known-device registry, scoped per NETWORK).
+// Callers pass a `networkId` derived from the gateway's MAC (preferred)
+// or the subnet (fallback). See deriveNetworkId() in Scanner.jsx.
+ipcMain.handle('device-inventory-list', (_, networkId) =>
+    database.deviceInventoryList(networkId)
+)
+ipcMain.handle('device-inventory-get', (_, deviceKey) =>
+    database.deviceInventoryGet(deviceKey)
+)
+ipcMain.handle('device-inventory-merge', (_, networkId, baseIP, devices) =>
+    database.deviceInventoryMergeScan(networkId, baseIP, devices)
+)
+ipcMain.handle('device-inventory-update', (_, deviceKey, patch) =>
+    database.deviceInventoryUpdateMeta(deviceKey, patch)
+)
+ipcMain.handle('device-inventory-remove', (_, deviceKey) =>
+    database.deviceInventoryRemove(deviceKey)
+)
+ipcMain.handle('device-inventory-clear', (_, networkId) =>
+    database.deviceInventoryClear(networkId)
+)
+ipcMain.handle('device-inventory-purge-ghosts', (_, networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey) =>
+    database.deviceInventoryPurgeGhosts(networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey)
+)
+
 // Config (key/value)
 const WAN_PROBE_CONFIG_KEYS = [
     'wanProbePool',
@@ -3698,6 +3909,11 @@ ipcMain.handle('config-get', (_, key) => {
     if (isSensitiveRendererConfigKey(key)) return null
     return database.configGet(key)
 })
+
+// One-shot query: did the DB layer recover from corruption on startup?
+// Returns true once (on first read), false afterwards. UI uses this to
+// show a warning toast when the inventory was reset.
+ipcMain.handle('db-recovery-flag', () => database.consumeRecoveryFlag())
 ipcMain.handle('config-set', (_, key, value) => {
     if (isSensitiveRendererConfigKey(key)) return false
     database.configSet(key, value)
@@ -3729,9 +3945,24 @@ ipcMain.handle('wan-probe-config-set', (_, payload = {}) => {
 // ======================================================
 //   WAN PROBE - HTTP proxy for remote probe service
 // ======================================================
+//
+// Security policy:
+//   - Only HTTPS by default. HTTP requires explicit opt-in (allowHttp)
+//     — prevents accidental credential leakage over cleartext.
+//   - Certificate verification ON by default. `allowInsecure` must be
+//     explicitly `true` to disable (opt-in).
+//   - Private / loopback / link-local targets blocked by default —
+//     prevents SSRF from a compromised renderer hitting internal
+//     services. `allowPrivate: true` opts in.
+//   - HTTP methods restricted to the standard verbs; custom methods
+//     rejected.
+//   - Request body / headers size-limited (see sanitizeProbeHeaders).
+//
+// Each policy is strict-by-default; the renderer must explicitly
+// acknowledge any relaxation per request.
 ipcMain.handle('wan-probe-request', async (_, opts) => {
     const url = typeof opts?.url === 'string' ? opts.url.trim() : ''
-    if (!url) return { error: 'Invalid URL' }
+    if (!validators.isHttpUrl(url)) return { error: 'Invalid URL' }
 
     let parsed
     try {
@@ -3745,15 +3976,29 @@ ipcMain.handle('wan-probe-request', async (_, opts) => {
         return { error: 'Unsupported protocol' }
     }
 
-    const method = String(opts?.method || 'GET').trim().toUpperCase()
-    if (!PROBE_HTTP_METHODS.has(method)) {
+    // HTTPS-first policy. HTTP needs explicit allowHttp=true.
+    if (protocol === 'http:' && opts?.allowHttp !== true) {
+        return { error: 'Plain HTTP blocked. Use HTTPS or set allowHttp=true.' }
+    }
+
+    // Block private / loopback / link-local unless caller opts in.
+    if (!opts?.allowPrivate && isPrivateHost(parsed.hostname)) {
+        return { error: 'Private/loopback target blocked. Set allowPrivate=true to override.' }
+    }
+
+    const rawMethod = String(opts?.method || 'GET').trim().toUpperCase()
+    if (!validators.isAllowedHttpMethod(rawMethod) || !PROBE_HTTP_METHODS.has(rawMethod)) {
         return { error: 'Unsupported HTTP method' }
     }
+    const method = rawMethod
 
     const headers = sanitizeProbeHeaders(opts?.headers)
     const body = normalizeProbeRequestBody(opts?.body)
     const isHttps = protocol === 'https:'
-    const allowInsecure = opts?.allowInsecure !== false
+    // Strict TLS by default — only skip verification if renderer
+    // explicitly opts in. Legacy default was the opposite (insecure-ok)
+    // which made MITM silent on any HTTPS probe.
+    const allowInsecure = opts?.allowInsecure === true
     const lib = isHttps ? require('https') : require('http')
 
     return new Promise(resolve => {

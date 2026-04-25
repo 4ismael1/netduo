@@ -63,6 +63,21 @@ export default defineConfig([
     },
   },
   {
+    // Build-time helper scripts (run via `node scripts/<name>.js`) —
+    // CommonJS, Node globals. Keeps `require`, `__dirname`, `process`
+    // from tripping `no-undef`.
+    files: ['scripts/**/*.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2020,
+      sourceType: 'script',
+      globals: globals.node,
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+  {
     files: ['src/test/**/*.js', '**/*.test.{js,jsx}'],
     extends: [js.configs.recommended],
     languageOptions: {

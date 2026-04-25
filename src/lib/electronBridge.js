@@ -316,9 +316,9 @@ const bridge = {
                 success: true,
             }), 500 + Math.random() * 500)),
 
-    // LAN scan
-    lanScan: (base, start, end) =>
-        API ? API.lanScan(base, start, end)
+    // LAN scan — options.safeMode:bool lowers concurrency and skips TCP touch + SSDP/mDNS
+    lanScan: (base, start, end, options) =>
+        API ? API.lanScan(base, start, end, options)
             : new Promise(r => setTimeout(() => {
                 const devices = [
                     { ip: `${base}.1`, alive: true, time: 1, mac: 'c4:e9:84:0a:11:22', hostname: 'router.lan', displayName: 'router.lan', nameSource: 'ptr', vendor: 'TP-Link', vendorSource: 'oui', isGateway: true, isLocal: false, isRandomized: false, macEmpty: false },
@@ -558,12 +558,245 @@ const bridge = {
         return Promise.resolve([])
     },
 
+    // WAN Probe history — mirrors the lanCheckHistory shape so the UI
+    // patterns stay consistent across modules. Browser mock persists to
+    // localStorage under its own key.
+    wanProbeHistoryGet: () =>
+        API?.wanProbeHistoryGet
+            ? API.wanProbeHistoryGet()
+            : Promise.resolve(JSON.parse(localStorage.getItem('netduo_wanprobe_history') || '[]')),
+    wanProbeHistoryAdd: entry => {
+        if (API?.wanProbeHistoryAdd) return API.wanProbeHistoryAdd(entry)
+        const h = JSON.parse(localStorage.getItem('netduo_wanprobe_history') || '[]')
+        const payload = entry && typeof entry === 'object' ? (entry.report || entry) : null
+        if (!payload || typeof payload !== 'object') return Promise.resolve(h)
+        const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {}
+        const updated = [{
+            id: Date.now(),
+            report: payload,
+            target: payload.target || null,
+            probes: Number.isFinite(summary.probes)
+                ? summary.probes
+                : (Array.isArray(payload.probes) ? payload.probes.length : null),
+            findings: Number.isFinite(summary.findingsCount)
+                ? summary.findingsCount
+                : (Array.isArray(payload.findings) ? payload.findings.length : null),
+            risk_score: Number.isFinite(summary.riskScore) ? Number(summary.riskScore) : null,
+            timestamp: new Date().toISOString(),
+        }, ...h].slice(0, 120)
+        localStorage.setItem('netduo_wanprobe_history', JSON.stringify(updated))
+        return Promise.resolve(updated)
+    },
+    wanProbeHistoryDelete: id => {
+        if (API?.wanProbeHistoryDelete) return API.wanProbeHistoryDelete(id)
+        const safeId = Number.parseInt(String(id), 10)
+        const h = JSON.parse(localStorage.getItem('netduo_wanprobe_history') || '[]')
+        if (!Number.isInteger(safeId)) return Promise.resolve(h)
+        const updated = h.filter(item => Number.parseInt(String(item.id), 10) !== safeId)
+        localStorage.setItem('netduo_wanprobe_history', JSON.stringify(updated))
+        return Promise.resolve(updated)
+    },
+    wanProbeHistoryClear: () => {
+        if (API?.wanProbeHistoryClear) return API.wanProbeHistoryClear()
+        localStorage.removeItem('netduo_wanprobe_history')
+        return Promise.resolve([])
+    },
+
+    // Report exports (PDF / CSV). Browser mock is a no-op that cleanly reports
+    // unavailability so the UI can fall back gracefully.
+    reportExport: (kind, format, payload) => {
+        if (API?.reportExport) return API.reportExport(kind, format, payload)
+        return Promise.resolve({ ok: false, error: 'export-not-available-in-browser' })
+    },
+    reportReveal: filePath => {
+        if (API?.reportReveal) return API.reportReveal(filePath)
+        return Promise.resolve(false)
+    },
+
+    // Device snapshots — LAN scan change tracking. Browser mock uses localStorage
+    // so the renderer can still exercise the UI during `npm run dev` without Electron.
+    deviceSnapshotAdd: (baseIP, devices) => {
+        if (API?.deviceSnapshotAdd) return API.deviceSnapshotAdd(baseIP, devices)
+        const key = `netduo_snap_${baseIP}`
+        const list = JSON.parse(localStorage.getItem(key) || '[]')
+        const entry = { id: Date.now(), baseIP, scanTs: Date.now(), devices, deviceCount: devices?.length || 0 }
+        list.unshift(entry)
+        localStorage.setItem(key, JSON.stringify(list.slice(0, 50)))
+        return Promise.resolve({ id: entry.id, scanTs: entry.scanTs, baseIP, deviceCount: entry.deviceCount })
+    },
+    deviceSnapshotLatest: (baseIP, beforeTs) => {
+        if (API?.deviceSnapshotLatest) return API.deviceSnapshotLatest(baseIP, beforeTs)
+        const list = JSON.parse(localStorage.getItem(`netduo_snap_${baseIP}`) || '[]')
+        const match = beforeTs ? list.find(s => s.scanTs < beforeTs) : list[0]
+        return Promise.resolve(match || null)
+    },
+    deviceSnapshotList: (baseIP, limit = 20) => {
+        if (API?.deviceSnapshotList) return API.deviceSnapshotList(baseIP, limit)
+        const list = JSON.parse(localStorage.getItem(`netduo_snap_${baseIP}`) || '[]')
+        return Promise.resolve(list.slice(0, limit).map(s => ({
+            id: s.id, baseIP: s.baseIP, scanTs: s.scanTs, deviceCount: s.deviceCount,
+        })))
+    },
+    deviceSnapshotGet: id => {
+        if (API?.deviceSnapshotGet) return API.deviceSnapshotGet(id)
+        return Promise.resolve(null)
+    },
+    deviceSnapshotClear: baseIP => {
+        if (API?.deviceSnapshotClear) return API.deviceSnapshotClear(baseIP)
+        if (baseIP) localStorage.removeItem(`netduo_snap_${baseIP}`)
+        return Promise.resolve(true)
+    },
+
+    // Device inventory — persistent known-device registry, per-NETWORK.
+    // Browser mock uses localStorage so the dev server can exercise the UI.
+    // Records are keyed by `${networkId}::${deviceKey}` so the same MAC on
+    // two networks coexists without clobbering the other's metadata.
+    deviceInventoryList: networkId => {
+        if (API?.deviceInventoryList) return API.deviceInventoryList(networkId)
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        const items = Object.values(all).filter(it => !networkId || it.networkId === networkId)
+        items.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+        return Promise.resolve(items)
+    },
+    deviceInventoryGet: deviceKey => {
+        if (API?.deviceInventoryGet) return API.deviceInventoryGet(deviceKey)
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        return Promise.resolve(all[deviceKey] || null)
+    },
+    deviceInventoryMerge: (networkId, baseIP, devices) => {
+        if (API?.deviceInventoryMerge) return API.deviceInventoryMerge(networkId, baseIP, devices)
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        const newKeys = []
+        const updatedKeys = []
+        const now = Date.now()
+        const keyOf = d => {
+            if (d?.mac) {
+                const clean = d.mac.toLowerCase().replace(/[^0-9a-f]/g, '')
+                if (clean.length === 12 && clean !== '000000000000' && clean !== 'ffffffffffff') return `mac:${clean}`
+            }
+            return d?.ip ? `ip:${d.ip}` : null
+        }
+        for (const d of devices || []) {
+            const baseKey = keyOf(d)
+            if (!baseKey) continue
+            const scopedKey = networkId ? `${networkId}::${baseKey}` : baseKey
+            if (all[scopedKey]) {
+                all[scopedKey] = {
+                    ...all[scopedKey],
+                    networkId: networkId || all[scopedKey].networkId,
+                    baseIP: baseIP || all[scopedKey].baseIP,
+                    ip: d.ip || all[scopedKey].ip,
+                    mac: d.mac || all[scopedKey].mac,
+                    hostname: d.hostname || all[scopedKey].hostname,
+                    vendor: d.vendor || all[scopedKey].vendor,
+                    type: d.deviceType || d.type || all[scopedKey].type,
+                    lastSeen: now,
+                }
+                updatedKeys.push(scopedKey)
+            } else {
+                all[scopedKey] = {
+                    deviceKey: scopedKey,
+                    networkId: networkId || null,
+                    baseIP: baseIP || null,
+                    ip: d.ip || null,
+                    mac: d.mac || null,
+                    hostname: d.hostname || null,
+                    vendor: d.vendor || null,
+                    type: d.deviceType || d.type || null,
+                    typeOverride: null,
+                    nickname: null,
+                    notes: null,
+                    firstSeen: now,
+                    lastSeen: now,
+                }
+                newKeys.push(scopedKey)
+            }
+        }
+        localStorage.setItem('netduo_inventory', JSON.stringify(all))
+        return Promise.resolve({ updatedKeys, newKeys })
+    },
+    deviceInventoryUpdate: (deviceKey, patch) => {
+        if (API?.deviceInventoryUpdate) return API.deviceInventoryUpdate(deviceKey, patch)
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        if (!all[deviceKey]) return Promise.resolve(null)
+        if ('nickname' in patch) all[deviceKey].nickname = patch.nickname
+        if ('typeOverride' in patch) all[deviceKey].typeOverride = patch.typeOverride
+        if ('notes' in patch) all[deviceKey].notes = patch.notes
+        localStorage.setItem('netduo_inventory', JSON.stringify(all))
+        return Promise.resolve(all[deviceKey])
+    },
+    deviceInventoryRemove: deviceKey => {
+        if (API?.deviceInventoryRemove) return API.deviceInventoryRemove(deviceKey)
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        if (!all[deviceKey]) return Promise.resolve(false)
+        delete all[deviceKey]
+        localStorage.setItem('netduo_inventory', JSON.stringify(all))
+        return Promise.resolve(true)
+    },
+    deviceInventoryClear: networkId => {
+        if (API?.deviceInventoryClear) return API.deviceInventoryClear(networkId)
+        if (!networkId) {
+            localStorage.removeItem('netduo_inventory')
+            return Promise.resolve(true)
+        }
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        for (const k of Object.keys(all)) {
+            if (all[k].networkId === networkId) delete all[k]
+        }
+        localStorage.setItem('netduo_inventory', JSON.stringify(all))
+        return Promise.resolve(true)
+    },
+    deviceInventoryPurgeGhosts: (networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey = null) => {
+        if (API?.deviceInventoryPurgeGhosts) {
+            return API.deviceInventoryPurgeGhosts(networkId, Array.from(seenKeys || []), scanCoveredFullRange, gatewayDeviceKey)
+        }
+        // Browser mock: same heuristic as the DB-backed implementation,
+        // including the gateway-device-key exemption.
+        if (!networkId) return Promise.resolve(0)
+        const keys = seenKeys instanceof Set ? seenKeys : new Set(seenKeys || [])
+        const all = JSON.parse(localStorage.getItem('netduo_inventory') || '{}')
+        const rows = Object.entries(all).filter(([, v]) => v?.networkId === networkId)
+        const macCounts = new Map()
+        for (const [, r] of rows) {
+            if (!r.mac) continue
+            const k = r.mac.toLowerCase()
+            macCounts.set(k, (macCounts.get(k) || 0) + 1)
+        }
+        let removed = 0
+        for (const [key, r] of rows) {
+            if (r.nickname || r.notes || r.typeOverride) continue
+            if (gatewayDeviceKey && key === gatewayDeviceKey) continue
+            const macKey = r.mac ? r.mac.toLowerCase() : null
+            const isMaclessGhost = !r.mac && scanCoveredFullRange && !keys.has(key)
+            const isSharedMacGhost = macKey && (macCounts.get(macKey) || 0) >= 4
+            if (isMaclessGhost || isSharedMacGhost) {
+                delete all[key]
+                removed++
+            }
+        }
+        localStorage.setItem('netduo_inventory', JSON.stringify(all))
+        return Promise.resolve(removed)
+    },
+
     // Config (key/value persistence â€” SQLite backed)
     configGet: key => {
         if (isSensitiveConfigKey(key)) return Promise.resolve(null)
-        return API?.configGet ? API.configGet(key)
-            : Promise.resolve(JSON.parse(localStorage.getItem(`netpulse_cfg_${key}`) || 'null'))
+        if (!API?.configGet) {
+            const raw = localStorage.getItem(`netpulse_cfg_${key}`)
+            if (raw == null) return Promise.resolve(null)
+            // Guard against corrupt stored JSON (a previous build may
+            // have written a malformed value). Return the raw string so
+            // callers can apply their own defensive coercion; never
+            // throw — that would crash bootstrap.
+            try {
+                return Promise.resolve(JSON.parse(raw))
+            } catch {
+                return Promise.resolve(raw)
+            }
+        }
+        return API.configGet(key)
     },
+    dbRecoveryFlag: () => (API?.dbRecoveryFlag ? API.dbRecoveryFlag() : Promise.resolve(false)),
     configSet: (key, value) => {
         if (isSensitiveConfigKey(key)) return Promise.resolve(false)
         if (API?.configSet) {

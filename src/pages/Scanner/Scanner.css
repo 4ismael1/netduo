@@ -15,6 +15,123 @@
 .scan-bar { width: 180px; height: 4px; background: var(--gray-200); border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .scan-bar-fill { height: 100%; background: var(--color-accent); border-radius: 2px; transition: width 0.3s; }
 
+/* Clickable New-filter pill */
+.spill-new {
+    border: 1px solid transparent;
+    background: color-mix(in srgb, var(--color-success) 12%, transparent);
+    color: var(--color-success);
+    cursor: pointer;
+    font: inherit;
+    transition: all 120ms ease;
+}
+.spill-new:hover {
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+}
+.spill-new.spill-active {
+    background: var(--color-success);
+    color: white;
+    border-color: var(--color-success);
+}
+
+/* Safe Scan mode toggle */
+.safe-mode-toggle {
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-top: 6px; padding: 3px 9px;
+    font-size: 11px; font-weight: 600;
+    border-radius: 999px; border: 1px solid var(--border-light);
+    background: var(--gray-50); color: var(--text-muted);
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+.safe-mode-toggle:hover { border-color: var(--color-accent); color: var(--color-accent); }
+.safe-mode-toggle.on {
+    background: color-mix(in srgb, var(--color-success) 12%, transparent);
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+}
+.safe-mode-tag {
+    color: var(--color-success);
+    font-weight: 600;
+    margin-left: 4px;
+}
+.safe-mode-hint {
+    margin-left: 4px;
+    font-weight: 400;
+    opacity: 0.75;
+    font-size: 10px;
+}
+
+/* ── Show / hide offline toggle ────────────── */
+.spill-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+    color: var(--text-muted);
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+.spill-toggle:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+    border-style: solid;
+}
+
+/* ── Presence dot on device icon ──────────── */
+.dev-ico {
+    position: relative;
+}
+.dev-presence-dot {
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-surface);
+    background: var(--text-muted);
+}
+.dev-presence-dot-online {
+    background: var(--color-success);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 45%, transparent);
+    animation: dev-dot-pulse 2.4s ease-out infinite;
+}
+.dev-presence-dot-new {
+    background: var(--color-success);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 35%, transparent);
+}
+.dev-presence-dot-offline {
+    background: var(--gray-400, #94a3b8);
+    opacity: 0.7;
+}
+
+@keyframes dev-dot-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 45%, transparent); }
+    70%  { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Dim offline rows a touch */
+.dev-row.dev-presence-offline {
+    opacity: 0.7;
+}
+.dev-row.dev-presence-offline:hover {
+    opacity: 1;
+}
+
+.dev-subname {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 11.5px;
+    margin-left: 4px;
+}
+
 .scan-orb {
     width: 44px; height: 44px; border-radius: 50%;
     background: var(--gray-100); color: var(--gray-400);
@@ -36,7 +153,8 @@
 .sc-sep { color: var(--text-muted); font-weight: 500; }
 
 /* Summary pills */
-.scan-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+.scan-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.scan-pills-spacer { flex: 1 1 auto; min-width: 12px; }
 .spill {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 4px 10px; border-radius: var(--radius-full);
@@ -61,11 +179,18 @@
 }
 .dev-list-meta {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 16px;
+    padding: 6px 12px 6px 16px;
     font-size: 11px; font-weight: 600;
     color: var(--text-muted);
     background: var(--gray-50);
     border-bottom: 1px solid var(--border-light);
+    gap: 12px;
+}
+.dev-list-meta-count { flex: 1 1 auto; }
+.dev-list-meta-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
 }
 .dev-list-header {
     display: grid; grid-template-columns: 1fr 120px 70px 24px;

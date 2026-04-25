@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { isValidHostname, isValidPortRange, isValidTarget, normalizeTargetInput, parseInteger } from '../../lib/validation'
+import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './Diagnostics.css'
 
 const DNS_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME']
@@ -116,8 +117,21 @@ function TraceroutePanel() {
                         </div>
                     )}
                     {done && hops.length > 0 && (
-                        <div style={{ marginTop: 16, fontSize: 13, color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: 6, padding: '0 16px' }}>
-                            <CheckCircle size={14} /> Traceroute successfully reached destination in {hops.length} hops.
+                        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '0 16px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 13, color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <CheckCircle size={14} /> Traceroute successfully reached destination in {hops.length} hops.
+                            </span>
+                            <ExportMenu
+                                kind="traceroute"
+                                size="sm"
+                                formats={['pdf']}
+                                label="Export PDF"
+                                payload={{
+                                    host,
+                                    generatedAt: new Date().toISOString(),
+                                    hops,
+                                }}
+                            />
                         </div>
                     )}
                 </div>
@@ -322,6 +336,21 @@ function DnsPanel() {
                             </div>
                         )
                     })}
+                </div>
+            )}
+            {ran && !Object.values(loading).some(Boolean) && Object.keys(results).length > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                    <ExportMenu
+                        kind="dns-lookup"
+                        size="sm"
+                        formats={['pdf']}
+                        label="Export PDF"
+                        payload={{
+                            host,
+                            generatedAt: new Date().toISOString(),
+                            results,
+                        }}
+                    />
                 </div>
             )}
         </DiagPanel>

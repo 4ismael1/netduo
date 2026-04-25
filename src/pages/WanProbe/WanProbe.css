@@ -799,6 +799,80 @@
     gap: 12px;
 }
 
+/* History view — parallels the Report card container. */
+.wp2-history {
+    display: grid;
+    gap: 16px;
+    padding-bottom: 0;
+}
+
+.wp2-history-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+    max-height: 560px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.wp2-history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--color-border, rgba(148, 163, 184, 0.16));
+    background: var(--bg-card-subtle, rgba(148, 163, 184, 0.05));
+    transition: background 120ms, border-color 120ms;
+}
+
+.wp2-history-item:hover {
+    background: var(--bg-hover, rgba(148, 163, 184, 0.09));
+    border-color: var(--color-accent);
+}
+
+.wp2-history-item-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.wp2-history-item-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.wp2-history-item-top strong {
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.wp2-history-item-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.wp2-history-item-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.wp2-history-risk {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+}
+.wp2-history-risk-ok   { background: rgba(16, 185, 129, 0.12); color: #10b981; }
+.wp2-history-risk-low  { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
+.wp2-history-risk-mid  { background: rgba(245, 158, 11, 0.14); color: #f59e0b; }
+.wp2-history-risk-high { background: rgba(239, 68, 68, 0.14); color: #ef4444; }
+
 /* Report card: keep ring visible */
 .wp2-card.wp2-report-card {
     overflow: visible;
@@ -1259,6 +1333,10 @@
     margin-top: 10px;
     display: grid;
     gap: 10px;
+    /* Fallback cap so the pool stays scrollable even when the parent
+       card isn't height-constrained — prevents long probe lists from
+       pushing everything else off the page. */
+    max-height: min(50vh, 480px);
     overflow-y: auto;
     padding-right: 4px;
 }
@@ -1354,9 +1432,13 @@
 
 .wp2-probe-run-scroll {
     margin-top: 12px;
-    max-height: none;
-    overflow: visible;
-    padding: 8px 0 0;
+    /* Cap the per-run log so repeated scans over time remain reachable
+       without pushing the rest of the WAN Probe UI (controls, findings)
+       off-screen. */
+    max-height: min(60vh, 640px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 4px 0 0;
     border-top: 1px solid var(--border-light);
 }
 

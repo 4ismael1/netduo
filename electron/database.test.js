@@ -28,6 +28,28 @@ class FakeDatabase {
         this.tables = {
             config: new Map(),
         }
+        // Minimal column metadata surfaced via PRAGMA table_info(...).
+        // When migration v5 asks about `device_inventory`, we lie and say
+        // `network_id` already exists so the ALTER TABLE path is skipped
+        // — the fake doesn't persist row data for that table anyway, and
+        // the backfill UPDATE is a no-op against the empty store.
+        this.tableColumns = {
+            device_inventory: [
+                { cid: 0, name: 'device_key', type: 'TEXT', notnull: 1, dflt_value: null, pk: 1 },
+                { cid: 1, name: 'base_ip', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 2, name: 'ip', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 3, name: 'mac', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 4, name: 'last_hostname', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 5, name: 'last_vendor', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 6, name: 'last_type', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 7, name: 'type_override', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 8, name: 'nickname', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 9, name: 'notes', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+                { cid: 10, name: 'first_seen', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+                { cid: 11, name: 'last_seen', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
+                { cid: 12, name: 'network_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+            ],
+        }
     }
 
     pragma(command, options = {}) {
@@ -36,6 +58,18 @@ class FakeDatabase {
         if (normalized.startsWith('user_version =')) {
             this.userVersion = Number.parseInt(normalized.split('=').pop()?.trim() || '0', 10) || 0
             return this.userVersion
+        }
+        // table_info("name") support — migration v5 (addNetworkIdColumn)
+        // calls this to decide whether to ALTER TABLE ADD COLUMN. Since
+        // the fake doesn't actually run CREATE TABLE, we return the best
+        // approximation: the columns we know the code adds/expects for
+        // each table we stub. Unknown tables → empty (no columns), which
+        // lets the migration code assume the table is fresh / empty.
+        const tableInfoMatch = normalized.match(/^table_info\((?:'|"|)([a-z_]+)(?:'|"|)\)$/)
+        if (tableInfoMatch) {
+            const tableName = tableInfoMatch[1]
+            const columns = this.tableColumns?.[tableName] || []
+            return options.simple ? (columns[0]?.name || 0) : columns.map(c => ({ ...c }))
         }
         return options.simple ? 0 : []
     }
@@ -51,6 +85,38 @@ class FakeDatabase {
     prepare(sql) {
         const normalized = String(sql || '').replace(/\s+/g, ' ').trim().toUpperCase()
         const configTable = this.tables.config
+
+        // `PRAGMA table_info(device_inventory)` is sometimes run via
+        // `prepare().all()` (migration v5). Route it through pragma().
+        const pragmaMatch = normalized.match(/^PRAGMA\s+TABLE_INFO\s*\(\s*['"]?([A-Z_]+)['"]?\s*\)$/i)
+        if (pragmaMatch) {
+            const tableName = pragmaMatch[1].toLowerCase()
+            const columns = this.tableColumns?.[tableName] || []
+            return new FakeStatement({
+                all: () => columns.map(c => ({ ...c })),
+                get: () => columns[0] ? { ...columns[0] } : undefined,
+            })
+        }
+
+        // Device-inventory / snapshot statements aren't exercised by these
+        // tests; stub them as no-ops so migrations run to completion
+        // without needing to reimplement the whole schema in memory.
+        if (
+            normalized.startsWith('UPDATE DEVICE_INVENTORY')
+            || normalized.startsWith('INSERT INTO DEVICE_INVENTORY')
+            || normalized.startsWith('INSERT OR REPLACE INTO DEVICE_INVENTORY')
+            || normalized.startsWith('DELETE FROM DEVICE_INVENTORY')
+            || normalized.startsWith('SELECT') && normalized.includes('FROM DEVICE_INVENTORY')
+            || normalized.startsWith('SELECT') && normalized.includes('DEVICE_SNAPSHOTS')
+            || normalized.startsWith('INSERT INTO DEVICE_SNAPSHOTS')
+            || normalized.startsWith('DELETE FROM DEVICE_SNAPSHOTS')
+        ) {
+            return new FakeStatement({
+                run: () => ({ changes: 0 }),
+                get: () => undefined,
+                all: () => [],
+            })
+        }
 
         if (normalized === 'SELECT VALUE FROM CONFIG WHERE KEY = ?') {
             return new FakeStatement({

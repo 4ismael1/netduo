@@ -8,6 +8,7 @@ import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { normalizeTargetInput, isValidTarget } from '../../lib/validation'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
+import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './Monitor.css'
 
 const COLORS = ['#6366F1', '#22D3EE', '#10B981', '#F59E0B', '#EF4444']
@@ -57,6 +58,7 @@ export default function Monitor() {
     const intervalRef = useRef(null)
     const hostsRef = useRef(hosts)
     const alertedHostsRef = useRef(new Set())
+    const sessionStartRef = useRef(null)
 
     // Keep ref in sync so the interval callback always sees current hosts
     useEffect(() => { hostsRef.current = hosts }, [hosts])
@@ -123,6 +125,7 @@ export default function Monitor() {
         setData([])
         setStats({})
         alertedHostsRef.current.clear()
+        sessionStartRef.current = new Date().toISOString()
         const tick = async () => {
             try {
                 const results = {}
@@ -312,6 +315,21 @@ export default function Monitor() {
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                         {running && <span className="v3-badge success" style={{ animation: 'pulse-dot 2s ease-in-out infinite' }}>● LIVE</span>}
                         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Last {MAX_PTS} samples</span>
+                        {data.length > 0 && (
+                            <ExportMenu
+                                kind="monitor-log"
+                                size="sm"
+                                formats={['csv']}
+                                label="Export CSV"
+                                payload={() => ({
+                                    hosts,
+                                    data,
+                                    stats,
+                                    threshold: alertThreshold,
+                                    sessionStartedAt: sessionStartRef.current || new Date().toISOString(),
+                                })}
+                            />
+                        )}
                     </div>
                 </div>
                 {data.length === 0 ? (

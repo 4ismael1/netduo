@@ -8,6 +8,7 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { deriveProgressMbps, isStalePhaseEvent } from '../../lib/speedMetrics'
+import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './SpeedTest.css'
 
 /* ── Date helpers ── */
@@ -465,9 +466,18 @@ export default function SpeedTest() {
                     <div className="v3-card-header">
                         <span className="v3-card-title">History</span>
                         <span className="v3-badge accent">{history.length}</span>
-                        <button className="st-hist-clear" onClick={() => { bridge.speedHistoryClear().then(() => { setHistory([]); setHistPage(0) }).catch(error => { logBridgeWarning('speedtest:history-clear', error); setHistory([]); setHistPage(0) }) }} title="Clear history">
-                            <Trash2 size={13} /> Clear All
-                        </button>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <ExportMenu
+                                kind="speed-history"
+                                size="sm"
+                                formats={['csv']}
+                                label="Export CSV"
+                                payload={{ entries: history }}
+                            />
+                            <button className="st-hist-clear" onClick={() => { bridge.speedHistoryClear().then(() => { setHistory([]); setHistPage(0) }).catch(error => { logBridgeWarning('speedtest:history-clear', error); setHistory([]); setHistPage(0) }) }} title="Clear history">
+                                <Trash2 size={13} /> Clear All
+                            </button>
+                        </div>
                     </div>
                     <div className="st-hist-body">
                         {pagedHistory.map((h, i) => {

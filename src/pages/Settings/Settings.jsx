@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from 'react'
-import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield } from 'lucide-react'
+import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield, Trash2, CheckCircle2 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import './Settings.css'
@@ -83,16 +83,43 @@ export default function Settings() {
     const [theme, setTheme] = useState('light')
     const [interval, setInterval] = useState('2')
     const [notifs, setNotifs] = useState(true)
+    const [notifyNewDevices, setNotifyNewDevices] = useState(true)
+    const [macVendorOnline, setMacVendorOnline] = useState(true)
     const [latencyThr, setLatencyThr] = useState('200')
+    const [clearStatus, setClearStatus] = useState(null) // 'confirm' | 'ok' | 'error' | null
+    const [clearBusy, setClearBusy] = useState(false)
+
+    async function handleClearInventory() {
+        if (clearStatus !== 'confirm') {
+            setClearStatus('confirm')
+            setTimeout(() => setClearStatus(s => s === 'confirm' ? null : s), 4000)
+            return
+        }
+        setClearBusy(true)
+        try {
+            // Passing null wipes the inventory across ALL known networks.
+            await bridge.deviceInventoryClear?.(null)
+            setClearStatus('ok')
+            setTimeout(() => setClearStatus(null), 2000)
+        } catch (error) {
+            logBridgeWarning('settings:clear-inventory', error)
+            setClearStatus('error')
+            setTimeout(() => setClearStatus(null), 2500)
+        } finally {
+            setClearBusy(false)
+        }
+    }
 
     // Load persisted settings on mount
     useEffect(() => {
-        bridge.configGetPublic(['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold']).then(cfg => {
+        bridge.configGetPublic(['accentColor', 'theme', 'pollInterval', 'notifications', 'notifyNewDevices', 'macVendorLookupOnline', 'latencyThreshold']).then(cfg => {
             if (!cfg) return
             if (cfg.accentColor) { setAccent(cfg.accentColor); applyCSSAccent(cfg.accentColor) }
             if (cfg.theme) { setTheme(cfg.theme); applyTheme(cfg.theme) }
             if (cfg.pollInterval) setInterval(cfg.pollInterval)
             if (cfg.notifications !== undefined) setNotifs(cfg.notifications)
+            if (cfg.notifyNewDevices !== undefined) setNotifyNewDevices(cfg.notifyNewDevices)
+            if (cfg.macVendorLookupOnline !== undefined) setMacVendorOnline(cfg.macVendorLookupOnline)
             if (cfg.latencyThreshold) setLatencyThr(cfg.latencyThreshold)
         }).catch(error => {
             logBridgeWarning('settings:bootstrap', error)
@@ -178,12 +205,73 @@ export default function Settings() {
                         <input className="v3-input" type="number" value={latencyThr} onChange={e => { setLatencyThr(e.target.value); persistSetting('latencyThreshold', e.target.value) }} />
                     </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 24, padding: '16px 0', borderTop: '1px solid var(--border-light)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 24, padding: '16px 0', borderTop: '1px solid var(--border-light)' }}>
                     <label className="toggle-label">
                         <input type="checkbox" className="toggle-input" checked={notifs} onChange={e => { setNotifs(e.target.checked); persistSetting('notifications', e.target.checked) }} />
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
-                        <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>System notifications</span>
+                        <div>
+                            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>System notifications</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Latency alerts from the Monitor module.</div>
+                        </div>
                     </label>
+                    <label className="toggle-label">
+                        <input type="checkbox" className="toggle-input" checked={notifyNewDevices} onChange={e => { setNotifyNewDevices(e.target.checked); persistSetting('notifyNewDevices', e.target.checked) }} />
+                        <div className="toggle-track"><div className="toggle-thumb" /></div>
+                        <div>
+                            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Notify on new LAN devices</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Desktop alert whenever a new MAC appears during a Scanner scan.</div>
+                        </div>
+                    </label>
+                    <label className="toggle-label">
+                        <input type="checkbox" className="toggle-input" checked={macVendorOnline} onChange={e => { setMacVendorOnline(e.target.checked); persistSetting('macVendorLookupOnline', e.target.checked) }} />
+                        <div className="toggle-track"><div className="toggle-thumb" /></div>
+                        <div>
+                            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Online vendor lookup (MAC API)</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Query macvendors.com when the local OUI table misses a prefix. Disable to keep scans fully offline.</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            {/* Data management */}
+            <div className="v3-card" style={{ marginBottom: 24, maxWidth: 800 }}>
+                <div className="v3-card-header">
+                    <span className="v3-card-title"><Trash2 size={16} style={{ display: 'inline', marginRight: 5, color: 'var(--color-accent)' }} />Scanner data</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, padding: '8px 0' }}>
+                    <div>
+                        <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 2 }}>Clear scan inventory</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 520 }}>
+                            Removes every device recorded by the LAN Scanner across all networks, including nicknames, notes, type overrides and new-device state. This cannot be undone. Your scan history entries are kept.
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={handleClearInventory}
+                        disabled={clearBusy}
+                        className="v3-btn"
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            whiteSpace: 'nowrap',
+                            background: clearStatus === 'confirm'
+                                ? 'var(--color-danger, #ef4444)'
+                                : clearStatus === 'ok'
+                                    ? 'var(--color-success, #10b981)'
+                                    : 'transparent',
+                            color: clearStatus === 'confirm' || clearStatus === 'ok' ? '#fff' : 'var(--color-danger, #ef4444)',
+                            border: `1px solid ${clearStatus === 'ok' ? 'var(--color-success, #10b981)' : 'var(--color-danger, #ef4444)'}`,
+                        }}
+                    >
+                        {clearStatus === 'ok'
+                            ? <><CheckCircle2 size={14} /> Cleared</>
+                            : clearStatus === 'confirm'
+                                ? <><Trash2 size={14} /> Confirm clear</>
+                                : clearStatus === 'error'
+                                    ? <>Failed — retry?</>
+                                    : <><Trash2 size={14} /> Clear inventory</>}
+                    </button>
                 </div>
             </div>
 
@@ -211,7 +299,7 @@ export default function Settings() {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                v1.2
+                                v1.3.0
                             </span>
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>

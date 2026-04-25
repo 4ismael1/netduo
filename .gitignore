@@ -31,3 +31,26 @@ services/netduo-wan-probe/
 *.njsproj
 *.sln
 *.sw?
+
+# SQLite persistence — user data and test fixtures should never land
+# in the repo. Dev runs and vitest fixtures can produce these under the
+# project directory.
+*.sqlite
+*.sqlite-journal
+*.db
+*.db-wal
+*.db-shm
+
+# Audit / remediation artifacts generated during v1.3 QA. Kept locally
+# for reference but not part of the published repository.
+AUDIT_REPORT.md
+AUDIT_NOTES/
+audit/
+
+# Internal planning / scratch docs. Only the official /docs files that
+# predate v1.3 (privacy.md, _config.yml, images/) are part of the repo.
+docs/PLAN-*.md
+docs/PLAN-*.txt
+
+# Electron / build cache
+*.tsbuildinfo

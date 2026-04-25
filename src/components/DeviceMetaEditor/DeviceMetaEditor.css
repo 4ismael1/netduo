@@ -1,0 +1,256 @@
+/* ═══════════════════════════════════════════════
+   DeviceMetaEditor — inline nickname + type override
+   Lives inside Scanner's detail panel. Designed to
+   blend with the v3 design system used in other cards.
+   ═══════════════════════════════════════════════ */
+
+.dmeta {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg, 12px);
+    margin: 12px 0;
+}
+
+.dmeta-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.dmeta-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    user-select: none;
+}
+
+.dmeta-label svg {
+    color: var(--color-accent);
+    opacity: 0.9;
+}
+
+/* ── Value row (display mode) ──────────────────── */
+.dmeta-value-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 34px;
+    padding: 4px 6px 4px 12px;
+    background: var(--gray-50);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md, 8px);
+    transition: all 120ms ease;
+    cursor: pointer;
+    outline: none;
+}
+
+.dmeta-value-row:hover,
+.dmeta-value-row:focus-visible {
+    background: color-mix(in srgb, var(--color-accent) 6%, var(--gray-50));
+    border-color: color-mix(in srgb, var(--color-accent) 30%, var(--border-light));
+}
+
+.dmeta-value-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.5;
+}
+
+.dmeta-value-empty {
+    color: var(--text-muted);
+    font-style: italic;
+    font-weight: 400;
+}
+
+.dmeta-mini-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 120ms ease;
+    flex-shrink: 0;
+    opacity: 0;
+}
+
+.dmeta-value-row:hover .dmeta-mini-btn,
+.dmeta-value-row:focus-within .dmeta-mini-btn {
+    opacity: 1;
+}
+
+.dmeta-mini-btn:hover {
+    color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.dmeta-mini-btn-clear:hover {
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+}
+
+.dmeta-mini-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ── Edit mode ────────────────────────────────── */
+.dmeta-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dmeta-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 32px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md, 8px);
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.dmeta-input::placeholder { color: var(--text-muted); font-weight: 400; }
+.dmeta-input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.dmeta-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border-light);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 120ms ease;
+    flex-shrink: 0;
+}
+
+.dmeta-action-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+.dmeta-action-btn-save {
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 35%, transparent);
+    background: color-mix(in srgb, var(--color-success) 8%, transparent);
+}
+.dmeta-action-btn-save:hover {
+    background: color-mix(in srgb, var(--color-success) 16%, transparent);
+    border-color: color-mix(in srgb, var(--color-success) 55%, transparent);
+}
+
+.dmeta-action-btn-cancel:hover {
+    color: var(--color-danger);
+    border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.dmeta-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ── Select (device type) ─────────────────────── */
+.dmeta-select-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.dmeta-select {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 0 30px 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--text-primary);
+    background: var(--gray-50);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md, 8px);
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    transition: all 120ms ease;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.dmeta-select:hover {
+    background: color-mix(in srgb, var(--color-accent) 6%, var(--gray-50));
+    border-color: color-mix(in srgb, var(--color-accent) 30%, var(--border-light));
+}
+
+.dmeta-select:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent);
+    background: var(--bg-surface);
+}
+
+.dmeta-select-chevron {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    pointer-events: none;
+}
+
+.dmeta-override-badge {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    width: fit-content;
+}
+
+.dmeta-error {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: var(--color-danger);
+    padding: 4px 6px;
+    background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+    border-radius: var(--radius-sm, 6px);
+}
+

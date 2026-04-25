@@ -400,20 +400,37 @@ export default function Dashboard() {
                     </div>
                     <div className="stat-tile-body">
                         <div className="stat-tile-label">Public IP</div>
-                        <div className={`stat-tile-value mono${net.publicIP ? ' copyable' : ''}`}
-                            onClick={() => {
-                                if (!net.publicIP) return
-                                navigator.clipboard.writeText(net.publicIP).then(() => {
-                                    setCopiedIP(true)
-                                    setTimeout(() => setCopiedIP(false), 1200)
-                                })
-                            }}
-                            title={net.publicIP ? 'Click to copy' : ''}>
-                            {copiedIP
-                                ? <span className="copied-flash">Copied!</span>
-                                : (net.publicIP ? (showPublicIP ? net.publicIP : net.publicIP.replace(/./g, '\u2022')) : '\u2014')}
-                            {net.publicIP && !copiedIP && (
-                                <button className="ip-eye-btn" onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }} onClick={(e) => { e.stopPropagation(); e.preventDefault(); setShowPublicIP(p => !p) }} title={showPublicIP ? 'Hide IP' : 'Show IP'}>
+                        <div className="stat-tile-value mono ip-value-row">
+                            {/* Button stays mounted at all times so the tile
+                                keeps its width; the "Copied!" feedback
+                                overlays on top via absolute positioning
+                                instead of replacing the content. */}
+                            <button
+                                type="button"
+                                className={`ip-copy-btn${net.publicIP ? ' copyable' : ''}`}
+                                onClick={() => {
+                                    if (!net.publicIP) return
+                                    navigator.clipboard.writeText(net.publicIP).then(() => {
+                                        setCopiedIP(true)
+                                        setTimeout(() => setCopiedIP(false), 1200)
+                                    })
+                                }}
+                                disabled={!net.publicIP}
+                                title={net.publicIP ? 'Click to copy' : ''}
+                            >
+                                {net.publicIP
+                                    ? (showPublicIP ? net.publicIP : net.publicIP.replace(/./g, '\u2022'))
+                                    : '\u2014'}
+                            </button>
+                            {copiedIP && <span className="copied-flash">Copied!</span>}
+                            {net.publicIP && (
+                                <button
+                                    type="button"
+                                    className="ip-eye-btn"
+                                    onClick={() => setShowPublicIP(p => !p)}
+                                    title={showPublicIP ? 'Hide IP' : 'Show IP'}
+                                    aria-label={showPublicIP ? 'Hide public IP' : 'Show public IP'}
+                                >
                                     {showPublicIP ? <EyeOff size={16} /> : <Eye size={16} />}
                                 </button>
                             )}
