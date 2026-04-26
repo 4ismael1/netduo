@@ -16,10 +16,15 @@
    pixeles" the user reported — content fit basically perfectly but
    slipped over by a few pixels (card padding + border accumulation),
    triggering the 6px page scrollbar from design-system.css. Killing
-   page-level scroll for setup specifically silences the spurious bar
-   without affecting layout. The running and report views keep their
-   default `overflow-y: auto` because their content can legitimately
-   exceed the viewport (long findings list, probe history, etc.). */
+   page-level scroll for setup silences the spurious bar without
+   affecting layout. The running and report views keep their default
+   `overflow-y: auto` because their content can legitimately exceed
+   the viewport (long findings list, probe history, etc.).
+   For Nothing theme, the chrome compactness overrides further down
+   (tighter card padding, smaller header/stage margins) shrink content
+   enough that this hidden rule still fits — keeps the run button
+   visible at the bottom of the scan card without spawning a page
+   scrollbar. */
 .v3-page-layout.wp2-page.wp2-view-setup {
     overflow-y: hidden;
 }
@@ -2159,37 +2164,62 @@
 
 /* ── Nothing: typography parity with Dashboard / Scanner ──
    WanProbe was missing most of the Nothing-theme typography overrides
-   that the rest of the app uses (Dashboard/Scanner/Diagnostics all
-   render labels in uppercased Space Mono and numeric values in
-   Space Mono). This block brings WanProbe in line with the user-
-   facing visual rhythm. */
+   that the rest of the app uses. This block brings WanProbe in line
+   with the user-facing visual rhythm.
+
+   IMPORTANT: keep uppercase + letter-spacing only on SHORT labels
+   (single words, max 2 words). Applying it to longer text (probe
+   names, step descriptions, mode/profile descriptions) inflates the
+   width 30-50% and either breaks layouts or wraps to additional
+   lines, pushing the bottom run button below the viewport. The first
+   pass of this block was too aggressive on that front; the user
+   reported "boton cortado" — the run button hidden by the page edge
+   in setup view. This revision restricts uppercase to short pills,
+   keeps long text in plain Space Grotesk/Mono, and lowers
+   letter-spacing across the board to minimize width inflation. */
 [data-theme="nothing"] .wp2-stage-chip {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     font-size: 11px;
     border-radius: 4px;
+    padding: 6px 10px;
 }
 [data-theme="nothing"] .wp2-stage-strip { border-radius: 6px; }
 [data-theme="nothing"] .wp2-divider {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     font-size: 10px;
 }
+/* Mode + profile cards: titles in Grotesk, descriptions stay Grotesk
+   too (full sentences in mono uppercase looked terrible and didn't
+   fit the card width). */
 [data-theme="nothing"] .wp2-mode-card strong,
 [data-theme="nothing"] .wp2-profile-card strong { font-family: "Space Grotesk", sans-serif; }
 [data-theme="nothing"] .wp2-mode-card p,
 [data-theme="nothing"] .wp2-profile-card p {
-    font-family: "Space Mono", monospace;
-    font-size: 11px;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 12px;
 }
+/* Scope toggle + filter buttons: short single words ("Preset", "Custom",
+   "open", "tcp") so uppercase fits, but tighter padding so the toggle
+   container doesn't overflow with two scope chips side-by-side. */
 [data-theme="nothing"] .wp2-scope-chip,
-[data-theme="nothing"] .wp2-filter-btn,
-[data-theme="nothing"] .wp2-report-probe-tab {
+[data-theme="nothing"] .wp2-filter-btn {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
+    font-size: 11px;
+    border-radius: 4px;
+    padding: 5px 8px;
+}
+/* Probe tabs in the report view contain full probe names that can be
+   long (e.g. "WAN-Probe-Tokyo-1"). Keep mono for the techy look but
+   skip uppercase + letter-spacing so the tab content fits without
+   getting clipped by the parent's `overflow-x: hidden`. */
+[data-theme="nothing"] .wp2-report-probe-tab {
+    font-family: "Space Mono", monospace;
     font-size: 11px;
     border-radius: 4px;
 }
@@ -2199,16 +2229,16 @@
 }
 [data-theme="nothing"] .wp2-runtime-hint strong { font-family: "Space Mono", monospace; }
 [data-theme="nothing"] .wp2-step-label { font-family: "Space Grotesk", sans-serif; }
+/* Step description is a full sentence — keep it readable, not pseudo-
+   terminal-uppercase. */
 [data-theme="nothing"] .wp2-step-desc {
-    font-family: "Space Mono", monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-size: 10px;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 11px;
 }
 [data-theme="nothing"] .wp2-summary-pill {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     font-size: 11px;
     border-radius: 4px;
 }
@@ -2219,24 +2249,45 @@
 [data-theme="nothing"] .wp2-stat-item span {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     font-size: 10px;
 }
 [data-theme="nothing"] .wp2-finding strong,
 [data-theme="nothing"] .wp2-risk-card strong { font-family: "Space Grotesk", sans-serif; }
 [data-theme="nothing"] .wp2-finding p,
 [data-theme="nothing"] .wp2-risk-card p {
-    font-family: "Space Mono", monospace;
-    font-size: 11px;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 12px;
 }
 [data-theme="nothing"] .wp2-state-badge,
 [data-theme="nothing"] .wp2-sev-chip,
 [data-theme="nothing"] .wp2-mini-chip {
     font-family: "Space Mono", monospace;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     border-radius: 4px;
 }
+
+/* ── Nothing: chrome compaction so the run button fits ──
+   Without this the scan-card content (now slightly taller because of
+   the mono-uppercase chips + section labels) overflowed the card's
+   max-height (`calc(100vh - 220px)` set above) and pushed the bottom
+   "Execute" button below the visible area — the user reported "los
+   botones abajo cortados por la interfaz". Tightening per-section
+   padding + the page-header/stage-strip margins claws back ~30-40 px
+   in vertical chrome, which is more than enough to land the run
+   button back inside the visible card. */
+[data-theme="nothing"] .wp2-page .v3-page-header { margin-bottom: 6px; }
+[data-theme="nothing"] .wp2-stage-strip { margin-bottom: 6px; padding: 4px; }
+[data-theme="nothing"] .v3-page-layout.wp2-page { padding: 12px 18px 8px; }
+[data-theme="nothing"] .wp2-page .v3-card { padding: 14px; }
+[data-theme="nothing"] .wp2-flow-block { gap: 6px; }
+[data-theme="nothing"] .wp2-setup-grid,
+[data-theme="nothing"] .wp2-setup-left,
+[data-theme="nothing"] .wp2-results { gap: 12px; }
+[data-theme="nothing"] .wp2-divider { margin: 10px 0; }
+[data-theme="nothing"] .wp2-mode-card,
+[data-theme="nothing"] .wp2-profile-card { padding: 10px; }
 [data-theme="nothing"] .wp2-finding.sev-critical { border-left-color: #D71921; }
 [data-theme="nothing"] .wp2-finding.sev-high { border-left-color: #D4A843; }
 [data-theme="nothing"] .wp2-mini-chip.critical { color: #D71921; background: rgba(215,25,33,.1); }
