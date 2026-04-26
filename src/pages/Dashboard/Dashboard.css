@@ -146,7 +146,15 @@
 /* ── Stat Tiles ── */
 .dash-stats {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    /* `minmax(0, 1fr)` instead of just `1fr` — by default grid items
+       have `min-width: auto` which lets them overflow their share to
+       fit content. With long city/country strings (or full IPv6
+       addresses), a single tile could push the others narrower or
+       force horizontal scroll. The `minmax(0, ...)` floor caps each
+       cell at its fair share regardless of content length, and the
+       `text-overflow: ellipsis` chain inside `.stat-tile-value` and
+       `.stat-tile-sub` truncates the visible text. */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
 }
 
@@ -211,10 +219,17 @@
 .copied-flash {
     position: absolute;
     top: 50%;
+    /* Span the full width from the left edge of the IP text to the
+       point where the eye button starts (28px wide + 4px gap). With
+       only `left: 0` + auto-width, the flash sized itself to fit
+       "Copied!" (~60px) and left half the IP digits visible behind
+       it — defeating the visual feedback. */
     left: 0;
+    right: 32px;
     transform: translateY(-50%);
-    background: var(--bg-card, #fff);
-    padding: 2px 8px;
+    /* Fully opaque card background so nothing bleeds through. */
+    background: var(--bg-card, var(--bg-surface, #fff));
+    padding: 4px 10px;
     border-radius: 4px;
     color: var(--color-success);
     font-size: 12px;
@@ -223,6 +238,10 @@
     animation: copied-flash-in 160ms ease-out;
     z-index: 2;
     white-space: nowrap;
+    /* Centered text inside the wider strip. */
+    text-align: left;
+    display: flex;
+    align-items: center;
 }
 @keyframes copied-flash-in {
     from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
@@ -232,8 +251,19 @@
     font-size: 11px;
     color: var(--text-muted);
     margin-top: 2px;
-    min-height: 16px;
+    /* Lock the height to a single line so tiles never grow when async
+       data arrives. The Public IP tile shows "City, Country" — long
+       countries like "Dominican Republic" used to wrap to two lines,
+       which made that tile taller than its row siblings and pushed
+       everything below downward when the geo lookup resolved. With
+       fixed height + ellipsis, the visible text truncates ("Santo
+       Domingo, Dominican Repu…") while the layout stays steady. */
+    height: 16px;
+    line-height: 16px;
     display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* ── Card ── */
@@ -457,11 +487,11 @@
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-    .dash-stats   { grid-template-columns: repeat(2, 1fr); }
-    .chart-grid   { grid-template-columns: 1fr; }
-    .action-grid  { grid-template-columns: repeat(2, 1fr); }
-    .dash-cards-row { grid-template-columns: 1fr; }
-    .dash-extra-grid { grid-template-columns: repeat(2, 1fr); }
+    .dash-stats   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .chart-grid   { grid-template-columns: minmax(0, 1fr); }
+    .action-grid  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dash-cards-row { grid-template-columns: minmax(0, 1fr); }
+    .dash-extra-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ── Cards Row (Signal + Latency side-by-side) ── */
@@ -595,29 +625,57 @@
    fires the copy action by accident. */
 .ip-value-row {
     position: relative;
-    display: inline-flex;
+    /* Use the same `display: flex` as the base .stat-tile-value so
+       the row's intrinsic height is governed by its text content
+       (~22px from min-height) — NOT by the absolute-positioned eye
+       button. This keeps the IP value vertically aligned with the
+       values in Local IP / Gateway / DNS tiles. */
+    display: flex;
     align-items: center;
     gap: 4px;
+    /* Reserve room on the right for the absolute eye button (28px
+       wide + small breathing space) so the IP text never slides
+       underneath it. */
+    padding-right: 32px;
 }
 
-.ip-copy-btn {
-    display: inline-flex;
-    align-items: center;
-    background: transparent;
-    border: none;
-    color: inherit;
+/* The IP text is now a plain <span> inside .stat-tile-value, exactly
+   like the values in Local IP / Gateway / DNS tiles — so its glyph
+   left-edge sits at the same X as the "PUBLIC IP" label above it.
+   The wrapping div carries the .copyable affordance (cursor + hover
+   tint + keyboard focus). */
+.ip-text {
+    display: inline;
     font: inherit;
-    padding: 2px 6px;
-    margin: 0;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background 120ms ease;
+    color: inherit;
 }
-.ip-copy-btn.copyable:hover { background: var(--bg-hover); }
-.ip-copy-btn:disabled { cursor: default; }
-.ip-copy-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.ip-value-row.copyable {
+    cursor: pointer;
+}
+.ip-value-row.copyable:hover .ip-text {
+    color: var(--color-accent);
+}
+.ip-value-row:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
 
 .ip-eye-btn {
+    /* Floated to the right of the IP text via absolute positioning so
+       its 28px footprint doesn't push the row taller than its text
+       content. Without this, the .ip-value-row stretched to 28-36px
+       to accommodate the eye, vertically-centered the IP text inside,
+       and made the IP appear ~7px LOWER than the values in the
+       sibling Local IP / Gateway / DNS tiles (which only contain
+       text and stay at text-height). The transparent background +
+       inheriting position context (.ip-value-row is `position:
+       relative`) keeps the layout flush. */
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -625,10 +683,10 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    /* Hit area is 36x36 — comfortably bigger than the 16x16 icon so
-       users don't need pixel accuracy to toggle visibility. */
-    width: 36px;
-    height: 36px;
+    /* Hit area: comfortable 28x28 — bigger than the 16x16 icon but
+       not so big that we used to need to grow the row to fit it. */
+    width: 28px;
+    height: 28px;
     padding: 0;
     border-radius: var(--radius-sm);
     transition: color 120ms ease, background 120ms ease;

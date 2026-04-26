@@ -299,7 +299,7 @@ export default function Settings() {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                v1.3.0
+                                v1.3.1
                             </span>
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>

@@ -63,7 +63,7 @@ function isEmptyMac(mac) {
  * @returns {Array<object>} merged devices where each entry has:
  *   - every field from the scanned device (when online)
  *   - inventory-only fields (nickname, typeOverride, notes, firstSeen)
- *   - `presence`: 'online' | 'offline' | 'new'
+ *   - `presence`: 'online' | 'cached' | 'offline' | 'new'
  *   - `deviceKey`: stable identifier
  *   - `lastSeen`: epoch ms of most recent observation
  *   - `firstSeen`: epoch ms of first observation (if in inventory)
@@ -95,25 +95,48 @@ export function mergeScanWithInventory(scanDevices, inventoryItems, newKeySet = 
     const merged = []
     const seenKeys = new Set()
 
-    // Primary pass: iterate the live scan so online devices preserve their
+    // Primary pass: iterate the live scan so active devices preserve their
     // freshly-discovered ordering (by IP).
+    //
+    // Neighbor-cache-only rows are visible but not online. That matters
+    // because Windows can keep disconnected devices in Stale state long
+    // after they stopped replying to probes.
+    //
+    //   • Pro: Wi-Fi sleepers (phones in power-save) don't get
+    //     hidden when they miss a single ICMP — they're still in
+    //     ARP cache because they were just there.
+    //   • Con: a device that just disconnected may still be in ARP
+    //     cache for a few minutes (Stale state), so we show it as cached.
+    //
+    // Active ICMP/mDNS/SSDP responders still render as online/new; cache-only
+    // evidence renders as cached so the user sees the device without a false
+    // Online claim.
     for (const [key, device] of scanByKey) {
         seenKeys.add(key)
         const inventory = inventoryByKey.get(key) || null
-        merged.push(buildEntry(device, inventory, newSet.has(key) ? 'new' : 'online'))
+        const isNew = newSet.has(key)
+        merged.push(buildEntry(device, inventory, presenceForScanDevice(device, isNew), isNew))
     }
 
     // Secondary pass: add inventory rows that weren't in the scan (offline
     // known devices). Preserve their descending last_seen order.
     for (const [key, inventory] of inventoryByKey) {
         if (seenKeys.has(key)) continue
-        merged.push(buildEntry(null, inventory, 'offline'))
+        merged.push(buildEntry(null, inventory, 'offline', false))
     }
 
     return merged
 }
 
-function buildEntry(scanDevice, inventory, presence) {
+function presenceForScanDevice(device, isNew) {
+    if (device?.alive === true) return isNew ? 'new' : 'online'
+    if (device?.presenceHint === 'cached') return 'cached'
+    if (device?.seenOnly && device?.alive !== true) return 'cached'
+    if (device?.alive === false) return 'cached'
+    return isNew ? 'new' : 'online'
+}
+
+function buildEntry(scanDevice, inventory, presence, isNew = false) {
     const base = scanDevice || {}
     const inv = inventory || {}
 
@@ -151,9 +174,23 @@ function buildEntry(scanDevice, inventory, presence) {
         notes: inv.notes || null,
 
         // scan-time fields (null when offline)
-        alive: presence !== 'offline' ? (base.alive ?? false) : false,
+        alive: presence === 'online' || presence === 'new',
         time: base.time ?? null,
         seenOnly: base.seenOnly ?? false,
+        neighborState: base.neighborState || null,
+        neighborSource: base.neighborSource || null,
+        activeSource: base.activeSource || null,
+        discoveryOnly: base.discoveryOnly === true,
+        discoverySources: Array.isArray(base.discoverySources) ? base.discoverySources : [],
+        modelName: base.modelName || null,
+        modelDescription: base.modelDescription || null,
+        modelNumber: base.modelNumber || null,
+        serialNumber: base.serialNumber || null,
+        presentationUrl: base.presentationUrl || null,
+        ssdpDeviceType: base.ssdpDeviceType || null,
+        ssdpUdn: base.ssdpUdn || null,
+        serviceTypes: Array.isArray(base.serviceTypes) ? base.serviceTypes : [],
+        ssdpServer: base.ssdpServer || null,
         isGateway,
         isLocal: base.isLocal === true,
         isRandomized,
@@ -166,6 +203,7 @@ function buildEntry(scanDevice, inventory, presence) {
         lastSeen: presence === 'offline' ? (inv.lastSeen || null) : Date.now(),
 
         presence,
+        isNew: isNew || presence === 'new',
     }
 }
 

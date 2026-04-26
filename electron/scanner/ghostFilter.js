@@ -6,6 +6,7 @@
  * definitively phantoms. Two rules, no thresholds, no heuristics:
  *
  *   Rule A — alive && !mac → ghost
+ *     mDNS/SSDP active replies are exempt because they are not ICMP proxy ghosts.
  *     To receive an ICMP echo-reply the kernel MUST learn the
  *     responder's L2 MAC into its ARP cache. If after the ARP
  *     enrichment a pinged IP still has no MAC, the reply came from a
@@ -49,6 +50,11 @@ function hasMac(row) {
     return !!normMac(row.mac)
 }
 
+function hasActiveDiscoveryProof(row) {
+    if (!row?.discoveryOnly && !row?.activeSource) return false
+    return row.activeSource === 'mdns' || row.activeSource === 'ssdp'
+}
+
 function filterGhosts(results) {
     if (!Array.isArray(results) || results.length === 0) return results
 
@@ -66,8 +72,9 @@ function filterGhosts(results) {
         if (r.isLocal) return true         // our own host is always real
 
         // Rule A applies even when `isGateway` is true — see module
-        // header. A MAC-less gateway-candidate is a proxy-ARP phantom.
-        if (!hasMac(r)) return false
+        // header. Exception: mDNS/SSDP replies are active L2 multicast
+        // discovery proofs, not proxy-ARP ICMP echoes.
+        if (!hasMac(r)) return hasActiveDiscoveryProof(r)
 
         // Real gateway with MAC: keep regardless of Rule B.
         if (r.isGateway) return true
@@ -84,4 +91,5 @@ module.exports = {
     // Exported for direct unit-testing and internal reuse only.
     _normMac: normMac,
     _hasMac: hasMac,
+    _hasActiveDiscoveryProof: hasActiveDiscoveryProof,
 }

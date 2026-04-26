@@ -9,6 +9,21 @@
     padding: 16px 20px 10px;
 }
 
+/* Setup view: the scan-card AND the probe-pool-card both have their
+   own internal `overflow-y: auto` (lines ~95 and ~1418), so any tall
+   content scrolls INSIDE the card. The outer page scroll is redundant
+   here and was producing the "cosito de scroll de unos cuantos
+   pixeles" the user reported — content fit basically perfectly but
+   slipped over by a few pixels (card padding + border accumulation),
+   triggering the 6px page scrollbar from design-system.css. Killing
+   page-level scroll for setup specifically silences the spurious bar
+   without affecting layout. The running and report views keep their
+   default `overflow-y: auto` because their content can legitimately
+   exceed the viewport (long findings list, probe history, etc.). */
+.v3-page-layout.wp2-page.wp2-view-setup {
+    overflow-y: hidden;
+}
+
 .wp2-page .v3-page-header {
     margin-bottom: 10px;
 }
@@ -2141,6 +2156,87 @@
 [data-theme="nothing"] .wp2-modal-header h3 { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.04em; font-size: 13px; }
 [data-theme="nothing"] .wp2-modal-footer { background: #0a0a0a; }
 [data-theme="nothing"] .wp2-label { font-family: "Space Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+
+/* ── Nothing: typography parity with Dashboard / Scanner ──
+   WanProbe was missing most of the Nothing-theme typography overrides
+   that the rest of the app uses (Dashboard/Scanner/Diagnostics all
+   render labels in uppercased Space Mono and numeric values in
+   Space Mono). This block brings WanProbe in line with the user-
+   facing visual rhythm. */
+[data-theme="nothing"] .wp2-stage-chip {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .wp2-stage-strip { border-radius: 6px; }
+[data-theme="nothing"] .wp2-divider {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+[data-theme="nothing"] .wp2-mode-card strong,
+[data-theme="nothing"] .wp2-profile-card strong { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .wp2-mode-card p,
+[data-theme="nothing"] .wp2-profile-card p {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+}
+[data-theme="nothing"] .wp2-scope-chip,
+[data-theme="nothing"] .wp2-filter-btn,
+[data-theme="nothing"] .wp2-report-probe-tab {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .wp2-runtime-hint {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+}
+[data-theme="nothing"] .wp2-runtime-hint strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .wp2-step-label { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .wp2-step-desc {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+}
+[data-theme="nothing"] .wp2-summary-pill {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .wp2-summary-pill strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .wp2-metric strong,
+[data-theme="nothing"] .wp2-stat-item strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .wp2-metric span,
+[data-theme="nothing"] .wp2-stat-item span {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+[data-theme="nothing"] .wp2-finding strong,
+[data-theme="nothing"] .wp2-risk-card strong { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .wp2-finding p,
+[data-theme="nothing"] .wp2-risk-card p {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+}
+[data-theme="nothing"] .wp2-state-badge,
+[data-theme="nothing"] .wp2-sev-chip,
+[data-theme="nothing"] .wp2-mini-chip {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 4px;
+}
 [data-theme="nothing"] .wp2-finding.sev-critical { border-left-color: #D71921; }
 [data-theme="nothing"] .wp2-finding.sev-high { border-left-color: #D4A843; }
 [data-theme="nothing"] .wp2-mini-chip.critical { color: #D71921; background: rgba(215,25,33,.1); }

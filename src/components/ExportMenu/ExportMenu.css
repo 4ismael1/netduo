@@ -22,6 +22,20 @@
     height: auto;
 }
 
+/* Nothing theme forces `min-height: 38px` and a fat padding on every
+   `.v3-btn` (see design-system.css → `[data-theme="nothing"] .v3-btn`).
+   Selector specificity beats `.export-menu-sm` alone, so `size="sm"`
+   was being ignored — the Export button rendered at full size in
+   Scanner. We re-apply the compact dimensions with matching
+   specificity here, while keeping the Nothing visual identity
+   (uppercase, mono font, pill shape, transparent fill). */
+[data-theme="nothing"] .export-menu-trigger.export-menu-sm {
+    min-height: 28px;
+    padding: 4px 14px;
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+}
+
 /* ── Popover ──────────────────────────────── */
 .export-menu-pop {
     position: absolute;
@@ -82,7 +96,15 @@
 /* ── Status pill (post-action) ──────────────
    Absolute-positioned so it floats below the trigger without
    affecting surrounding layout — the Export button must stay put
-   whether the status is showing or not. */
+   whether the status is showing or not.
+
+   Background is always opaque (color-mix on top of the surface var)
+   so device-list rows / column headers underneath never bleed through.
+   The previous semi-transparent rgba(_, 0.1) tint looked correct in
+   light mode but turned washed-out and "see-through" in dark / nothing
+   themes — exactly when the underlying text (Latency column in
+   Scanner) was visible through the pill. The 18% mix preserves the
+   colour identity while keeping full opacity in every theme. */
 .export-menu-status {
     position: absolute;
     top: calc(100% + 6px);
@@ -90,28 +112,29 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 6px 12px;
     border-radius: 999px;
     font-size: 11.5px;
     font-weight: 500;
     background: var(--bg-surface);
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.06);
-    z-index: 35;
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.22), 0 2px 4px rgba(15, 23, 42, 0.12);
+    z-index: 60;
     animation: export-menu-pop-in 160ms ease-out;
     white-space: nowrap;
     pointer-events: auto;
 }
 
 .export-menu-status-ok {
-    background: var(--color-success-bg, rgba(16, 185, 129, 0.1));
+    background: color-mix(in srgb, var(--color-success, #10b981) 18%, var(--bg-surface));
     color: var(--color-success, #059669);
-    border: 1px solid var(--color-success-border, rgba(16, 185, 129, 0.3));
+    border-color: color-mix(in srgb, var(--color-success, #10b981) 55%, transparent);
 }
 
 .export-menu-status-error {
-    background: var(--color-danger-bg, rgba(239, 68, 68, 0.1));
+    background: color-mix(in srgb, var(--color-danger, #ef4444) 18%, var(--bg-surface));
     color: var(--color-danger, #dc2626);
-    border: 1px solid var(--color-danger-border, rgba(239, 68, 68, 0.3));
+    border-color: color-mix(in srgb, var(--color-danger, #ef4444) 55%, transparent);
 }
 
 .export-menu-status-text {

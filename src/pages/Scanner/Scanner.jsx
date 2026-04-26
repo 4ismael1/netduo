@@ -5,7 +5,7 @@ import {
     X, Globe, Clock, Signal, Shield, ShieldCheck, ChevronRight, RefreshCw,
     Shuffle, Home, AlertCircle, Tag, XCircle, Eye, EyeOff,
     Gamepad2, Speaker, Camera, Lightbulb, Watch, Headphones, Thermometer,
-    Tv2, Mic, Radio, Plug, Webcam
+    Tv2, Mic, Radio, Plug, Webcam, ArrowUp, ArrowDown, ArrowUpDown
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
@@ -164,6 +164,16 @@ const DEV_TYPES = {
     'Plantronics': { type: 'Headset', Icon: Headphones, color: '#1e293b' },
     'Jabra':     { type: 'Headset', Icon: Headphones, color: '#dc2626' },
     'GoPro':     { type: 'Camera', Icon: Camera, color: '#000000' },
+
+    // Discovery-derived generic profiles (SSDP/mDNS/hostname hints)
+    'Printer':   { type: 'Printer', Icon: Printer, color: '#64748b' },
+    'IP Camera': { type: 'IP Camera', Icon: Webcam, color: '#0ea5e9' },
+    'Speaker':   { type: 'Speaker', Icon: Speaker, color: '#64748b' },
+    'Smart TV':  { type: 'Smart TV', Icon: Tv2, color: '#3b82f6' },
+    'Smart Plug': { type: 'Smart Plug', Icon: Plug, color: '#f59e0b' },
+    'Smart Light': { type: 'Smart Light', Icon: Lightbulb, color: '#f59e0b' },
+    'Thermostat': { type: 'Smart Thermostat', Icon: Thermometer, color: '#f59e0b' },
+    'NAS':       { type: 'NAS', Icon: HardDrive, color: '#3b82f6' },
 }
 
 
@@ -174,6 +184,50 @@ const SPECIAL_TYPES = {
     '_NetworkDev': { type: 'Network Device', Icon: Globe, color: '#64748b' },
 }
 const DEF = { type: 'Unknown', Icon: HelpCircle, color: '#94a3b8' }
+
+/**
+ * Icon + colour profile for each value in the DeviceMetaEditor's
+ * "Device type" dropdown. When the user explicitly picks a type from
+ * that dropdown (anything other than "Auto-detect"), classifyDevice()
+ * looks up the picked value here so the device row in the table
+ * immediately reflects it — same icon, same colour swatch, same label
+ * in the Type column. Without this map the user's choice was saved to
+ * the DB but invisible in the list because classifyDevice ignored
+ * `typeOverride` and re-derived the icon from vendor/hostname every
+ * render.
+ *
+ * Keys here MUST match the `value` field of DEVICE_TYPE_OPTIONS in
+ * src/components/DeviceMetaEditor/deviceTypes.js.
+ */
+const TYPE_OVERRIDE_PROFILES = {
+    'Router / AP':      { type: 'Router / AP', Icon: Router, color: '#0ea5e9' },
+    'Network Device':   { type: 'Network Device', Icon: Globe, color: '#64748b' },
+    'Computer':         { type: 'Computer', Icon: Monitor, color: '#3b82f6' },
+    'Gaming PC':        { type: 'Gaming PC', Icon: Monitor, color: '#8b5cf6' },
+    'Phone':            { type: 'Phone', Icon: Smartphone, color: '#f97316' },
+    'Tablet':           { type: 'Tablet', Icon: Smartphone, color: '#0ea5e9' },
+    'Apple Device':     { type: 'Apple Device', Icon: Laptop, color: '#0ea5e9' },
+    'Samsung Device':   { type: 'Samsung Device', Icon: Smartphone, color: '#6366f1' },
+    'Smart TV':         { type: 'Smart TV', Icon: Tv2, color: '#3b82f6' },
+    'Streaming Stick':  { type: 'Streaming Stick', Icon: Tv, color: '#8b5cf6' },
+    'Game Console':     { type: 'Game Console', Icon: Gamepad2, color: '#16a34a' },
+    'Printer':          { type: 'Printer', Icon: Printer, color: '#64748b' },
+    'NAS':              { type: 'NAS', Icon: HardDrive, color: '#3b82f6' },
+    'Server':           { type: 'Server', Icon: Server, color: '#3b82f6' },
+    'IP Camera':        { type: 'IP Camera', Icon: Webcam, color: '#0ea5e9' },
+    'Smart Camera':     { type: 'Smart Camera', Icon: Camera, color: '#22c55e' },
+    'Speaker':          { type: 'Speaker', Icon: Speaker, color: '#64748b' },
+    'Smart Light':      { type: 'Smart Light', Icon: Lightbulb, color: '#f59e0b' },
+    'Smart Plug':       { type: 'Smart Plug', Icon: Plug, color: '#f59e0b' },
+    'Smart Thermostat': { type: 'Smart Thermostat', Icon: Thermometer, color: '#f59e0b' },
+    'Smart Appliance':  { type: 'Smart Appliance', Icon: Wifi, color: '#8b5cf6' },
+    'Wearable':         { type: 'Wearable', Icon: Watch, color: '#0ea5e9' },
+    'IoT / ESP Board':  { type: 'IoT / ESP Board', Icon: Cpu, color: '#22c55e' },
+    'Virtual Machine':  { type: 'Virtual Machine', Icon: Server, color: '#64748b' },
+    'Firewall':         { type: 'Firewall', Icon: Shield, color: '#dc2626' },
+    'Randomized MAC':   { type: 'Randomized MAC', Icon: Shuffle, color: '#8b5cf6' },
+    'Unknown':          { type: 'Unknown', Icon: HelpCircle, color: '#94a3b8' },
+}
 
 /** Source badge colors */
 const SRC_COLORS = {
@@ -193,12 +247,35 @@ const SRC_COLORS = {
 function classifyDevice(d) {
     if (d.isLocal) return { ...SPECIAL_TYPES['_ThisDevice'] }
 
+    // User override wins over auto-detect. If the user picked a type
+    // from the DeviceMetaEditor dropdown (anything other than the
+    // "Auto-detect" empty value), surface it directly: same icon and
+    // colour swatch as the matching dropdown choice. We do this BEFORE
+    // the gateway/vendor logic so that even a re-labelled gateway
+    // honours the user's choice for the type column + icon (the GW
+    // pill badge in the row is rendered independently and stays).
+    if (d.typeOverride) {
+        const profile = TYPE_OVERRIDE_PROFILES[d.typeOverride]
+        if (profile) return { ...profile }
+        // Unknown override value — fall through to auto-detect rather
+        // than render the literal string with a default icon.
+    }
+
+    const discoveryText = [
+        d.hostname,
+        d.displayName,
+        d.modelName,
+        d.modelDescription,
+        d.ssdpDeviceType,
+        Array.isArray(d.serviceTypes) ? d.serviceTypes.join(' ') : '',
+    ].filter(Boolean).join(' ')
+
     // Vendor resolution: first try an exact DEV_TYPES key, then fall back
     // to fuzzy pattern matching on the raw OUI, then to hostname hints.
     const vendorKey =
         (d.vendor && DEV_TYPES[d.vendor] ? d.vendor : null) ||
         resolveVendorKey(d.vendor) ||
-        resolveHostnameHint(d.hostname)
+        resolveHostnameHint(discoveryText)
     const vendorProfile = vendorKey ? DEV_TYPES[vendorKey] : null
 
     if (d.isGateway) {
@@ -243,6 +320,63 @@ function extractSubnet(ip) {
 }
 
 /**
+ * sessionStorage helpers for the Scanner's inventory / networkId.
+ *
+ * Re-entering the Scanner route remounts the component and resets all
+ * useState hooks. Without a sync hydration source the user sees an
+ * empty list for the ~100-200ms it takes to:
+ *   1. Resolve gateway MAC via ARP (one IPC round-trip)
+ *   2. Read the inventory rows from SQLite (another IPC round-trip)
+ *
+ * sessionStorage is the right scope: the cache lives for the app
+ * session only (cleared when the Electron window closes), it's
+ * synchronously readable inside a useState initializer, and it's
+ * automatically isolated per BrowserWindow.
+ *
+ * The cache is OVERWRITTEN by the live DB load — it never serves as
+ * the source of truth, only as a first-paint placeholder.
+ */
+const SESSION_INVENTORY_KEY = 'netduo.scanner.inventory'
+const SESSION_NETWORK_KEY = 'netduo.scanner.networkId'
+
+function readSessionInventory() {
+    try {
+        const raw = sessionStorage.getItem(SESSION_INVENTORY_KEY)
+        if (!raw) return []
+        const parsed = JSON.parse(raw)
+        return Array.isArray(parsed) ? parsed : []
+    } catch { return [] }
+}
+
+function readSessionNetworkId() {
+    try {
+        const raw = sessionStorage.getItem(SESSION_NETWORK_KEY)
+        return typeof raw === 'string' && raw ? raw : null
+    } catch { return null }
+}
+
+function writeSessionInventory(list) {
+    try {
+        if (!Array.isArray(list)) return
+        sessionStorage.setItem(SESSION_INVENTORY_KEY, JSON.stringify(list))
+    } catch { /* quota / private mode — silent */ }
+}
+
+function writeSessionNetworkId(id) {
+    try {
+        if (typeof id === 'string' && id) {
+            sessionStorage.setItem(SESSION_NETWORK_KEY, id)
+        } else {
+            // Explicitly clear when the caller passes null (e.g. when
+            // a Wi-Fi switch invalidated the cached identity). Without
+            // this, the stale MAC stays in sessionStorage and a
+            // remount would re-hydrate the wrong network's identity.
+            sessionStorage.removeItem(SESSION_NETWORK_KEY)
+        }
+    } catch { /* silent */ }
+}
+
+/**
  * Derive a stable network identity from a finished scan.
  *
  * Preferred: the gateway's MAC address (globally unique per router).
@@ -265,6 +399,103 @@ function deriveNetworkId(devices, baseIP) {
         }
     }
     return baseIP ? `ip:${baseIP}` : null
+}
+
+function sourceLabel(source) {
+    if (!source) return null
+    return SRC_COLORS[source]?.label || String(source).toUpperCase()
+}
+
+function presenceLabel(device) {
+    if (!device) return 'Unknown'
+    if (device.presence === 'new') return 'New'
+    if (device.presence === 'online') return 'Online'
+    if (device.presence === 'cached') return 'Cached'
+    if (device.presence === 'offline') return 'Offline'
+    return device.alive ? 'Online' : 'Unknown'
+}
+
+function discoveryEvidenceLabel(device) {
+    if (!device) return '-'
+    const parts = []
+    const active = sourceLabel(device.activeSource)
+    if (active) parts.push(`${active} responder`)
+    if (device.neighborState) {
+        const state = String(device.neighborState).replace(/[_-]+/g, ' ')
+        const source = device.neighborSource ? ` (${device.neighborSource})` : ''
+        parts.push(`Neighbor ${state}${source}`)
+    }
+    if (Array.isArray(device.discoverySources)) {
+        for (const source of device.discoverySources) {
+            const label = sourceLabel(source)
+            if (label && !parts.some(p => p.toLowerCase().includes(label.toLowerCase()))) {
+                parts.push(label)
+            }
+        }
+    }
+    if (!parts.length && device.alive) parts.push(device.time != null ? 'ICMP reply' : 'Active reply')
+    if (!parts.length && device.seenOnly) parts.push('Neighbor cache')
+    if (!parts.length && device.presence === 'offline') parts.push('Inventory only')
+    return parts.join(' - ') || '-'
+}
+
+function serviceSummary(device) {
+    const services = Array.isArray(device?.serviceTypes) ? device.serviceTypes : []
+    if (!services.length) return null
+    const cleaned = services
+        .map(service => String(service || '')
+            .replace(/^urn:schemas-upnp-org:(device|service):/i, '')
+            .replace(/^urn:[^:]+:/i, '')
+            .replace(/:\d+$/i, '')
+            .replace(/[_-]+/g, ' ')
+            .trim())
+        .filter(Boolean)
+    if (!cleaned.length) return null
+    const unique = [...new Set(cleaned)]
+    const visible = unique.slice(0, 3).join(', ')
+    return unique.length > 3 ? `${visible} +${unique.length - 3}` : visible
+}
+
+/**
+ * Async wrapper around `deriveNetworkId` that consults the OS ARP
+ * cache when the scan results don't contain the gateway (typical for
+ * partial range scans like `1-50`).
+ *
+ * Without this, two different home networks that both happen to be
+ * `192.168.1.x` would share the same fallback `ip:192.168.1` identity
+ * and end up merging their inventories. By looking up the gateway's
+ * MAC in ARP independently of the scan range, we keep the per-network
+ * scoping correct even for partial sweeps.
+ *
+ * Falls back to `deriveNetworkId` (pure) when:
+ *   - the scan already contains a usable gateway entry,
+ *   - the ARP lookup IPC isn't available (browser mock),
+ *   - the gateway IP isn't known yet, or
+ *   - ARP doesn't have an entry for the gateway IP.
+ */
+async function resolveNetworkId(devices, baseIP, gatewayIp) {
+    const fromScan = deriveNetworkId(devices, baseIP)
+    // If deriveNetworkId returned a MAC-based id, the scan already
+    // captured the gateway — no need to consult ARP.
+    if (fromScan && fromScan.startsWith('mac:')) return fromScan
+
+    if (!gatewayIp || typeof bridge.getArpTable !== 'function') return fromScan
+
+    try {
+        const arp = await bridge.getArpTable()
+        if (!Array.isArray(arp)) return fromScan
+        const entry = arp.find(e =>
+            e && (e.ip === gatewayIp || e.address === gatewayIp)
+        )
+        const rawMac = entry?.mac || entry?.macAddress || entry?.physicalAddress
+        if (!rawMac) return fromScan
+        const clean = String(rawMac).toLowerCase().replace(/[^0-9a-f]/g, '')
+        if (clean.length === 12 && clean !== '000000000000' && clean !== 'ffffffffffff') {
+            return `mac:${clean}`
+        }
+    } catch { /* fall through to scan-derived id */ }
+
+    return fromScan
 }
 
 /**
@@ -351,18 +582,64 @@ export default function Scanner() {
     const [detailData, setDetailData] = useState(null)
     const [inputError, setInputError] = useState(null)
     const [safeMode, setSafeMode] = useState(false)
-    const [inventory, setInventory] = useState([])
-    const [networkId, setNetworkId] = useState(null)
+    // Hydrate inventory + networkId synchronously from sessionStorage
+    // on first render so re-entering the Scanner route doesn't flash an
+    // empty list while the bridge.deviceInventoryList IPC round-trips
+    // (typically 50-200ms including the ARP gateway-MAC lookup).
+    // The cached snapshot is overwritten with fresh DB data the moment
+    // the resolveKey effect resolves, so this is purely a perceptual
+    // smoothing layer — never authoritative.
+    const [inventory, setInventory] = useState(() => readSessionInventory())
+    const [networkId, setNetworkId] = useState(() => readSessionNetworkId())
     const [newDeviceKeys, setNewDeviceKeys] = useState(new Set())
     const [showOffline, setShowOffline] = useState(true)
     const [newOnly, setNewOnly] = useState(false)
+    // Column sort state. `key === null` means "default order" (IP asc
+    // with gateway/local pinned to top — historical behaviour). When
+    // the user clicks a header we cycle: null → asc → desc → null.
+    // Direction is respected per-column; switching columns resets to
+    // asc. The pinning of gateway/local only applies in the default
+    // (null) state — once the user explicitly chooses a sort, every
+    // device participates so the chosen ordering is honoured strictly.
+    const [sort, setSort] = useState({ key: null, dir: 'asc' })
     const detailScrollRef = useRef(null)
     const prevDetailLoadingRef = useRef(false)
     const scanRunRef = useRef(0)
     const detailRunRef = useRef(0)
-    const subnetInitRef = useRef(false)
+    // Tracks the LAST auto-detected subnet so we can distinguish
+    // "user typed a custom subnet" from "the network changed under us".
+    // - If `baseIP === lastAutoBaseRef.current`, the user has not edited
+    //   it, so on Wi-Fi switch we transparently update to the new subnet.
+    // - If they differ, the user has manually overridden the auto-pick
+    //   (e.g. to scan a peer subnet via VPN), and we leave their value
+    //   alone until they reset it themselves. This is what makes
+    //   network switching feel coherent for the inventory bug fix:
+    //   without it, jumping from 192.168.1.x to 192.168.0.x kept the
+    //   scanner pinned to the old subnet and the new network's
+    //   inventory could never load.
+    const lastAutoBaseRef = useRef(null)
+    // Tracks the last gateway IP we observed. Used by the
+    // "network-changed" effect below to clear stale per-network state
+    // (last scan results, NEW badges, the open detail drawer) without
+    // touching values we want to preserve across the switch (config,
+    // toggles, etc.).
+    const prevGatewayRef = useRef(undefined)
     const showOfflineInitRef = useRef(false)
     const safeModeInitRef = useRef(false)
+    // Tracks whether the user has interacted with the Safe Scan or
+    // Show-Offline toggles since mount. If a click lands during the
+    // ~50ms window where the persisted-config promise is still pending,
+    // the late `setSafeMode(savedValue)` call would clobber the user's
+    // freshly-toggled state. The dirty refs cancel the loader's effect
+    // when the user has already taken control.
+    const safeModeUserDirtyRef = useRef(false)
+    const showOfflineUserDirtyRef = useRef(false)
+
+    // Persist inventory + networkId snapshots into sessionStorage so a
+    // remount of the Scanner route (user navigated away and came back)
+    // can hydrate them synchronously and skip the empty-state flash.
+    useEffect(() => { writeSessionInventory(inventory) }, [inventory])
+    useEffect(() => { writeSessionNetworkId(networkId) }, [networkId])
 
     // Load Safe Scan preference from persistent config on mount.
     // Explicitly honour the saved boolean (including `false`) rather than
@@ -372,6 +649,7 @@ export default function Scanner() {
         if (safeModeInitRef.current) return
         safeModeInitRef.current = true
         bridge.configGet?.('safeScanDefault').then(v => {
+            if (safeModeUserDirtyRef.current) return // user already chose; ignore loader
             if (v === true || v === 'true') setSafeMode(true)
             else if (v === false || v === 'false') setSafeMode(false)
             // null / undefined → keep default (false), never visited this setting
@@ -385,6 +663,7 @@ export default function Scanner() {
         if (showOfflineInitRef.current) return
         showOfflineInitRef.current = true
         bridge.configGet?.('scanner.showOffline').then(v => {
+            if (showOfflineUserDirtyRef.current) return
             if (v === true || v === 'true') setShowOffline(true)
             else if (v === false || v === 'false') setShowOffline(false)
             // null / undefined → keep default (true)
@@ -392,6 +671,7 @@ export default function Scanner() {
     }, [])
 
     function toggleShowOffline() {
+        showOfflineUserDirtyRef.current = true
         setShowOffline(prev => {
             const next = !prev
             bridge.configSet?.('scanner.showOffline', next).catch(() => { /* noop */ })
@@ -400,6 +680,7 @@ export default function Scanner() {
     }
 
     function toggleSafeMode() {
+        safeModeUserDirtyRef.current = true
         setSafeMode(prev => {
             const next = !prev
             bridge.configSet?.('safeScanDefault', next).catch(() => { /* noop */ })
@@ -426,15 +707,93 @@ export default function Scanner() {
             : prev))
     }
 
-    // Update subnet from network context once available (only if user hasn't manually changed it)
+    // When the active gateway changes (Wi-Fi switch, VPN connect,
+    // ethernet plug/unplug), wipe the in-memory scan artefacts that
+    // belong to the OLD network: last-scan device list, NEW badges,
+    // and the open detail drawer. We deliberately DON'T touch the
+    // persisted inventory or networkId here — the resolveKey effect
+    // below will swap those out atomically once it learns the new
+    // network's identity from ARP. This prevents the bug the user
+    // reported where after scanning Network 2 and switching back to
+    // Network 1, the device list still showed Network 2's results
+    // mixed in (because `devices` and `newDeviceKeys` were still
+    // populated from the previous scan).
     useEffect(() => {
-        if (subnetInitRef.current) return
-        const subnet = extractSubnet(net.gateway) || extractSubnet(net.localIP)
-        if (subnet) {
-            subnetInitRef.current = true
-            setBaseIP(subnet)
+        const currentGw = (net?.gateway || '').trim() || null
+        if (prevGatewayRef.current === undefined) {
+            // First mount — seed the ref, don't wipe anything (the
+            // sessionStorage hydration is what we want to keep showing).
+            prevGatewayRef.current = currentGw
+            return
         }
-    }, [net.gateway, net.localIP])
+        if (prevGatewayRef.current === currentGw) return
+        prevGatewayRef.current = currentGw
+        // If a scan is in flight when the user switches Wi-Fi networks,
+        // abort it. The scan was sweeping the OLD network's subnet and
+        // any results that come back (devices, ARP enrichment, mDNS/
+        // SSDP discovery) belong to a network we're no longer on —
+        // surfacing them on the new network's inventory would be
+        // misleading at best. Bumping `scanRunRef.current` is the same
+        // mechanism stopScan() uses: every async stage of the scan
+        // pipeline checks `scanRunRef.current !== scanId` and bails
+        // when it doesn't match, so the in-flight IPC promises resolve
+        // into a no-op instead of mutating state.
+        scanRunRef.current += 1
+        setScanning(false)
+        setProgress(0)
+        setDevices([])
+        setNewDeviceKeys(new Set())
+        setSelected(null)
+        setDetailData(null)
+        setDetailLoading(false)
+        // Clear the displayed inventory too — the resolveKey effect
+        // below will repopulate it with the new network's saved
+        // devices (or leave it empty for an unscanned network) within
+        // ~50ms. Without this clear, the user briefly sees the OLD
+        // network's inventory after switching, which was a key part
+        // of the reported bug ("se queda el inventario de la 2da red").
+        setInventory([])
+        // Force the inventory effect to re-resolve from ARP rather than
+        // trust the cached networkId (which still points at the old
+        // network). Setting it to null here makes the resolve effect's
+        // ARP-first path the authoritative one for the next round.
+        setNetworkId(null)
+    }, [net?.gateway])
+
+    // Auto-update baseIP whenever the active network changes. We track
+    // the last subnet WE auto-chose; if the current baseIP still matches,
+    // the user hasn't overridden it and it's safe to follow the new
+    // network. If they differ, the user has manually customized the
+    // subnet and we honour that until they edit it back. Without this
+    // update path, switching Wi-Fi networks with different subnets left
+    // baseIP pinned to the old network's prefix, which broke the
+    // per-network inventory lookup downstream.
+    useEffect(() => {
+        const subnet = extractSubnet(net.gateway) || extractSubnet(net.localIP)
+        if (!subnet) return
+        if (lastAutoBaseRef.current === null) {
+            // First detection — seed the auto-base ref. The useState
+            // initializer for baseIP already ran with the same subnet,
+            // so no setBaseIP needed unless they happen to differ
+            // (rare race where useNetworkStatus loaded after initial
+            // render).
+            lastAutoBaseRef.current = subnet
+            if (subnet !== baseIP) setBaseIP(subnet)
+            return
+        }
+        if (subnet === lastAutoBaseRef.current) return // same network
+        // Subnet changed AND baseIP hasn't been manually edited away
+        // from the last auto-base → follow the new network.
+        if (baseIP === lastAutoBaseRef.current) {
+            lastAutoBaseRef.current = subnet
+            setBaseIP(subnet)
+        } else {
+            // User has manually customised baseIP; respect their value
+            // but advance the auto-ref so we know what "last detected"
+            // looks like for the next change.
+            lastAutoBaseRef.current = subnet
+        }
+    }, [net.gateway, net.localIP, baseIP])
 
     // Keep the persistent inventory in sync with the currently-selected
     // network. Before the first scan we don't know the gateway's MAC yet,
@@ -448,22 +807,27 @@ export default function Scanner() {
         // Resolve which network identity to load.
         //
         // Priority (most authoritative first):
-        //   1. `networkId` state — already derived in this session.
-        //   2. ARP lookup of the live default-gateway IP — the OS
-        //      knows which router we're connected to RIGHT NOW. Two
-        //      networks sharing 192.168.100.0/24 with different
-        //      routers produce different MACs, so this disambiguates
-        //      home from coffee-shop on app launch even before the
-        //      first scan.
-        //   3. Persisted `scanner.networkIdByBase.<baseIP>` — only as a
-        //      last-resort hint when ARP lookup fails (gateway not in
-        //      cache yet, no network, etc.).
+        //   1. ARP lookup of the live default-gateway IP — the OS knows
+        //      which router we're connected to RIGHT NOW. This MUST run
+        //      first, because the cached `networkId` state can be stale
+        //      across Wi-Fi switches: scenario was Network 1 (mac:aaa)
+        //      → switch to Network 2 (mac:bbb) → scan → switch back to
+        //      Network 1 → resolveKey would return mac:bbb (cached) and
+        //      load Network 2's inventory under the assumption the
+        //      cache was authoritative. The ARP table is the only
+        //      source that updates the moment the OS reassociates with
+        //      a new SSID, so it gates everything else.
+        //   2. `networkId` state — fallback when ARP returns nothing
+        //      (cache cold, no IP yet, etc.). The cached value is at
+        //      worst the previous network's identity, which is never
+        //      WORSE than the IP-based fallback below — it's just not
+        //      verified to be the current network.
+        //   3. Persisted `scanner.networkIdByBase.<baseIP>` — long-term
+        //      hint persisted across sessions; same caveat as (2).
         //   4. IP-based fallback `ip:<baseIP>` — never collides
         //      identity-wise but mixes networks with same subnet, so
-        //      we only land here when steps 2 and 3 also fail.
+        //      we only land here when (1)-(3) all fail.
         const resolveKey = async () => {
-            if (networkId) return networkId
-
             const gatewayIp = (net?.gateway || '').trim()
             if (gatewayIp && bridge.getArpTable) {
                 try {
@@ -477,8 +841,11 @@ export default function Scanner() {
                             return `mac:${cleaned}`
                         }
                     }
-                } catch { /* fallthrough to remembered/IP */ }
+                } catch { /* fallthrough */ }
             }
+
+            // ARP didn't resolve — try cached identity from this session
+            if (networkId) return networkId
 
             if (baseIP) {
                 try {
@@ -492,14 +859,16 @@ export default function Scanner() {
 
         resolveKey().then(currentKey => {
             if (!currentKey || cancelled) return
-            // Promote the resolved key into state so subsequent reads
-            // (including the merge effect after a scan) all agree on
-            // the same network identity.
-            if (!networkId && currentKey !== `ip:${baseIP}`) {
+            // Always promote the resolved key into state when it
+            // differs — this is what makes network switching reactive.
+            // Previously we only set it when networkId was null, which
+            // meant a stale value would survive forever once seeded.
+            if (currentKey !== networkId && currentKey !== `ip:${baseIP}`) {
                 setNetworkId(currentKey)
             }
             return bridge.deviceInventoryList?.(currentKey).then(list => {
-                if (!cancelled && Array.isArray(list)) setInventory(list)
+                if (cancelled) return
+                setInventory(Array.isArray(list) ? list : [])
             })
         }).catch(error => {
             logBridgeWarning('scanner:inventory-load', error)
@@ -636,7 +1005,13 @@ export default function Scanner() {
         const safeRangeStart = validated.start
         const safeRangeEnd = validated.end
         setBaseIP(safeBaseIP)
-        setScanning(true); setDevices([]); setProgress(0); setSelected(null); setDetailData(null); setNewOnly(false)
+        // Clear newDeviceKeys at the start of every scan so devices
+        // discovered live during this run aren't re-tagged with stale
+        // 'new' badges from the previous scan's merge result. The fresh
+        // newKeys set arrives only after deviceInventoryMerge returns
+        // at the end of the scan — until then, every device should
+        // carry its plain 'online' presence, not 'new'.
+        setScanning(true); setDevices([]); setProgress(0); setSelected(null); setDetailData(null); setNewOnly(false); setNewDeviceKeys(new Set())
 
         // We still want to know whether this is the user's first-ever scan
         // of this subnet — if so, we skip "new device" notifications to avoid
@@ -668,11 +1043,12 @@ export default function Scanner() {
         setScanning(false)
         bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: `${safeBaseIP}.0/24`, results: { found: found.length } })
 
-        // Derive a stable network identity from the scan result: the
-        // gateway's MAC if we found it, otherwise the subnet as a fallback.
-        // From now on, all inventory operations for this scan use this key
-        // so switching networks never collides with the previous one.
-        const scanNetworkId = deriveNetworkId(found, safeBaseIP)
+        // Derive a stable network identity. Prefer the scanned gateway
+        // when available; for partial scans that don't include the
+        // gateway IP, fall back to looking it up in the OS ARP cache —
+        // this prevents two different `192.168.1.x` networks from
+        // sharing the same `ip:192.168.1` fallback identity.
+        const scanNetworkId = await resolveNetworkId(found, safeBaseIP, net.gateway)
         setNetworkId(scanNetworkId)
         // Remember this mapping so next mount loads the right inventory
         // immediately instead of falling back to `ip:<subnet>` (which can
@@ -846,25 +1222,71 @@ export default function Scanner() {
     const visibleDevices = useMemo(() => {
         let pool = mergedDevices
         if (!showOffline) pool = pool.filter(d => !isHideableWhenOffline(d))
-        if (newOnly) pool = pool.filter(d => d.presence === 'new')
+        if (newOnly) pool = pool.filter(d => d.isNew || d.presence === 'new')
         return pool
     }, [mergedDevices, showOffline, newOnly])
 
-    // Keep the gateway pinned to the top of the list — same row layout, just
-    // sorted first so it's always the anchor of the list.
+    // Sort the device list. In the default state (sort.key === null)
+    // we keep the historical layout: gateway first, "you" second, then
+    // ascending by IP last-octet. When the user clicks a column header
+    // we honour their explicit sort: gateway/local lose their special
+    // pinning so the chosen ordering is unambiguous.
     const listedDevices = useMemo(() => {
         const sorted = [...visibleDevices]
-        sorted.sort((a, b) => {
-            if (a.isGateway && !b.isGateway) return -1
-            if (!a.isGateway && b.isGateway) return 1
-            if (a.isLocal && !b.isLocal) return -1
-            if (!a.isLocal && b.isLocal) return 1
-            const av = parseInt(String(a.ip || '').split('.').pop(), 10)
-            const bv = parseInt(String(b.ip || '').split('.').pop(), 10)
-            return (isNaN(av) ? 999 : av) - (isNaN(bv) ? 999 : bv)
-        })
+        if (sort.key === null) {
+            sorted.sort((a, b) => {
+                if (a.isGateway && !b.isGateway) return -1
+                if (!a.isGateway && b.isGateway) return 1
+                if (a.isLocal && !b.isLocal) return -1
+                if (!a.isLocal && b.isLocal) return 1
+                const av = parseInt(String(a.ip || '').split('.').pop(), 10)
+                const bv = parseInt(String(b.ip || '').split('.').pop(), 10)
+                return (isNaN(av) ? 999 : av) - (isNaN(bv) ? 999 : bv)
+            })
+            return sorted
+        }
+        const direction = sort.dir === 'desc' ? -1 : 1
+        const compare = (() => {
+            switch (sort.key) {
+                case 'name': return (a, b) => {
+                    const an = String(primaryLabel(a) || '').toLowerCase()
+                    const bn = String(primaryLabel(b) || '').toLowerCase()
+                    return an.localeCompare(bn)
+                }
+                case 'type': return (a, b) => {
+                    const at = String(a.deviceType || 'Unknown').toLowerCase()
+                    const bt = String(b.deviceType || 'Unknown').toLowerCase()
+                    return at.localeCompare(bt)
+                }
+                case 'latency': return (a, b) => {
+                    // Devices with no latency reading (offline / cached /
+                    // ARP-only) always go to the END regardless of
+                    // direction — sorting by latency is about ranking
+                    // *responsive* devices, putting unknowns at the
+                    // bottom is more useful than flipping them to the
+                    // top in desc mode.
+                    const aHas = typeof a.time === 'number'
+                    const bHas = typeof b.time === 'number'
+                    if (aHas && !bHas) return -1
+                    if (!aHas && bHas) return 1
+                    if (!aHas && !bHas) return 0
+                    return a.time - b.time
+                }
+                default: return () => 0
+            }
+        })()
+        sorted.sort((a, b) => compare(a, b) * direction)
         return sorted
-    }, [visibleDevices])
+    }, [visibleDevices, sort])
+
+    function cycleSort(columnKey) {
+        setSort(prev => {
+            if (prev.key !== columnKey) return { key: columnKey, dir: 'asc' }
+            if (prev.dir === 'asc') return { key: columnKey, dir: 'desc' }
+            // Already desc on this column → return to default order.
+            return { key: null, dir: 'asc' }
+        })
+    }
 
     /* Vendor / type counts for summary pills — based on the currently visible list. */
     const vcounts = {}
@@ -875,8 +1297,9 @@ export default function Scanner() {
         vcounts[key] = (vcounts[key] || 0) + 1
     })
     const onlineCount = mergedDevices.filter(d => d.presence === 'online' || d.presence === 'new').length
+    const cachedCount = mergedDevices.filter(d => d.presence === 'cached').length
     const offlineCount = mergedDevices.filter(d => d.presence === 'offline').length
-    const newCount = mergedDevices.filter(d => d.presence === 'new').length
+    const newCount = mergedDevices.filter(d => d.isNew || d.presence === 'new').length
 
     return (
         <div className="v3-page-layout page-enter">
@@ -939,6 +1362,7 @@ export default function Scanner() {
                 <div className="scan-pills">
                     <span className="spill total"><Signal size={13}/>{mergedDevices.length} Known</span>
                     <span className="spill" style={{color:'var(--color-success)'}}><Clock size={13}/>{onlineCount} Online</span>
+                    {cachedCount > 0 && <span className="spill spill-cached">{cachedCount} Cached</span>}
                     {offlineCount > 0 && <span className="spill" style={{color:'var(--text-muted)'}}>{offlineCount} Offline</span>}
                     {newCount > 0 && (
                         <button
@@ -991,12 +1415,12 @@ export default function Scanner() {
                                             hostname = info?.hostname || ''
                                         } catch { /* noop */ }
                                         // Export mirrors what the user is currently viewing —
-                                        // respects both the "Show offline" and "New only"
-                                        // filters so the generated report matches the list
-                                        // the user sees on-screen. Strip UI-only fields
-                                        // (React icon component + colour) that can't cross
-                                        // the IPC boundary.
-                                        const slimDevices = visibleDevices.map(d => {
+                                        // including the same gateway-pinned + alphabetical
+                                        // sort the on-screen list uses (listedDevices), not
+                                        // just the post-filter pool (visibleDevices). Strip
+                                        // UI-only fields (React icon component + colour)
+                                        // that can't cross the IPC boundary.
+                                        const slimDevices = listedDevices.map(d => {
                                             // eslint-disable-next-line no-unused-vars
                                             const { DevIcon, devColor, ...rest } = d
                                             return rest
@@ -1013,13 +1437,39 @@ export default function Scanner() {
                             </div>
                         </div>
                         <div className="dev-list-header">
-                            <span>Device</span><span>Type</span><span>Latency</span><span></span>
+                            {[
+                                { key: 'name', label: 'Device' },
+                                { key: 'type', label: 'Type' },
+                                { key: 'latency', label: 'Latency' },
+                            ].map(col => {
+                                const active = sort.key === col.key
+                                const Icon = !active ? ArrowUpDown : (sort.dir === 'asc' ? ArrowUp : ArrowDown)
+                                return (
+                                    <button
+                                        key={col.key}
+                                        type="button"
+                                        className={`dev-list-sort ${active ? 'active' : ''}`}
+                                        onClick={() => cycleSort(col.key)}
+                                        title={
+                                            !active
+                                                ? `Sort by ${col.label}`
+                                                : sort.dir === 'asc'
+                                                    ? `Sorted by ${col.label} ascending — click for descending`
+                                                    : `Sorted by ${col.label} descending — click to reset`
+                                        }
+                                    >
+                                        <span>{col.label}</span>
+                                        <Icon size={11} className="dev-list-sort-ico" />
+                                    </button>
+                                )
+                            })}
+                            <span />
                         </div>
                         {listedDevices.map((d,i)=>{
                             const sel = selected?.ip===d.ip
                             const DIcon = d.DevIcon || HelpCircle
                             const primaryName = primaryLabel(d)
-                            const subName = d.nickname ? (d.hostname || d.displayName || d.vendor || null) : null
+                            const subName = d.nickname ? (d.hostname || d.displayName || cleanVendorName(d.vendor) || null) : null
                             const latencyColor = d.time == null
                                 ? 'var(--text-muted)'
                                 : d.time < 10 ? 'var(--color-success)'
@@ -1027,9 +1477,10 @@ export default function Scanner() {
                                 : 'var(--color-danger)'
                             const latencyLabel = d.presence === 'offline'
                                 ? 'offline'
+                                : d.presence === 'cached' ? 'cached'
                                 : d.time != null ? `${d.time}ms` : d.seenOnly ? 'seen' : '—'
                             return (
-                                <div className={`dev-row ${sel?'sel':''} dev-presence-${d.presence}`} key={d.deviceKey || `ip:${d.ip}` || `idx:${i}`} onClick={()=>openDetail(d)} style={{animationDelay:`${i*20}ms`}}>
+                                <div className={`dev-row ${sel?'sel':''} dev-presence-${d.presence}`} key={d.deviceKey || `ip:${d.ip}` || `idx:${i}`} onClick={()=>openDetail(d)}>
                                     <div className="dev-row-main">
                                         <div className="dev-ico" style={{'--dc': d.devColor || '#94a3b8'}}>
                                             <DIcon size={16}/>
@@ -1039,12 +1490,13 @@ export default function Scanner() {
                                             <div className="dev-name">
                                                 {primaryName}
                                                 {subName && subName !== primaryName && <span className="dev-subname"> · {subName}</span>}
-                                                {d.presence === 'new' && <span className="gw-tag" style={{background:'color-mix(in srgb, var(--color-success) 15%, transparent)',color:'var(--color-success)'}}>NEW</span>}
+                                                {(d.isNew || d.presence === 'new') && <span className="gw-tag" style={{background:'color-mix(in srgb, var(--color-success) 15%, transparent)',color:'var(--color-success)'}}>NEW</span>}
+                                                {d.presence === 'cached' && <span className="gw-tag" style={{background:'rgba(184,148,106,0.16)',color:'#8a6a40'}} title="Seen in ARP/neighbor cache, but did not actively reply">CACHED</span>}
                                                 {d.presence === 'offline' && <span className="gw-tag" style={{background:'var(--gray-100)',color:'var(--text-muted)'}}>OFFLINE</span>}
                                                 {d.isGateway && <span className="gw-tag">GW</span>}
                                                 {d.isLocal && <span className="gw-tag" style={{background:'rgba(59,130,246,0.1)',color:'#3b82f6'}}>YOU</span>}
                                                 {d.isRandomized && !d.isLocal && !d.isGateway && <span className="gw-tag" style={{background:'rgba(139,92,246,0.1)',color:'#8b5cf6'}}>RND</span>}
-                                                {d.seenOnly && !d.isLocal && d.presence !== 'offline' && <span className="gw-tag" style={{background:'rgba(148,163,184,0.15)',color:'#64748b'}}>ARP</span>}
+                                                {d.seenOnly && !d.isLocal && d.presence !== 'offline' && d.presence !== 'cached' && <span className="gw-tag" style={{background:'rgba(148,163,184,0.15)',color:'#64748b'}}>ARP</span>}
                                                 {d.nameSource && d.nameSource !== 'unknown' && SRC_COLORS[d.nameSource] && (
                                                     <span className="src-badge" style={{background: SRC_COLORS[d.nameSource].bg, color: SRC_COLORS[d.nameSource].fg}}>
                                                         {SRC_COLORS[d.nameSource].label}
@@ -1088,21 +1540,36 @@ export default function Scanner() {
                             </div>
                             <DeviceMetaEditor device={selected} onChange={handleInventoryPatch} />
                             <div className="dd-grid">
-                                <DF l="IP Address" v={selected.ip} m/>
-                                <DF l="MAC Address" v={selected.mac && !selected.macEmpty ? selected.mac : 'N/A (local)'} m/>
+                                {/*
+                                  Layout strategy: short, fixed-format fields go 2-per-row;
+                                  long/variable fields (MAC, Hostname, Vendor, Role, Model
+                                  name) span the full width so they never get clipped at
+                                  ~140px. The 340px-wide panel can't fit a full MAC + a
+                                  vendor side-by-side, so we don't force it.
+                                */}
+                                <DF l="IP Address" v={selected.ip} m copy/>
+                                <DF l="Ping" v={selected.time!=null?`${selected.time} ms`:selected.presence === 'cached'?'No active reply (cached)':selected.seenOnly?'No reply (ARP seen)':'—'} m/>
+                                <DF l="Type" v={selected.deviceType}/>
+                                <DF l="Status" v={presenceLabel(selected)}/>
+                                <DF l="MAC Address" v={selected.mac && !selected.macEmpty ? selected.mac : (selected.isLocal ? 'N/A (local)' : 'Not available')} full m copy/>
                                 <DF l="Hostname" v={
                                     selected.hostname
                                         ? <span>{selected.hostname} <SrcBadge source={selected.nameSource}/></span>
                                         : <span style={{color:'var(--color-muted)'}}>Not resolved</span>
-                                }/>
+                                } full/>
                                 <DF l="Vendor" v={
                                     selected.vendor
                                         ? <span>{selected.vendor} <SrcBadge source={selected.vendorSource}/></span>
                                         : <span style={{color:'var(--color-muted)'}}>Unknown</span>
-                                }/>
-                                <DF l="Ping" v={selected.time!=null?`${selected.time} ms`:selected.seenOnly?'No reply (ARP seen)':'—'} m/>
-                                <DF l="Type" v={selected.deviceType}/>
-                                <DF l="Role" v={selected.isLocal?'This Device':selected.isGateway?'Default Gateway':selected.isRandomized?'Private/Random MAC':'Client'}/>
+                                } full/>
+                                <DF l="Role" v={selected.isLocal?'This Device':selected.isGateway?'Default Gateway':selected.isRandomized?'Private/Random MAC':'Client'} full/>
+                                <DF l="Discovery" v={discoveryEvidenceLabel(selected)} full/>
+                                {selected.modelName && <DF l="Model" v={selected.modelName} full/>}
+                                {selected.modelNumber && <DF l="Model #" v={selected.modelNumber} m/>}
+                                {selected.serialNumber && <DF l="Serial" v={selected.serialNumber} full m/>}
+                                {selected.modelDescription && <DF l="Model info" v={selected.modelDescription} full/>}
+                                {serviceSummary(selected) && <DF l="Services" v={serviceSummary(selected)} full/>}
+                                {selected.presentationUrl && <DF l="Device URL" v={selected.presentationUrl} full m/>}
                             </div>
                             {detailLoading?(
                                 <div className="dd-loading">
@@ -1164,8 +1631,38 @@ export default function Scanner() {
     )
 }
 
-/** Detail field */
-function DF({l,v,m}){return(<div className="dd-field"><div className="dd-fl">{l}</div><div className={`dd-fv${m?' mono':''}`}>{v}</div></div>)}
+/**
+ * Detail field. Pass `copy` to enable click-to-copy on the value with
+ * a brief "Copied" flash. The copy target is the literal `v` value
+ * (so don't pass JSX nodes when you want to copy — pass a plain
+ * string and let DF render it).
+ */
+function DF({l,v,m,full,copy}){
+    const [copied, setCopied] = useState(false)
+    const canCopy = copy && typeof v === 'string' && v.length > 0
+    const handleCopy = () => {
+        if (!canCopy) return
+        navigator.clipboard.writeText(v).then(() => {
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1200)
+        }).catch(() => { /* clipboard unavailable; silent */ })
+    }
+    return (
+        <div className={`dd-field${full?' dd-field-full':''}`}>
+            <div className="dd-fl">{l}</div>
+            <div
+                className={`dd-fv${m?' mono':''}${canCopy?' dd-fv-copy':''}`}
+                onClick={canCopy ? handleCopy : undefined}
+                role={canCopy ? 'button' : undefined}
+                tabIndex={canCopy ? 0 : undefined}
+                onKeyDown={canCopy ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCopy() } } : undefined}
+                title={canCopy ? (copied ? 'Copied' : 'Click to copy') : undefined}
+            >
+                {copied ? <span className="dd-fv-copied">Copied</span> : v}
+            </div>
+        </div>
+    )
+}
 
 /** Source badge (PTR, NetBIOS, mDNS, OUI) */
 function SrcBadge({ source }) {

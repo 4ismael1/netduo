@@ -26,6 +26,7 @@ export const VENDOR_PATTERNS = [
     { rx: /\bmotorola\b/i,     key: 'Motorola' },
     { rx: /\bgoogle\b/i,       key: 'Google' },
     // Consumer routers / mesh / ISP CPEs
+    { rx: /\bkasa\b|\btapo\b/i, key: 'TP-Link Kasa' },
     { rx: /\btp-?link\b/i,     key: 'TP-Link' },
     { rx: /\btenda\b/i,        key: 'Tenda' },
     { rx: /\bnetgear\b/i,      key: 'Netgear' },
@@ -128,15 +129,35 @@ export const VENDOR_PATTERNS = [
  * "laserjet-5f", game consoles named "ps5-living", etc.).
  */
 export const HOSTNAME_PATTERNS = [
-    { rx: /\b(printer|laserjet|deskjet|officejet)\b/i, key: 'HP' },
-    { rx: /\b(iphone|ipad|imac|macbook)\b/i,            key: 'Apple' },
-    { rx: /\b(android|galaxy|pixel)\b/i,                key: 'Samsung' },
-    { rx: /\b(chromecast|google-nest|nest-mini)\b/i,    key: 'Google' },
+    { rx: /\b(laserjet|deskjet|officejet|hewlett[-_ ]?packard|\bhp[-_ ])/i, key: 'HP' },
+    { rx: /\b(printer|airprint|ipp-printer)\b/i,        key: 'Printer' },
+    { rx: /\b(iphone|ipad|imac|macbook|homepod|apple[-_ ]?tv|appletv)\b/i, key: 'Apple' },
+    { rx: /\b(pixel|google[-_ ]?nest|nest[-_ ]?mini|nest[-_ ]?hub)\b/i, key: 'Google' },
+    { rx: /\b(android|galaxy)\b/i,                      key: 'Samsung' },
+    { rx: /\b(chromecast)\b/i,                          key: 'Chromecast' },
+    { rx: /\b(roku)\b/i,                                key: 'Roku' },
+    { rx: /\b(fire[-_ ]?tv|echo[-_ ]?(dot|show|studio)?|alexa)\b/i, key: 'Amazon' },
     { rx: /\b(playstation|ps[345])\b/i,                 key: 'PlayStation' },
     { rx: /\b(xbox)\b/i,                                key: 'Xbox' },
     { rx: /\b(nintendo|switch)\b/i,                     key: 'Nintendo' },
+    { rx: /\b(sonos)\b/i,                               key: 'Sonos' },
+    { rx: /\b(kasa|tapo|smart[-_ ]?plug)\b/i,           key: 'TP-Link Kasa' },
+    { rx: /\b(ring)\b/i,                                key: 'Ring' },
+    { rx: /\b(arlo)\b/i,                                key: 'Arlo' },
+    { rx: /\b(wyze)\b/i,                                key: 'Wyze' },
+    { rx: /\b(eufy)\b/i,                                key: 'Eufy' },
+    { rx: /\b(hikvision)\b/i,                           key: 'Hikvision' },
+    { rx: /\b(dahua)\b/i,                               key: 'Dahua' },
+    { rx: /\b(onvif|ip[-_ ]?cam|camera)\b/i,            key: 'IP Camera' },
+    { rx: /\b(hue|signify)\b/i,                         key: 'Philips Hue' },
+    { rx: /\b(lightbulb|smart[-_ ]?light)\b/i,          key: 'Smart Light' },
+    { rx: /\b(ecobee)\b/i,                              key: 'Ecobee' },
+    { rx: /\b(thermostat)\b/i,                          key: 'Thermostat' },
+    { rx: /\b(webos|bravia|smart[-_ ]?tv)\b/i,          key: 'Smart TV' },
+    { rx: /\b(qnap)\b/i,                                key: 'QNAP' },
     { rx: /\b(raspberrypi|raspi)\b/i,                   key: 'Raspberry Pi' },
     { rx: /\b(synology|ds\d+)\b/i,                      key: 'Synology' },
+    { rx: /\b(nas)\b/i,                                 key: 'NAS' },
 ]
 
 /**

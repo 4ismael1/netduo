@@ -1862,7 +1862,18 @@ export default function WanProbe() {
     }
 
     useEffect(() => {
-        loadHistory().catch(() => { /* noop */ })
+        // Defer the history IPC to the next idle frame so the entrance
+        // animation paints unblocked. loadHistory triggers a sqlite
+        // round-trip + an array of N rows worth of setState — running
+        // it inline at mount competed with framer-motion and made the
+        // page feel laggy on first nav.
+        const handle = (typeof window.requestIdleCallback === 'function')
+            ? window.requestIdleCallback(() => loadHistory().catch(() => {}), { timeout: 1500 })
+            : setTimeout(() => loadHistory().catch(() => {}), 80)
+        return () => {
+            if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(handle)
+            else clearTimeout(handle)
+        }
     }, [])
 
     const filteredRows = useMemo(() => {

@@ -33,6 +33,8 @@ describe('resolveHostnameHint', () => {
         expect(resolveHostnameHint('living-room-ps5')).toBe('PlayStation')
         expect(resolveHostnameHint('xbox-sala')).toBe('Xbox')
         expect(resolveHostnameHint('raspi-kitchen')).toBe('Raspberry Pi')
+        expect(resolveHostnameHint('roku-ultra')).toBe('Roku')
+        expect(resolveHostnameHint('front-door-onvif-camera')).toBe('IP Camera')
     })
     it('returns null when nothing matches', () => {
         expect(resolveHostnameHint('my-generic-host')).toBeNull()

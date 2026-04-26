@@ -400,34 +400,52 @@ export default function Dashboard() {
                     </div>
                     <div className="stat-tile-body">
                         <div className="stat-tile-label">Public IP</div>
-                        <div className="stat-tile-value mono ip-value-row">
-                            {/* Button stays mounted at all times so the tile
-                                keeps its width; the "Copied!" feedback
-                                overlays on top via absolute positioning
-                                instead of replacing the content. */}
-                            <button
-                                type="button"
-                                className={`ip-copy-btn${net.publicIP ? ' copyable' : ''}`}
-                                onClick={() => {
-                                    if (!net.publicIP) return
-                                    navigator.clipboard.writeText(net.publicIP).then(() => {
-                                        setCopiedIP(true)
-                                        setTimeout(() => setCopiedIP(false), 1200)
-                                    })
-                                }}
-                                disabled={!net.publicIP}
-                                title={net.publicIP ? 'Click to copy' : ''}
-                            >
+                        {/*
+                          IP value is rendered as plain text inside the
+                          .stat-tile-value div \u2014 exactly the same
+                          element type and structure as Local IP /
+                          Gateway / DNS Server. Wrapping it in a
+                          <button> previously created a 6-8px text-start
+                          offset that no padding/margin/appearance
+                          tweak could fully override on every browser
+                          (user-agent button styling has intrinsic
+                          inset metrics). Click-to-copy now happens at
+                          the .stat-tile-value level via onClick. The
+                          eye toggle is a sibling button \u2014 its
+                          onClick stops propagation so toggling
+                          visibility doesn't also trigger a copy.
+                        */}
+                        <div
+                            className={`stat-tile-value mono ip-value-row${net.publicIP ? ' copyable' : ''}`}
+                            onClick={() => {
+                                if (!net.publicIP) return
+                                navigator.clipboard.writeText(net.publicIP).then(() => {
+                                    setCopiedIP(true)
+                                    setTimeout(() => setCopiedIP(false), 1200)
+                                })
+                            }}
+                            role={net.publicIP ? 'button' : undefined}
+                            tabIndex={net.publicIP ? 0 : undefined}
+                            onKeyDown={(e) => {
+                                if (!net.publicIP) return
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    e.currentTarget.click()
+                                }
+                            }}
+                            title={net.publicIP ? 'Click to copy' : ''}
+                        >
+                            <span className="ip-text">
                                 {net.publicIP
                                     ? (showPublicIP ? net.publicIP : net.publicIP.replace(/./g, '\u2022'))
                                     : '\u2014'}
-                            </button>
+                            </span>
                             {copiedIP && <span className="copied-flash">Copied!</span>}
                             {net.publicIP && (
                                 <button
                                     type="button"
                                     className="ip-eye-btn"
-                                    onClick={() => setShowPublicIP(p => !p)}
+                                    onClick={(e) => { e.stopPropagation(); setShowPublicIP(p => !p) }}
                                     title={showPublicIP ? 'Hide IP' : 'Show IP'}
                                     aria-label={showPublicIP ? 'Hide public IP' : 'Show public IP'}
                                 >
@@ -435,7 +453,35 @@ export default function Dashboard() {
                                 </button>
                             )}
                         </div>
-                        <div className="stat-tile-sub" style={net.geo && !showPublicIP ? { visibility: 'hidden' } : undefined}>{net.geo ? `${net.geo.city || ''}, ${net.geo.country || ''}`.replace(/^,\s*/, '').replace(/,\s*$/, '') : '\u00A0'}</div>
+                        {/*
+                          Geo line: prefer the ISO 3166-1 alpha-2 country
+                          code (US, DR, ES…) over the full country name so
+                          "Santo Domingo, DR" fits the tile without the
+                          ellipsis truncation kicking in. Falls back to
+                          the full name when the API didn't return a code
+                          (older cached responses, unusual locations) so
+                          we never drop the country entirely. The full
+                          text is exposed via `title` so hover reveals it.
+                        */}
+                        {(() => {
+                            const geo = net.geo
+                            if (!geo) return <div className="stat-tile-sub">{'\u00A0'}</div>
+                            const city = (geo.city || '').trim()
+                            const code = (geo.countryCode || '').trim().toUpperCase()
+                            const country = (geo.country || '').trim()
+                            const shortLocale = code || country
+                            const display = [city, shortLocale].filter(Boolean).join(', ')
+                            const fullDisplay = [city, country].filter(Boolean).join(', ') || display
+                            return (
+                                <div
+                                    className="stat-tile-sub"
+                                    style={!showPublicIP ? { visibility: 'hidden' } : undefined}
+                                    title={fullDisplay}
+                                >
+                                    {display || '\u00A0'}
+                                </div>
+                            )
+                        })()}
                     </div>
                 </div>
                 <StatTile icon={<Router size={18} />} label="Gateway" value={net.gateway}

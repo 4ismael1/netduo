@@ -249,10 +249,15 @@ export function NetworkStatusProvider({ children }) {
 
         return () => {
             mountedRef.current = false
+            // Each subscription returns its own off() callback; calling
+            // those alone is enough to detach this hook's listeners.
+            // The legacy `bridge.offNetworkEvents()` helper used
+            // removeAllListeners under the hood, which would also wipe
+            // listeners belonging to other components subscribed to
+            // network events — so we deliberately do NOT call it here.
             if (typeof offChanged === 'function') offChanged()
             if (typeof offSignal === 'function') offSignal()
             if (typeof offConfigChanged === 'function') offConfigChanged()
-            bridge.offNetworkEvents?.()
             clearInterval(fastPoll)
             clearInterval(slowPoll)
             window.removeEventListener('online', onOnline)

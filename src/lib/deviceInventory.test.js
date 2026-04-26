@@ -43,6 +43,7 @@ describe('mergeScanWithInventory', () => {
         const merged = mergeScanWithInventory(scan, inventory, new Set(['mac:aabbccddee22']))
         const laptop = merged.find(d => d.ip === '192.168.1.22')
         expect(laptop.presence).toBe('new')
+        expect(laptop.isNew).toBe(true)
     })
 
     it('works with empty inventory (first scan)', () => {
@@ -61,6 +62,7 @@ describe('mergeScanWithInventory', () => {
         const merged = mergeScanWithInventory(scan, [], ['mac:aabbccddee01'])
         const router = merged.find(d => d.ip === '192.168.1.1')
         expect(router.presence).toBe('new')
+        expect(router.isNew).toBe(true)
     })
 })
 
@@ -132,12 +134,94 @@ describe('mergeScanWithInventory — offline flag re-derivation', () => {
     })
 })
 
+describe('mergeScanWithInventory - seenOnly devices are cached', () => {
+    // Neighbor-cache evidence keeps Wi-Fi sleepers visible without inflating
+    // the Online count when Windows is only reporting stale ARP state.
+    it('marks alive=false seenOnly devices as cached, not online', () => {
+        const scan = [{
+            ip: '192.168.1.42', mac: 'aa:bb:cc:dd:ee:42',
+            alive: false, seenOnly: true, neighborState: 'stale',
+        }]
+        const inventory = [{
+            deviceKey: 'mac:aabbccddee42',
+            baseIP: '192.168.1', ip: '192.168.1.42', mac: 'aa:bb:cc:dd:ee:42',
+            lastSeen: 1000, firstSeen: 500,
+        }]
+        const merged = mergeScanWithInventory(scan, inventory)
+        expect(merged).toHaveLength(1)
+        expect(merged[0].presence).toBe('cached')
+        expect(merged[0].alive).toBe(false)
+        expect(merged[0].seenOnly).toBe(true)
+        expect(merged[0].neighborState).toBe('stale')
+    })
+
+    it('still marks alive=true devices as online', () => {
+        const scan = [{
+            ip: '192.168.1.42', mac: 'aa:bb:cc:dd:ee:42',
+            alive: true, seenOnly: false, time: 4, neighborState: 'reachable',
+        }]
+        const merged = mergeScanWithInventory(scan, [])
+        expect(merged[0].presence).toBe('online')
+        expect(merged[0].neighborState).toBe('reachable')
+    })
+
+    it('lets active discovery override a stale cached hint', () => {
+        const scan = [{
+            ip: '192.168.1.44', mac: 'aa:bb:cc:dd:ee:44',
+            alive: true, seenOnly: false, presenceHint: 'cached', activeSource: 'mdns',
+        }]
+        const merged = mergeScanWithInventory(scan, [])
+        expect(merged[0].presence).toBe('online')
+    })
+
+    it('preserves discovery detail fields from SSDP and mDNS scan rows', () => {
+        const scan = [{
+            ip: '192.168.1.80',
+            mac: 'aa:bb:cc:dd:ee:80',
+            alive: true,
+            hostname: 'living-room-tv',
+            nameSource: 'ssdp',
+            modelName: 'Roku Ultra',
+            modelDescription: 'Streaming media player',
+            modelNumber: '4802X',
+            serialNumber: 'SN123',
+            presentationUrl: 'http://192.168.1.80/',
+            ssdpDeviceType: 'urn:schemas-upnp-org:device:MediaRenderer:1',
+            serviceTypes: ['urn:schemas-upnp-org:service:AVTransport:1'],
+            discoverySources: ['ssdp'],
+        }]
+
+        const merged = mergeScanWithInventory(scan, [])
+        expect(merged[0].modelName).toBe('Roku Ultra')
+        expect(merged[0].modelDescription).toBe('Streaming media player')
+        expect(merged[0].modelNumber).toBe('4802X')
+        expect(merged[0].serialNumber).toBe('SN123')
+        expect(merged[0].presentationUrl).toBe('http://192.168.1.80/')
+        expect(merged[0].ssdpDeviceType).toContain('MediaRenderer')
+        expect(merged[0].serviceTypes).toEqual(['urn:schemas-upnp-org:service:AVTransport:1'])
+        expect(merged[0].discoverySources).toEqual(['ssdp'])
+    })
+
+    it('keeps cached new devices filterable without marking them online', () => {
+        const scan = [{
+            ip: '192.168.1.43', mac: 'aa:bb:cc:dd:ee:43',
+            alive: false, seenOnly: true, neighborState: 'stale',
+        }]
+        const merged = mergeScanWithInventory(scan, [], new Set(['mac:aabbccddee43']))
+        expect(merged[0].presence).toBe('cached')
+        expect(merged[0].isNew).toBe(true)
+    })
+})
+
 describe('isHideableWhenOffline', () => {
     it('hides regular offline devices', () => {
         expect(isHideableWhenOffline({ presence: 'offline' })).toBe(true)
     })
     it('keeps online devices visible', () => {
         expect(isHideableWhenOffline({ presence: 'online' })).toBe(false)
+    })
+    it('keeps cached devices visible', () => {
+        expect(isHideableWhenOffline({ presence: 'cached' })).toBe(false)
     })
     it('keeps gateway visible even offline', () => {
         expect(isHideableWhenOffline({ presence: 'offline', isGateway: true })).toBe(false)

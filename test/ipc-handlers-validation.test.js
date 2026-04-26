@@ -37,7 +37,7 @@ describe('IPC input validation before dangerous sinks', () => {
 
     it('lan-scan-enrich validates item.ip before hostname exec fallbacks', () => {
         const body = handlerBody('lan-scan-enrich')
-        expect(body).toMatch(/pingResolveName|netbiosLookup/)
+        expect(body).toMatch(/resolveHostname|pingResolveName|netbiosLookup/)
         expect(body).toMatch(/isValidIPv4|sanitizeHost|validators\.isIPv4/)
     })
 

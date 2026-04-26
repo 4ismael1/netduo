@@ -1,9 +1,16 @@
-﻿const { app, BrowserWindow, ipcMain, shell } = require('electron')
+﻿const { app, BrowserWindow, ipcMain, nativeTheme, session, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { exec, execFile, spawn } = require('child_process')
 const validators = require('./validators')
 const { filterGhosts } = require('./scanner/ghostFilter')
+const {
+    normalizeNeighborState,
+    normalizeNetshNeighborState,
+    isUsableNeighborState,
+    shouldRetryNeighbor,
+    mergeNeighborEntry,
+} = require('./scanner/neighborPresence')
 const os = require('os')
 const dns = require('dns')
 const net = require('net')
@@ -520,9 +527,30 @@ function parseLoss(output, hadError) {
 let mainWin = null
 
 function createWindow() {
+    // Pick the BrowserWindow's native backgroundColor to match the
+    // theme the renderer is about to paint. The window's bg is what
+    // Chromium shows BEFORE the HTML has parsed — any mismatch with
+    // the boot-theme inline <style> in index.html produces a visible
+    // flicker (e.g. Nothing theme used to open with a light grey
+    // canvas because we only mapped dark/light here, then snap to
+    // black once the boot script ran).
+    //
+    // The mapping must mirror:
+    //   - the bg constants in index.html boot script
+    //   - the --bg-app values per theme in design-system.css
+    const VALID_THEMES = new Set(['light', 'dark', 'nothing'])
     const savedTheme = database.configGet('theme')
-    const bootTheme = savedTheme === 'dark' ? 'dark' : 'light'
-    const isDarkTheme = bootTheme === 'dark'
+    // Order of preference: explicit user choice → OS dark-mode hint
+    // → light. Without the OS check we'd open in light by default
+    // and the renderer's `prefers-color-scheme: dark` query in the
+    // boot script would flip to dark, producing a flash for users
+    // who never set a theme but use dark mode at the system level.
+    const bootTheme = VALID_THEMES.has(savedTheme)
+        ? savedTheme
+        : (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+    const themeBg = bootTheme === 'nothing' ? '#000000'
+        : bootTheme === 'dark' ? '#050507'
+        : '#f1f5f9'
 
     const win = new BrowserWindow({
         width: 1280, height: 800,
@@ -531,7 +559,7 @@ function createWindow() {
         titleBarStyle: 'hidden',
         show: false,
         icon: appIconPath,
-        backgroundColor: isDarkTheme ? '#050507' : '#f1f5f9',
+        backgroundColor: themeBg,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -796,9 +824,67 @@ function stopNetworkWatcher() {
     if (_netWatchTimer) { clearInterval(_netWatchTimer); _netWatchTimer = null }
 }
 
+/**
+ * Apply Content-Security-Policy via HTTP response header for the
+ * default session. Header-based CSP supersedes any meta-tag CSP and
+ * lets us swap policies between dev (Vite needs `unsafe-inline` +
+ * `localhost` + websocket for HMR) and production (no localhost, no
+ * websocket — only `'self'` with the inline-style allowance that
+ * Recharts / Framer Motion legitimately require for animation
+ * keyframes injected at runtime).
+ *
+ * Notes:
+ *   - `'unsafe-inline'` for `style-src` is intentional: removing it
+ *     would break Recharts (inline SVG styles) and the boot-theme
+ *     <style> block in index.html. Removing it would need every chart
+ *     to migrate to CSS-in-JS with hashed selectors.
+ *   - `'unsafe-inline'` for `script-src` covers the boot-theme
+ *     <script> in index.html. We keep it scoped to `'self'` plus
+ *     inline because the renderer also runs Vite's own runtime which
+ *     emits inline initializer fragments.
+ *   - `frame-ancestors 'none'` only takes effect via header (meta-tag
+ *     CSP ignores this directive).
+ */
+function installContentSecurityPolicy() {
+    const cspDev = [
+        `default-src 'self'`,
+        `script-src 'self' 'unsafe-inline' http://localhost:5173`,
+        `style-src 'self' 'unsafe-inline' http://localhost:5173 https://fonts.googleapis.com`,
+        `img-src 'self' data: blob:`,
+        `font-src 'self' data: https://fonts.gstatic.com`,
+        `connect-src 'self' http://localhost:5173 ws://localhost:5173`,
+        `object-src 'none'`,
+        `base-uri 'self'`,
+        `frame-ancestors 'none'`,
+    ].join('; ')
+    const cspProd = [
+        `default-src 'self'`,
+        `script-src 'self' 'unsafe-inline'`,
+        `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
+        `img-src 'self' data: blob:`,
+        `font-src 'self' data: https://fonts.gstatic.com`,
+        `connect-src 'self'`,
+        `object-src 'none'`,
+        `base-uri 'self'`,
+        `frame-ancestors 'none'`,
+    ].join('; ')
+    const policy = isDev ? cspDev : cspProd
+
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        const headers = { ...(details.responseHeaders || {}) }
+        // Remove any pre-existing CSP from upstream so our policy wins.
+        for (const k of Object.keys(headers)) {
+            if (k.toLowerCase() === 'content-security-policy') delete headers[k]
+        }
+        headers['Content-Security-Policy'] = [policy]
+        callback({ responseHeaders: headers })
+    })
+}
+
 app.whenReady().then(() => {
     appendStartupLog('app.whenReady')
     database.init(app.getPath('userData'))
+    installContentSecurityPolicy()
     createWindow()
     startNetworkWatcher()
     appendStartupLog('startup complete')
@@ -867,7 +953,11 @@ ipcMain.handle('get-public-ip', () => new Promise(resolve => {
 }))
 
 ipcMain.handle('get-ip-geo', (_, ip) => new Promise(resolve => {
-    http.get(`http://ip-api.com/json/${ip}?fields=status,country,city,isp,org,lat,lon,timezone,as`, res => {
+    // `countryCode` is the ISO 3166-1 alpha-2 (2 letters: US, DR, ES, MX,
+    // …). The Dashboard prefers it over the full country name in tight
+    // tile space so long names like "Dominican Republic" or "United Arab
+    // Emirates" never collide with the truncation ellipsis.
+    http.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,city,isp,org,lat,lon,timezone,as`, res => {
         let d = ''
         res.on('data', c => { d += c })
         res.on('end', () => { try { resolve(JSON.parse(d)) } catch { resolve({}) } })
@@ -1793,21 +1883,41 @@ function encodeDnsName(name) {
 }
 
 function buildMdnsQueryPacket() {
-    const q1 = encodeDnsName('_services._dns-sd._udp.local')
-    const q2 = encodeDnsName('_workstation._tcp.local')
-    if (!q1 || !q2) return null
+    const names = [
+        '_services._dns-sd._udp.local',
+        '_workstation._tcp.local',
+        '_http._tcp.local',
+        '_ipp._tcp.local',
+        '_printer._tcp.local',
+        '_airplay._tcp.local',
+        '_raop._tcp.local',
+        '_googlecast._tcp.local',
+        '_hap._tcp.local',
+        '_companion-link._tcp.local',
+        '_apple-mobdev2._tcp.local',
+        '_airdrop._tcp.local',
+        '_smb._tcp.local',
+        '_device-info._tcp.local',
+        '_adb-tls-connect._tcp.local',
+        '_androidtvremote2._tcp.local',
+        '_spotify-connect._tcp.local',
+    ]
+    const encoded = names.map(encodeDnsName)
+    if (encoded.some(q => !q)) return null
     const header = Buffer.alloc(12)
     // Transaction ID = 0 for multicast DNS.
     header.writeUInt16BE(0x0000, 0)
     header.writeUInt16BE(0x0000, 2)
-    header.writeUInt16BE(2, 4)
+    header.writeUInt16BE(encoded.length, 4)
     header.writeUInt16BE(0, 6)
     header.writeUInt16BE(0, 8)
     header.writeUInt16BE(0, 10)
     // QCLASS with QU bit (0x8000) requests unicast responses when possible.
     const questionClass = Buffer.from([0x80, 0x01]) // IN + unicast-response
     const questionTypePtr = Buffer.from([0x00, 0x0c]) // PTR
-    return Buffer.concat([header, q1, questionTypePtr, questionClass, q2, questionTypePtr, questionClass])
+    const questions = []
+    for (const q of encoded) questions.push(q, questionTypePtr, questionClass)
+    return Buffer.concat([header, ...questions])
 }
 
 function parseIPv6FromBuffer(buf, offset) {
@@ -1865,6 +1975,7 @@ function parseDnsRecords(buf, offset, count) {
 
         let ptr = null
         let target = null
+        let txt = []
         let ipv4 = null
         let ipv6 = null
 
@@ -1878,6 +1989,8 @@ function parseDnsRecords(buf, offset, count) {
         } else if (type === 33 && rdlength >= 6) {
             const targetNode = readDnsName(buf, rstart + 6)
             if (targetNode) target = targetNode.name
+        } else if (type === 16) {
+            txt = parseDnsTxtValues(buf, rstart, rdlength)
         }
 
         records.push({
@@ -1887,12 +2000,29 @@ function parseDnsRecords(buf, offset, count) {
             ttl,
             ptr,
             target,
+            txt,
             ipv4,
             ipv6,
         })
         cursor += rdlength
     }
     return { records, nextOffset: cursor }
+}
+
+function parseDnsTxtValues(buf, offset, length) {
+    const values = []
+    const end = offset + length
+    let cursor = offset
+    while (cursor < end) {
+        const len = buf[cursor]
+        cursor += 1
+        if (!len) continue
+        if (cursor + len > end) break
+        const value = stripControlChars(buf.slice(cursor, cursor + len).toString('utf8')).trim()
+        if (value) values.push(value)
+        cursor += len
+    }
+    return values
 }
 
 function parseDnsMessage(buf) {
@@ -1933,7 +2063,11 @@ function normalizeMdnsCandidate(raw) {
 
 function scoreMdnsCandidate(name, sourceType) {
     if (!name) return -100
-    let score = sourceType === 'a' ? 50 : sourceType === 'srv' ? 40 : 30
+    let score = sourceType === 'a' ? 50
+        : sourceType === 'txt' ? 48
+        : sourceType === 'service' ? 44
+        : sourceType === 'srv' ? 40
+        : 30
     if (name.length <= 24) score += 4
     if (name.includes(' ')) score += 2
     if (name.includes('._')) score -= 6
@@ -1950,6 +2084,16 @@ function mdnsMergeCandidate(outByIp, ip, rawName, sourceType = 'ptr') {
     if (!prev || score > prev.score || (score === prev.score && hostname.length < prev.hostname.length)) {
         outByIp[ip] = { hostname, score }
     }
+}
+
+function mdnsTxtNameCandidates(values) {
+    const out = []
+    for (const value of values || []) {
+        const raw = String(value || '').trim()
+        const m = raw.match(/^(?:fn|name|device[-_]?name|friendly[-_]?name|nm)\s*=\s*(.+)$/i)
+        if (m?.[1]) out.push(m[1])
+    }
+    return out
 }
 
 function mdnsDiscover(timeoutMs = 1400) {
@@ -1985,7 +2129,15 @@ function mdnsDiscover(timeoutMs = 1400) {
                     continue
                 }
                 if (record.type === 33 && record.target) {
+                    mdnsMergeCandidate(byIp, sourceIp, record.name, 'service')
                     mdnsMergeCandidate(byIp, sourceIp, record.target, 'srv')
+                    continue
+                }
+                if (record.type === 16) {
+                    mdnsMergeCandidate(byIp, sourceIp, record.name, 'service')
+                    for (const candidate of mdnsTxtNameCandidates(record.txt)) {
+                        mdnsMergeCandidate(byIp, sourceIp, candidate, 'txt')
+                    }
                     continue
                 }
                 if (record.type === 12 && record.ptr) {
@@ -2052,6 +2204,17 @@ function xmlTag(text, tag) {
     return v || null
 }
 
+function safeUrlFromXml(rawUrl, baseUrl = null) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null
+    try {
+        const parsed = new URL(rawUrl.trim(), baseUrl || undefined)
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+        return parsed.toString()
+    } catch {
+        return null
+    }
+}
+
 function parseSsdpHeaders(raw) {
     const headers = {}
     const lines = (raw || '').split(/\r?\n/)
@@ -2105,6 +2268,12 @@ async function fetchSsdpDescription(locationUrl) {
     const friendlyName = xmlTag(body, 'friendlyName')
     const manufacturer = xmlTag(body, 'manufacturer')
     const modelName = xmlTag(body, 'modelName')
+    const modelDescription = xmlTag(body, 'modelDescription')
+    const modelNumber = xmlTag(body, 'modelNumber')
+    const serialNumber = xmlTag(body, 'serialNumber')
+    const deviceType = xmlTag(body, 'deviceType')
+    const udn = xmlTag(body, 'UDN')
+    const presentationUrl = safeUrlFromXml(xmlTag(body, 'presentationURL'), locationUrl)
     const serviceTypes = []
     const re = /<serviceType[^>]*>([\s\S]*?)<\/serviceType>/gi
     let match
@@ -2112,11 +2281,21 @@ async function fetchSsdpDescription(locationUrl) {
         const serviceType = decodeXmlEntities(String(match[1] || '')).replace(/\s+/g, ' ').trim()
         if (serviceType) serviceTypes.push(serviceType)
     }
-    if (!friendlyName && !manufacturer && !modelName && !serviceTypes.length) return null
+    if (
+        !friendlyName && !manufacturer && !modelName && !modelDescription &&
+        !modelNumber && !serialNumber && !deviceType && !udn &&
+        !presentationUrl && !serviceTypes.length
+    ) return null
     return {
         friendlyName,
         manufacturer,
         modelName,
+        modelDescription,
+        modelNumber,
+        serialNumber,
+        deviceType,
+        udn,
+        presentationUrl,
         serviceTypes: [...new Set(serviceTypes)],
     }
 }
@@ -2189,8 +2368,34 @@ async function collectSsdpInfo(baseIP, rangeStart, rangeEnd) {
         const friendlyName = normalizeResolvedHost(desc?.friendlyName || null)
         const manufacturer = (desc?.manufacturer || '').trim() || null
         const modelName = (desc?.modelName || '').trim() || null
-        if (friendlyName || manufacturer || modelName) {
-            out[ip] = { friendlyName, manufacturer, modelName }
+        const modelDescription = (desc?.modelDescription || '').trim() || null
+        const modelNumber = (desc?.modelNumber || '').trim() || null
+        const serialNumber = (desc?.serialNumber || '').trim() || null
+        const deviceType = (desc?.deviceType || '').trim() || null
+        const udn = (desc?.udn || '').trim() || null
+        const presentationUrl = desc?.presentationUrl || null
+        const serviceTypes = Array.isArray(desc?.serviceTypes) ? desc.serviceTypes : []
+        if (
+            friendlyName || manufacturer || modelName || modelDescription ||
+            modelNumber || serialNumber || deviceType || udn || presentationUrl ||
+            serviceTypes.length || info.location || info.server || info.st || info.usn
+        ) {
+            out[ip] = {
+                friendlyName,
+                manufacturer,
+                modelName,
+                modelDescription,
+                modelNumber,
+                serialNumber,
+                presentationUrl,
+                ssdpDeviceType: deviceType,
+                ssdpUdn: udn,
+                serviceTypes,
+                location: info.location || null,
+                server: info.server || null,
+                st: info.st || null,
+                usn: info.usn || null,
+            }
         }
     }
     return out
@@ -2228,6 +2433,58 @@ async function resolveHostname(ip, options = {}) {
     }
 
     return { hostname: null, nameSource: 'unknown' }
+}
+
+function nameCandidateScore(name, source = 'unknown') {
+    const clean = normalizeResolvedHost(name)
+    if (!clean) return -Infinity
+
+    const lower = clean.toLowerCase()
+    let score = ({
+        ssdp: 84,
+        mdns: 78,
+        netbios: 72,
+        ptr: 62,
+    })[source] || 50
+
+    // Generic DNS/router labels are less useful than explicit SSDP/mDNS
+    // friendly names such as "Living Room TV" or "HP LaserJet".
+    if (lower.includes('.')) score -= 8
+    if (/^(unknown|localhost|host|device|router|gateway)$/i.test(clean)) score -= 18
+    if (/^(android|desktop|laptop|host|dhcp)[-_]?[a-z0-9]{4,}$/i.test(clean)) score -= 8
+    if (/^[0-9a-f]{8,}$/i.test(clean.replace(/[-_:]/g, ''))) score -= 22
+    if (/\d{1,3}[-_.]\d{1,3}[-_.]\d{1,3}[-_.]\d{1,3}/.test(lower)) score -= 25
+    if (clean.length > 48) score -= Math.min(20, clean.length - 48)
+    if (/\s/.test(clean)) score += 4
+    return score
+}
+
+function pickBestName(candidates) {
+    let best = null
+    for (const candidate of candidates || []) {
+        const hostname = normalizeResolvedHost(candidate?.hostname)
+        if (!hostname) continue
+        const source = candidate?.source || 'unknown'
+        const score = nameCandidateScore(hostname, source)
+        if (!best || score > best.score) best = { hostname, nameSource: source, score }
+    }
+    return best ? { hostname: best.hostname, nameSource: best.nameSource } : { hostname: null, nameSource: 'unknown' }
+}
+
+function compactDeviceModel(info) {
+    if (!info) return null
+    const manufacturer = String(info.manufacturer || '').trim()
+    const modelName = String(info.modelName || '').trim()
+    const modelNumber = String(info.modelNumber || '').trim()
+    const pieces = []
+    if (manufacturer) pieces.push(manufacturer)
+    if (modelName && !pieces.some(p => p.toLowerCase() === modelName.toLowerCase())) pieces.push(modelName)
+    if (
+        modelNumber &&
+        !pieces.some(p => p.toLowerCase() === modelNumber.toLowerCase()) &&
+        !modelName.toLowerCase().includes(modelNumber.toLowerCase())
+    ) pieces.push(modelNumber)
+    return pieces.join(' ').replace(/\s+/g, ' ').trim() || null
 }
 
 /** Detect locally-administered (randomized) MACs */
@@ -2276,14 +2533,75 @@ function tcpTouch(ip, port, timeoutMs = 320) {
     })
 }
 
+function udpTouch(ip, port) {
+    return new Promise((resolve) => {
+        const socket = dgram.createSocket('udp4')
+        let done = false
+        const finish = () => {
+            if (done) return
+            done = true
+            clearTimeout(timer)
+            try { socket.close() } catch { /* noop */ }
+            resolve()
+        }
+        const timer = setTimeout(finish, 400)
+        socket.once('error', finish)
+        try {
+            socket.send(Buffer.from([0]), port, ip, finish)
+        } catch {
+            finish()
+        }
+    })
+}
+
 async function preheatNeighborCache(targets) {
     if (!targets?.length) return
-    const ports = [443, 80, 445, 22, 139, 53]
+    // UDP touches force ARP resolution even for hosts that silently drop TCP.
+    // TCP touches still help classify machines with common open services.
+    const ports = [445, 80]
     await parallelMap(targets, async (ip) => {
+        await udpTouch(ip, 9)
+        await udpTouch(ip, 137)
         for (const port of ports) {
-            await tcpTouch(ip, port, 280)
+            await tcpTouch(ip, port, 220)
         }
-    }, 44)
+    }, 48)
+    await sleep(450)
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, activeSource = 'icmp') {
+    const args = isWin
+        ? ['-4', '-n', '1', '-w', String(timeoutWin), ip]
+        : ['-c', '1', '-W', String(timeoutUnix), ip]
+
+    return new Promise(resolve => {
+        execFile('ping', args,
+            { timeout: Math.max(2500, timeoutWin + 1000), windowsHide: true, encoding: 'utf8' },
+            (err, stdout) => {
+                const m = stdout && stdout.match(PING_TIME_RE)
+                const txt = String(stdout || '')
+                const hasReply = /(?:reply from|respuesta desde|bytes from|ttl[=\s:])/i.test(txt)
+                if ((m && !err) || hasReply) {
+                    return resolve({ ip, alive: true, time: m ? parseFloat(m[1]) : null, mac: null, activeSource })
+                }
+                resolve({ ip, alive: false })
+            }
+        )
+    })
+}
+
+async function retryNeighborPing(ip, isWin, timeoutWin, timeoutUnix) {
+    const first = await pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry')
+    if (first.alive) return first
+
+    // Give Wi-Fi power-save clients a short wake window, but only for the
+    // small neighbor-cache candidate set instead of every silent IP.
+    await sleep(650)
+    return pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry')
 }
 
 async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
@@ -2301,7 +2619,11 @@ async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
             if (!ip.startsWith(`${baseIP}.`)) return
             const last = parseInt(ip.split('.').pop(), 10)
             if (isNaN(last) || last < rangeStart || last > rangeEnd) return
-            map[ip] = mac
+            map[ip] = mergeNeighborEntry(map[ip], {
+                mac,
+                state: 'unknown',
+                source: 'arp',
+            })
         })
     } catch { /* ignore */ }
 
@@ -2320,14 +2642,44 @@ async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
                 const rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : [])
                 for (const row of rows) {
                     const ip = String(row?.IPAddress || '').trim()
-                    const state = String(row?.State || '').trim().toLowerCase()
+                    const state = normalizeNeighborState(row?.State)
                     const mac = String(row?.LinkLayerAddress || '').trim().replace(/-/g, ':').toLowerCase()
                     if (!ip || !ip.startsWith(`${baseIP}.`)) continue
                     const last = parseInt(ip.split('.').pop(), 10)
                     if (isNaN(last) || last < rangeStart || last > rangeEnd) continue
                     if (!isUnicastMAC(mac)) continue
-                    if (/(incomplete|unreachable|invalid)/i.test(state)) continue
-                    map[ip] = mac
+                    if (!isUsableNeighborState(state)) continue
+                    map[ip] = mergeNeighborEntry(map[ip], {
+                        mac,
+                        state,
+                        source: 'netneighbor',
+                    })
+                }
+            }
+        } catch { /* ignore */ }
+
+        // Fallback for normal, non-elevated Windows sessions where the CIM
+        // Get-NetNeighbor call can return Access denied. `netsh` exposes the
+        // same table without elevation, localized state names included.
+        try {
+            const { err, out } = await run('netsh interface ipv4 show neighbors', 6500)
+            if (!err && out) {
+                for (const line of out.split(/\r?\n/)) {
+                    const m = line.match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+((?:[0-9a-f]{2}[-:]){5}[0-9a-f]{2})\s+(.+?)\s*$/i)
+                    if (!m) continue
+                    const ip = m[1]
+                    const mac = m[2].replace(/-/g, ':').toLowerCase()
+                    const state = normalizeNetshNeighborState(m[3])
+                    if (!ip || !ip.startsWith(`${baseIP}.`)) continue
+                    const last = parseInt(ip.split('.').pop(), 10)
+                    if (isNaN(last) || last < rangeStart || last > rangeEnd) continue
+                    if (!isUnicastMAC(mac)) continue
+                    if (!isUsableNeighborState(state)) continue
+                    map[ip] = mergeNeighborEntry(map[ip], {
+                        mac,
+                        state,
+                        source: 'netsh',
+                    })
                 }
             }
         } catch { /* ignore */ }
@@ -2387,52 +2739,83 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         // any unexpected interaction with `baseIP` content.
         if (validators.isIPv4(ip)) targets.push(ip)
     }
-    const pingArgs = (ip) => isWin
-        ? ['-4', '-n', '1', '-w', String(PING_TIMEOUT_WIN), ip]
-        : ['-c', '1', '-W', String(PING_TIMEOUT_UNIX), ip]
     for (let i = 0; i < targets.length; i += PING_CONCURRENCY) {
         const batch = targets.slice(i, i + PING_CONCURRENCY)
-        const res = await Promise.all(batch.map(ip => new Promise(resolve => {
-            execFile('ping', pingArgs(ip),
-                { timeout: Math.max(3000, PING_TIMEOUT_WIN + 1000), windowsHide: true, encoding: 'utf8' },
-                (err, stdout) => {
-                    const m = stdout && stdout.match(PING_TIME_RE)
-                    const txt = String(stdout || '')
-                    const hasReply = /(?:reply from|respuesta desde|bytes from|ttl[=\s:])/i.test(txt)
-                    if ((m && !err) || hasReply) {
-                        return resolve({ ip, alive: true, time: m ? parseFloat(m[1]) : null, mac: null })
-                    }
-                    resolve({ ip, alive: false })
-                }
-            )
-        })))
+        const res = await Promise.all(batch.map(ip => pingHostOnce(
+            ip,
+            isWin,
+            PING_TIMEOUT_WIN,
+            PING_TIMEOUT_UNIX,
+            'icmp',
+        )))
         results.push(...res.filter(r => r.alive))
     }
 
     const byIp = new Map(results.map(r => [r.ip, r]))
+    let neighborMap = {}
 
     // Phase 2: Warm neighbor cache on silent hosts with quick TCP touches.
-    // Skipped in Safe Scan mode — this is the 264-concurrent-SYN burst.
+    // Skipped in Safe Scan mode — Safe Scan stays strictly low-traffic.
     if (!safeMode) {
         const silentTargets = targets.filter(ip => !byIp.has(ip))
         await preheatNeighborCache(silentTargets)
     }
 
+    // Phase 2.5: Targeted wake/confirm pass. The previous implementation
+    // retried every silent address with a 3s timeout and concurrency 4,
+    // which made a normal /24 take minutes. We now consult the OS neighbor
+    // table first and only retry IPs with L2 evidence.
+    try {
+        neighborMap = await collectNeighborMap(baseIP, rangeStart, rangeEnd)
+    } catch { /* neighbor collection failed */ }
+
+    const retryTargets = Object.entries(neighborMap)
+        .filter(([ip, neighbor]) => !byIp.has(ip) && shouldRetryNeighbor(neighbor))
+        .map(([ip]) => ip)
+
+    if (retryTargets.length) {
+        const RETRY_CONCURRENCY = safeMode ? 6 : 12
+        const RETRY_TIMEOUT_WIN = safeMode ? 1600 : 900
+        const RETRY_TIMEOUT_UNIX = safeMode ? 2 : 1
+        for (let i = 0; i < retryTargets.length; i += RETRY_CONCURRENCY) {
+            const batch = retryTargets.slice(i, i + RETRY_CONCURRENCY)
+            const res = await Promise.all(batch.map(ip => retryNeighborPing(
+                ip,
+                isWin,
+                RETRY_TIMEOUT_WIN,
+                RETRY_TIMEOUT_UNIX,
+            )))
+            for (const r of res.filter(r => r.alive)) byIp.set(r.ip, r)
+        }
+    }
+
     // Phase 3: Enrich using ARP + OS neighbor table and include silent neighbors.
     // Runs even in Safe Scan — it's a local system call with no network traffic.
     try {
-        const neighborMap = await collectNeighborMap(baseIP, rangeStart, rangeEnd)
-        for (const [ip, mac] of Object.entries(neighborMap)) {
+        const refreshed = await collectNeighborMap(baseIP, rangeStart, rangeEnd)
+        for (const [ip, neighbor] of Object.entries(refreshed)) {
+            neighborMap[ip] = mergeNeighborEntry(neighborMap[ip], neighbor)
+        }
+        for (const [ip, neighbor] of Object.entries(neighborMap)) {
             if (byIp.has(ip)) {
-                byIp.get(ip).mac = mac
+                const existing = byIp.get(ip)
+                existing.mac = neighbor.mac
+                existing.neighborState = neighbor.state
+                existing.neighborSource = neighbor.source
             } else {
-                byIp.set(ip, { ip, alive: false, time: null, mac, seenOnly: true })
+                byIp.set(ip, {
+                    ip,
+                    alive: false,
+                    time: null,
+                    mac: neighbor.mac,
+                    seenOnly: true,
+                    presenceHint: 'cached',
+                    neighborState: neighbor.state,
+                    neighborSource: neighbor.source,
+                })
             }
         }
     } catch { /* neighbor enrichment failed */ }
-
-    results = Array.from(byIp.values())
-    if (results.length === 0) return results
 
     // Phase 4: Discovery intel via multicast (SSDP + mDNS).
     // Skipped in Safe Scan mode — multicast can be noisy on legacy switches.
@@ -2442,6 +2825,39 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
             withTimeout(collectSsdpInfoCached(baseIP, rangeStart, rangeEnd), 4300, {}),
             withTimeout(collectMdnsInfoCached(baseIP, rangeStart, rangeEnd), 2400, {}),
         ])
+
+    const addActiveDiscoveryHit = (ip, source) => {
+        if (!validators.isIPv4(ip) || !ipInRange(ip, baseIP, rangeStart, rangeEnd)) return
+        const neighbor = neighborMap[ip] || null
+        if (byIp.has(ip)) {
+            const existing = byIp.get(ip)
+            existing.activeSource = source
+            existing.discoveryOnly = true
+            existing.presenceHint = null
+            if (!existing.alive) {
+                existing.alive = true
+                existing.seenOnly = false
+            }
+            return
+        }
+        byIp.set(ip, {
+            ip,
+            alive: true,
+            time: null,
+            mac: neighbor?.mac || null,
+            seenOnly: false,
+            discoveryOnly: true,
+            activeSource: source,
+            neighborState: neighbor?.state || null,
+            neighborSource: neighbor?.source || null,
+        })
+    }
+
+    for (const ip of Object.keys(ssdpByIp || {})) addActiveDiscoveryHit(ip, 'ssdp')
+    for (const ip of Object.keys(mdnsByIp || {})) addActiveDiscoveryHit(ip, 'mdns')
+
+    results = Array.from(byIp.values())
+    if (results.length === 0) return results
 
     // Phase 5: Parallel name resolution + vendor lookup (concurrency = 8)
     await parallelMap(results, async (r) => {
@@ -2456,17 +2872,29 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         // Hostname resolution
         const ssdp = ssdpByIp[r.ip]
         const mdns = mdnsByIp[r.ip]
-        let { hostname, nameSource } = await resolveHostname(r.ip, { allowHeavy: false })
-        if (!hostname && mdns?.hostname) {
-            hostname = mdns.hostname
-            nameSource = 'mdns'
-        }
-        if (!hostname && ssdp?.friendlyName) {
-            hostname = ssdp.friendlyName
-            nameSource = 'ssdp'
-        }
+        const ptr = await resolveHostname(r.ip, { allowHeavy: false })
+        const { hostname, nameSource } = pickBestName([
+            { hostname: ssdp?.friendlyName, source: 'ssdp' },
+            { hostname: mdns?.hostname, source: 'mdns' },
+            { hostname: ptr?.hostname, source: ptr?.nameSource || 'ptr' },
+        ])
         r.hostname = hostname
         r.nameSource = nameSource
+
+        r.modelName = ssdp?.modelName || null
+        r.modelDescription = ssdp?.modelDescription || null
+        r.modelNumber = ssdp?.modelNumber || null
+        r.serialNumber = ssdp?.serialNumber || null
+        r.presentationUrl = ssdp?.presentationUrl || null
+        r.ssdpDeviceType = ssdp?.ssdpDeviceType || null
+        r.ssdpUdn = ssdp?.ssdpUdn || null
+        r.serviceTypes = Array.isArray(ssdp?.serviceTypes) ? ssdp.serviceTypes : []
+        r.ssdpServer = ssdp?.server || null
+        r.discoverySources = [
+            r.activeSource,
+            mdns?.hostname ? 'mdns' : null,
+            (ssdp?.friendlyName || ssdp?.modelName || r.serviceTypes.length) ? 'ssdp' : null,
+        ].filter(Boolean)
 
         // Vendor from local OUI DB, with online fallback for unknown non-randomized MACs
         let { vendor, vendorSource } = await resolveVendor(r.mac, r.isRandomized || r.macEmpty)
@@ -2478,7 +2906,9 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         r.vendorSource = vendorSource || 'unknown'
 
         // Role-aware display fallback to reduce Unknown Device labels.
+        const modelLabel = compactDeviceModel(ssdp)
         if (hostname) r.displayName = hostname
+        else if (modelLabel) r.displayName = modelLabel
         else if (vendor) r.displayName = vendor
         else if (r.isLocal) r.displayName = localHostname || 'This Device'
         else if (r.isGateway) r.displayName = 'Gateway'
@@ -2521,19 +2951,17 @@ ipcMain.handle('lan-scan-enrich', async (_, payload = {}) => {
         let vendor = null
         let vendorSource = null
 
-        // Heavy host naming fallback only on Windows and only when still unnamed.
-        if (!hasHostname && process.platform === 'win32') {
-            const pingName = normalizeResolvedHost(await withTimeout(pingResolveName(ip), 2200))
-            if (pingName) {
-                hostname = pingName
-                nameSource = 'ptr'
-            } else {
-                const nb = normalizeResolvedHost(await withTimeout(netbiosLookup(ip), 3400))
-                if (nb) {
-                    hostname = nb
-                    nameSource = 'netbios'
-                }
-            }
+        // Heavy host naming fallback only when still unnamed. Reuse the same
+        // resolver as the main scan so PTR/nslookup/lookupService, ping -a
+        // and NetBIOS stay in one pipeline.
+        if (!hasHostname) {
+            const resolved = await withTimeout(
+                resolveHostname(ip, { allowHeavy: true }),
+                process.platform === 'win32' ? 6500 : 3500,
+                { hostname: null, nameSource: 'unknown' },
+            )
+            hostname = normalizeResolvedHost(resolved?.hostname)
+            nameSource = hostname ? (resolved?.nameSource || 'ptr') : null
         }
 
         // Retry vendor fallback for unknown devices (skip randomized/private MACs).
@@ -2593,6 +3021,12 @@ ipcMain.handle('lan-upnp-scan', async (_, baseIP, rangeStart, rangeEnd) => {
             friendlyName: description?.friendlyName || null,
             manufacturer: description?.manufacturer || null,
             modelName: description?.modelName || null,
+            modelDescription: description?.modelDescription || null,
+            modelNumber: description?.modelNumber || null,
+            serialNumber: description?.serialNumber || null,
+            presentationUrl: description?.presentationUrl || null,
+            ssdpDeviceType: description?.deviceType || null,
+            ssdpUdn: description?.udn || null,
             serviceTypes,
             isIgd,
             isRootDevice,
@@ -4042,9 +4476,3 @@ ipcMain.handle('wan-probe-request', async (_, opts) => {
         req.end()
     })
 })
-
-
-
-
-
-

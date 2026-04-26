@@ -1085,6 +1085,52 @@
     .lchk-open-ports-card .np-table { min-width: 760px; }
 }
 
+/* ═══ Dark Theme ═══
+   The base styles bake in a couple of light-mode-only choices that
+   look terrible against a dark background:
+
+   1. `--lchk-panel` (line 5) mixes `#f5f9ff` (a near-white blue) into
+      the surface with a 140deg linear-gradient. In light mode it gives
+      cards a subtle frosty-blue feel; in dark mode it ends up as a
+      muddy washed-out blue tint that fights the rest of the app's
+      pure-dark cards.
+   2. The radial `::after` on each card adds a 16% accent-color glow
+      at the corner. On white that reads as a soft halo; on near-black
+      it lights up the corner with a visible coloured wash.
+   3. `.lchk-report-hero` and `.lchk-summary-risk` use linear-gradients
+      ending at `var(--gray-100)` — fine in light (very subtle), but
+      `--gray-100` in dark is `#141619` which produces a visible
+      lighter patch.
+   4. `.lchk-report-glance-item` mixes `var(--white) 12%` into the
+      surface — in dark `--white` is `#09090b`, basically a no-op, so
+      this one's actually OK; left untouched.
+
+   This block flattens (1)-(3) so dark-theme cards render as plain
+   surface colour with no blue tint, no accent glow, and no lighter-
+   patch gradient. Cards still keep their borders and hover lift —
+   only the gradient/glow chrome is neutralised. */
+[data-theme="dark"] .lchk-page {
+    --lchk-panel: var(--bg-surface);
+}
+[data-theme="dark"] .lchk-setup-card,
+[data-theme="dark"] .lchk-plan-card,
+[data-theme="dark"] .lchk-live-card,
+[data-theme="dark"] .lchk-history-card {
+    background: var(--bg-surface);
+}
+[data-theme="dark"] .lchk-setup-card::after,
+[data-theme="dark"] .lchk-plan-card::after,
+[data-theme="dark"] .lchk-live-card::after,
+[data-theme="dark"] .lchk-history-card::after {
+    opacity: 0;
+}
+[data-theme="dark"] .lchk-report-hero {
+    background: var(--bg-surface);
+}
+[data-theme="dark"] .lchk-summary-risk {
+    background: var(--bg-surface);
+}
+
 /* ═══ Nothing Theme ═══ */
 [data-theme="nothing"] .lchk-page { --lchk-panel: #111111; }
 [data-theme="nothing"] .lchk-setup-card,
@@ -1095,3 +1141,99 @@
 [data-theme="nothing"] .lchk-plan-card::after,
 [data-theme="nothing"] .lchk-live-card::after,
 [data-theme="nothing"] .lchk-history-card::after { opacity: 0; }
+
+/* ── Nothing: typography parity with Dashboard / Scanner ──
+   Without these overrides, LanCheck rendered as plain Space Grotesk
+   throughout the Nothing theme, which clashed with the rest of the
+   app (Dashboard, Scanner, Diagnostics, Monitor, SpeedTest all use
+   uppercased Space Mono labels for chips, KPIs, stage selectors,
+   etc.). The user reported "la tipografia... no concuerda con el
+   resto de la app" — this block brings LanCheck in line. */
+[data-theme="nothing"] .lchk-stage-chip {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .lchk-stage-strip { border-radius: 6px; }
+[data-theme="nothing"] .lchk-step-pill {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    font-size: 10px;
+    padding: 6px 8px;
+    gap: 5px;
+    border-radius: 4px;
+    min-width: 0;
+}
+[data-theme="nothing"] .lchk-step-pill > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+[data-theme="nothing"] .lchk-step-pill .lchk-step-dot {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+/* Re-flow the 4-step Execution Plan strip into a 2x2 grid in Nothing
+   theme. The mono+uppercase typography this theme applies to step
+   labels ("DISCOVERY", "UPNP INTEL", "SERVICE SWEEP", "RISK ANALYSIS")
+   makes them ~60-90% wider than the original Aptos/Segoe lowercase
+   labels, which made them overflow the 4 narrow columns of the
+   Execution Plan card and clip past the card border (visible bug:
+   "DISCOVERY casi se sale de la tarjeta"). 2x2 doubles the per-pill
+   width so even the longest label has breathing room. */
+[data-theme="nothing"] .lchk-step-strip {
+    grid-template-columns: 1fr 1fr;
+}
+[data-theme="nothing"] .lchk-kpi span {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+[data-theme="nothing"] .lchk-kpi strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .lchk-scope-meta span {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+[data-theme="nothing"] .lchk-progress-center strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .lchk-progress-center span {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+[data-theme="nothing"] .lchk-activity-item {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .lchk-section-label,
+[data-theme="nothing"] .lchk-option strong { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .lchk-option span,
+[data-theme="nothing"] .lchk-empty-box,
+[data-theme="nothing"] .lchk-activity-empty {
+    font-family: "Space Mono", monospace;
+    font-size: 11px;
+}
+[data-theme="nothing"] .lchk-role-chip,
+[data-theme="nothing"] .lchk-sev-chip,
+[data-theme="nothing"] .lchk-risk-pill {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 4px;
+}
+[data-theme="nothing"] .lchk-summary-card strong,
+[data-theme="nothing"] .lchk-summary-risk strong { font-family: "Space Mono", monospace; }
+[data-theme="nothing"] .lchk-recent-item strong { font-family: "Space Grotesk", sans-serif; }
+[data-theme="nothing"] .lchk-recent-item p {
+    font-family: "Space Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+}

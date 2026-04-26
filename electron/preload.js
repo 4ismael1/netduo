@@ -132,10 +132,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('network:signal', handler)
         return () => ipcRenderer.removeListener('network:signal', handler)
     },
-    offNetworkEvents: () => {
-        ipcRenderer.removeAllListeners('network:changed')
-        ipcRenderer.removeAllListeners('network:signal')
-    },
+    // DEPRECATED: kept as a no-op for backward compatibility. Call the
+    // unsubscribe function returned by onNetworkChanged / onNetworkSignal
+    // instead — using removeAllListeners here would clobber listeners
+    // owned by sibling components.
+    offNetworkEvents: () => { /* intentionally no-op */ },
 
     // Config (key/value persistence)
     configGet: (key) => ipcRenderer.invoke('config-get', key),

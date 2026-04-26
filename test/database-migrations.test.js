@@ -5,6 +5,22 @@
  * The existing mocked database tests missed v5 because the fake DB did not
  * implement PRAGMA table_info. These tests exercise virgin, legacy, and
  * repeated init paths against actual SQLite files.
+ *
+ * NOTE on skip behaviour: better-sqlite3 ships with native bindings
+ * compiled against Electron's NODE_MODULE_VERSION (143 for Electron 40),
+ * not the system Node ABI (137 for Node 24). The IIFE below detects this
+ * mismatch and skips the suite. Re-enabling these tests requires
+ * rebuilding the binding for system Node:
+ *
+ *     npm rebuild better-sqlite3 --build-from-source --runtime=node
+ *
+ * After running them, restore the Electron ABI:
+ *
+ *     npx electron-builder install-app-deps
+ *
+ * Skipping is intentional and tracked — pure-JS coverage in
+ * electron/database.test.js exercises the same migrations against a
+ * FakeDatabase that mocks PRAGMA / SQL surface.
  */
 import fs from 'node:fs'
 import os from 'node:os'

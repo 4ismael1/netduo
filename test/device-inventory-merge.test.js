@@ -62,6 +62,34 @@ describe('mergeScanWithInventory scoped key handling', () => {
 
         expect(merged).toHaveLength(1)
         expect(merged[0].presence).toBe('new')
+        expect(merged[0].isNew).toBe(true)
+    })
+
+    it('keeps scoped cached rows as one non-online row', () => {
+        const cachedScanDevice = {
+            ...scanDevice,
+            alive: false,
+            seenOnly: true,
+            neighborState: 'stale',
+        }
+        const merged = mergeScanWithInventory(
+            [cachedScanDevice],
+            [{
+                deviceKey: 'mac:001122334455::mac:aabbccddee40',
+                ip: '192.168.1.40',
+                mac: 'aa:bb:cc:dd:ee:40',
+                type: 'Computer',
+                firstSeen: 100,
+                lastSeen: 200,
+            }],
+            new Set(['mac:001122334455::mac:aabbccddee40']),
+        )
+
+        expect(merged).toHaveLength(1)
+        expect(merged[0].presence).toBe('cached')
+        expect(merged[0].alive).toBe(false)
+        expect(merged[0].isNew).toBe(true)
+        expect(merged[0].neighborState).toBe('stale')
     })
 
     it('also matches legacy unscoped inventory keys', () => {

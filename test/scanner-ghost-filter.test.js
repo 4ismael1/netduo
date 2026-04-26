@@ -99,10 +99,20 @@ describe('Scanner proxy-ARP ghost filter', () => {
     })
 
     it('keeps offline seen-only rows because they are inventory context, not alive ghosts', () => {
-        expect(ips([
+        const filtered = currentProductionGhostFilter([
             row('192.168.1.1', { isGateway: true, mac: 'aa:bb:cc:dd:ee:01' }),
-            row('192.168.1.77', { alive: false, mac: null, macEmpty: true, seenOnly: true }),
-        ])).toEqual(['192.168.1.1', '192.168.1.77'])
+            row('192.168.1.77', { alive: false, mac: null, macEmpty: true, seenOnly: true, neighborState: 'stale' }),
+        ])
+        expect(filtered.map(r => r.ip)).toEqual(['192.168.1.1', '192.168.1.77'])
+        expect(filtered[1].neighborState).toBe('stale')
+    })
+
+    it('keeps active mDNS/SSDP replies even when MAC enrichment missed', () => {
+        expect(ips([
+            row('192.168.1.60', { mac: null, macEmpty: true, activeSource: 'mdns', discoveryOnly: true }),
+            row('192.168.1.61', { mac: null, macEmpty: true, activeSource: 'ssdp', discoveryOnly: true }),
+            row('192.168.1.62', { mac: null, macEmpty: true, activeSource: 'icmp' }),
+        ])).toEqual(['192.168.1.60', '192.168.1.61'])
     })
 
     it('handles an empty LAN without crashing', () => {

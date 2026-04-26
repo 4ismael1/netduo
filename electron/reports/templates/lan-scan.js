@@ -11,7 +11,7 @@
  *       {
  *         ip, mac, hostname, vendor, deviceType,
  *         alive, time, seenOnly, isGateway, isLocal, isRandomized,
- *         macEmpty, nameSource, vendorSource,
+ *         macEmpty, neighborState, nameSource, vendorSource,
  *       }
  *     ]
  *   }
@@ -45,7 +45,22 @@ function countByType(devices) {
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1])
 }
 
+/**
+ * Render the per-row Status badge.
+ *
+ * The renderer ships the merged inventory shape (see mergeScanWithInventory
+ * in src/lib/deviceInventory.js) so each row carries an explicit
+ * `presence` field: 'online' | 'cached' | 'offline' | 'new'. When that field is
+ * present we honour it first — it captures the persisted Offline /
+ * freshly-discovered New state that raw scan flags can't express. Older
+ * payloads (or seenOnly rows produced by partial scans without the
+ * inventory merge) fall back to the legacy alive/seenOnly heuristic.
+ */
 function deviceBadge(d) {
+    if (d.presence === 'new')     return '<span class="badge info">New</span>'
+    if (d.presence === 'cached')  return '<span class="badge warn">Cached</span>'
+    if (d.presence === 'offline') return '<span class="badge muted">Offline</span>'
+    if (d.presence === 'online')  return '<span class="badge ok">Online</span>'
     if (d.isGateway) return '<span class="badge info">Gateway</span>'
     if (d.isLocal) return '<span class="badge ok">This device</span>'
     if (d.seenOnly) return '<span class="badge muted">Seen only</span>'
@@ -153,13 +168,28 @@ function buildHTML(payload) {
     })
 }
 
+/**
+ * CSV uses the same status taxonomy as the PDF: prefer the merged
+ * `presence` field when present so spreadsheets and PDFs always agree
+ * on whether a device is Online / Cached / Offline / New for a given scan.
+ */
+function csvStatus(d) {
+    if (d.presence === 'new') return 'new'
+    if (d.presence === 'cached') return 'cached'
+    if (d.presence === 'offline') return 'offline'
+    if (d.presence === 'online') return 'online'
+    if (d.alive) return 'online'
+    if (d.seenOnly) return 'seen-only'
+    return 'offline'
+}
+
 function buildCSVData(payload) {
     const devices = Array.isArray(payload?.devices) ? payload.devices : []
     return {
         headers: [
-            '#', 'IP', 'MAC', 'Hostname', 'Vendor', 'Device type',
-            'Status', 'Latency (ms)', 'Gateway', 'Local', 'Randomized MAC',
-            'Name source', 'Vendor source',
+            '#', 'IP', 'MAC', 'Hostname', 'Nickname', 'Vendor', 'Device type',
+            'Status', 'New', 'Latency (ms)', 'Gateway', 'Local', 'Randomized MAC',
+            'Neighbor state', 'Notes', 'Name source', 'Vendor source',
         ],
         rows: devices,
         extract: (d, i) => [
@@ -167,13 +197,17 @@ function buildCSVData(payload) {
             d.ip || '',
             d.mac || '',
             d.hostname || d.displayName || '',
+            d.nickname || '',
             d.vendor || '',
-            d.deviceType || 'Unknown',
-            d.alive ? 'online' : (d.seenOnly ? 'seen-only' : 'offline'),
+            d.typeOverride || d.deviceType || 'Unknown',
+            csvStatus(d),
+            (d.isNew || d.presence === 'new') ? 'yes' : '',
             d.time != null ? d.time : '',
             d.isGateway ? 'yes' : '',
             d.isLocal ? 'yes' : '',
             d.isRandomized ? 'yes' : '',
+            d.neighborState || '',
+            d.notes || '',
             d.nameSource || '',
             d.vendorSource || '',
         ],

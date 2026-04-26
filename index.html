@@ -3,6 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      CSP is delivered in two layers:
+        1. This meta tag — applied immediately at HTML parse time so
+           the boot-theme inline <script> runs without waiting for
+           HTTP headers (otherwise we get a flash of un-styled layout
+           before the renderer settles).
+        2. session.webRequest.onHeadersReceived in electron/main.js —
+           overrides with the strict production policy at runtime
+           (removes localhost / ws:// when isDev === false). Browsers
+           apply the intersection when both are present, so the
+           header layer can only further restrict, never relax.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173 https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://localhost:5173 ws://localhost:5173; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
@@ -27,6 +39,16 @@
           document.documentElement.setAttribute('data-theme', theme)
           document.documentElement.style.backgroundColor = bg
           document.documentElement.style.colorScheme = theme === 'light' ? 'light' : 'dark'
+
+          // Pre-paint sidebar width — App.jsx mirrors this in a useEffect,
+          // but doing it here avoids a one-frame race where .sidebar-region
+          // pintsa at the default 64px and then animates to 200px the
+          // moment React mounts. Reading the same localStorage key
+          // (`sidebar-expanded`) keeps both layers in sync.
+          var sidebarExpanded = false
+          try { sidebarExpanded = localStorage.getItem('sidebar-expanded') === 'true' } catch (_) {}
+          document.documentElement.style.setProperty('--rail-w', sidebarExpanded ? '200px' : '64px')
+
           var style = document.createElement('style')
           style.setAttribute('data-netduo-boot-theme', 'true')
           style.textContent = 'html,body,#root{background:' + bg + ';}'

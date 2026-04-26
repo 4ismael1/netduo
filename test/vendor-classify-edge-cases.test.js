@@ -12,6 +12,7 @@ describe('vendor classification edge cases', () => {
         ['Apple, Inc.', 'Apple'],
         ['SAMSUNG ELECTRONICS CO., LTD.', 'Samsung'],
         ['TP-LINK Technologies Co.,Ltd.', 'TP-Link'],
+        ['TP-Link Tapo Smart Plug', 'TP-Link Kasa'],
         ['D-Link International', 'D-Link'],
         ['Hewlett Packard Enterprise', 'HP'],
         ['ASUSTek COMPUTER INC.', 'ASUS'],
@@ -26,10 +27,17 @@ describe('vendor classification edge cases', () => {
     it.each([
         ['office-laserjet-5f', 'HP'],
         ['johns-iphone', 'Apple'],
-        ['pixel-8-pro', 'Samsung'],
+        ['pixel-8-pro', 'Google'],
         ['ps5-living-room', 'PlayStation'],
         ['raspberrypi', 'Raspberry Pi'],
         ['ds920-nas', 'Synology'],
+        ['roku-ultra-living-room', 'Roku'],
+        ['fire-tv-bedroom', 'Amazon'],
+        ['sonos-roam', 'Sonos'],
+        ['kasa-smartplug', 'TP-Link Kasa'],
+        ['front-door-onvif-camera', 'IP Camera'],
+        ['hallway-thermostat', 'Thermostat'],
+        ['qnap-nas', 'QNAP'],
     ])('uses hostname hint %s as %s', (hostname, expected) => {
         expect(resolveHostnameHint(hostname)).toBe(expected)
     })

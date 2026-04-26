@@ -52,5 +52,14 @@ audit/
 docs/PLAN-*.md
 docs/PLAN-*.txt
 
+# Local AI assistant project guides. These configure how Claude Code,
+# Codex CLI, Cursor and other agentic tools behave inside this repo
+# (build-toolchain stability rules, file conventions, etc.). Kept
+# local because they reflect the maintainer's workflow choices, not
+# something every clone of the repo should inherit.
+CLAUDE.md
+AGENTS.md
+.cursorrules
+
 # Electron / build cache
 *.tsbuildinfo

@@ -176,18 +176,75 @@ function decodeConfigValue(key, storedValue) {
     }
 }
 
-function migrateSensitiveConfigValues(currentDb) {
-    if (!canEncryptConfig()) return
+/**
+ * Internal config flag tracking whether the v2 sensitive-key encryption
+ * has actually been applied to the on-disk values. Decoupled from
+ * `user_version` so that an install where `safeStorage` was unavailable
+ * at the moment of the first launch (e.g. Linux without a configured
+ * keyring) still gets encrypted on the next launch where the keyring
+ * has been provisioned. Without this flag the schema-version check
+ * would skip the migration forever and leave sensitive values in
+ * plaintext indefinitely.
+ */
+const ENCRYPTION_APPLIED_KEY = '__migration.v2.encryptionApplied'
+
+function encryptSensitiveRowsNow(currentDb) {
     const rows = currentDb.prepare(
         'SELECT key, value FROM config WHERE key IN (?, ?)'
     ).all('wanProbeKey', 'wanProbePool')
     const update = currentDb.prepare('UPDATE config SET value = ? WHERE key = ?')
-
+    let touched = 0
     for (const row of rows) {
         if (!row?.key || typeof row.value !== 'string') continue
         if (row.value.startsWith(CONFIG_ENCRYPT_PREFIX)) continue
         update.run(encodeConfigValue(row.key, row.value), row.key)
+        touched++
     }
+    return touched
+}
+
+function setEncryptionAppliedFlag(currentDb, applied) {
+    currentDb.prepare(
+        'INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)'
+    ).run(ENCRYPTION_APPLIED_KEY, JSON.stringify(applied))
+}
+
+function migrateSensitiveConfigValues(currentDb) {
+    // The schema migration ALWAYS records its outcome — never silently
+    // skip just because safeStorage isn't ready. If encryption is
+    // unavailable, leave the flag false so the next launch retries.
+    if (!canEncryptConfig()) {
+        setEncryptionAppliedFlag(currentDb, false)
+        return
+    }
+    encryptSensitiveRowsNow(currentDb)
+    setEncryptionAppliedFlag(currentDb, true)
+}
+
+/**
+ * Re-attempt the v2 encryption pass when the previous run had to skip
+ * it (keyring unavailable). Called after `runMigrations` finishes —
+ * `user_version` may already be >= 2 from a prior boot, but the flag
+ * tells us whether the actual values are still in plaintext.
+ */
+function ensureSensitiveConfigEncrypted(currentDb) {
+    let appliedRow
+    try {
+        appliedRow = currentDb.prepare(
+            'SELECT value FROM config WHERE key = ?'
+        ).get(ENCRYPTION_APPLIED_KEY)
+    } catch {
+        // Config table not ready yet — defer to a later boot.
+        return
+    }
+    // If the flag exists and is true, nothing to do.
+    if (appliedRow && appliedRow.value === 'true') return
+    // If the flag exists and is false (keyring was unavailable last time)
+    // OR the flag is missing but a v2-aware boot just happened, retry
+    // when the keyring is now available.
+    if (!canEncryptConfig()) return
+    encryptSensitiveRowsNow(currentDb)
+    setEncryptionAppliedFlag(currentDb, true)
 }
 
 /**
@@ -277,6 +334,9 @@ function openAndMigrate(dbPath) {
         throw err
     }
     runMigrations(next)
+    // Retry the v2 sensitive-config encryption if the previous boot
+    // skipped it (typically: keyring not configured at first launch).
+    ensureSensitiveConfigEncrypted(next)
     return next
 }
 

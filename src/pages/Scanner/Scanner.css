@@ -106,6 +106,18 @@
     background: var(--color-success);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 35%, transparent);
 }
+/* Cached indicator: muted warm tan instead of vibrant amber.
+   The previous #f59e0b read as "warning" and made cached devices
+   feel alarming when they're really just sleepy or recently-quiet.
+   Tan sits visually between the active-green and the offline-grey
+   without screaming for attention. Defined as a local CSS var so
+   the badge in the device row and the spill pill at the top of the
+   scanner reuse the same hue without drift. */
+.dev-presence-dot-cached {
+    --color-cached: #b8946a;
+    background: var(--color-cached);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-cached) 22%, transparent);
+}
 .dev-presence-dot-offline {
     background: var(--gray-400, #94a3b8);
     opacity: 0.7;
@@ -124,6 +136,11 @@
 .dev-row.dev-presence-offline:hover {
     opacity: 1;
 }
+/* Cached rows are NOT tinted as a whole. Only the small presence dot
+   uses the amber colour (`.dev-presence-dot-cached`) — that's enough to
+   communicate the state without painting the entire row, which read as
+   visually noisy when half the LAN was sleeping. The row keeps the
+   neutral hover behaviour the other rows have. */
 
 .dev-subname {
     color: var(--text-muted);
@@ -163,6 +180,13 @@
     border: 1px solid var(--border-light);
 }
 .spill.total { background: var(--color-success-bg); color: #15803d; border-color: var(--color-success-border); }
+.spill-cached {
+    /* Same muted tan as the row dot — see .dev-presence-dot-cached
+       for the rationale behind the colour choice. */
+    background: color-mix(in srgb, #b8946a 14%, transparent);
+    color: #8a6a40;
+    border-color: color-mix(in srgb, #b8946a 32%, transparent);
+}
 
 /* Content: list + detail side-by-side */
 .scan-body { display: flex; gap: 16px; flex: 1; min-height: 0; align-items: stretch; }
@@ -201,13 +225,56 @@
     position: sticky;
     top: 0;
     z-index: 2;
+    gap: 8px;
 }
+
+/* Sortable column header. Inherits the header's typography but acts
+   as a button: hover + active states and an arrow indicating current
+   sort direction. Click cycles asc → desc → default-order (handled
+   in cycleSort). */
+.dev-list-sort {
+    all: unset;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    line-height: 1;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    border-radius: 4px;
+    transition: color 100ms ease, background 100ms ease;
+    min-width: 0;
+}
+.dev-list-sort:hover { color: var(--text-secondary); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
+.dev-list-sort:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.dev-list-sort.active { color: var(--color-accent); }
+.dev-list-sort.active .dev-list-sort-ico { opacity: 1; }
+.dev-list-sort-ico { opacity: 0.45; flex-shrink: 0; }
+.dev-list-sort:hover .dev-list-sort-ico { opacity: 0.85; }
 .dev-row {
     display: grid; grid-template-columns: 1fr 120px 70px 24px;
     align-items: center; padding: 10px 16px; gap: 8px;
     border-bottom: 1px solid var(--border-subtle);
-    cursor: pointer; transition: all 80ms ease;
-    animation: fadeUp 0.15s ease both;
+    cursor: pointer;
+    /* Transition only background/color so the row hover/select states
+       remain smooth, but border changes are instant. Previously this
+       was `transition: all 80ms ease` which animated the border-bottom
+       too — and because `.dev-row:last-child { border-bottom: none }`
+       changes which row is "last" every time the user clicks a column
+       header to re-sort, the transition produced a brief white (light
+       theme) or black (dark theme) horizontal line on whichever rows
+       moved. The user reported it as "líneas blancas o negras... que
+       desaparecen en un seg ahí en la fila que se mueven". Restricting
+       the transition keeps the visual polish for hover/select while
+       eliminating the row-shuffle flash. The `animation: fadeUp` was
+       also removed because the @keyframes was never defined anywhere
+       in the codebase — it was dead CSS that bought us nothing. */
+    transition: background-color 80ms ease, color 80ms ease;
 }
 .dev-row:hover { background: var(--gray-50); }
 .dev-row.sel { background: color-mix(in srgb, var(--color-accent) 6%, transparent); border-left: 3px solid var(--color-accent); }
@@ -270,13 +337,17 @@
 }
 
 .dd-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.dd-head-left { display: flex; align-items: center; gap: 12px; }
+.dd-head-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.dd-head-left > div:last-child { min-width: 0; }
 .dd-ico {
     width: 40px; height: 40px; border-radius: var(--radius-md);
     display: flex; align-items: center; justify-content: center;
     background: color-mix(in srgb, var(--dc) 12%, transparent); color: var(--dc);
 }
-.dd-name { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+/* Device name in the detail panel header — wraps to a second line when
+   long instead of truncating with ellipsis. Long vendor strings like
+   "Tenda Technology Co.,Ltd.Dongguan branch" are unreadable when cut. */
+.dd-name { font-size: 15px; font-weight: 700; color: var(--text-primary); overflow-wrap: anywhere; line-height: 1.3; }
 .dd-type { font-size: 12px; color: var(--text-muted); }
 .dd-close {
     width: 28px; height: 28px; border-radius: 50%; border: none;
@@ -286,14 +357,69 @@
 }
 .dd-close:hover { background: var(--gray-200); color: var(--text-primary); }
 
+/* Detail panel is 340px wide (see .dev-detail above). Two-column
+   grid leaves ~140px per cell — that fits short fixed-format values
+   (IP, latency, status, type) but cuts MACs, vendors, hostnames and
+   role labels mid-word.
+   Hybrid layout: short predictable fields stay in 2-col to keep the
+   panel compact, long/variable fields use the `dd-field-full` class
+   to span the full width. The JSX of the detail panel decides per-
+   field which way each one goes. */
 .dd-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
     margin-bottom: 20px;
 }
-.dd-field { padding: 10px 12px; background: var(--gray-50); border-radius: var(--radius-md); }
+.dd-field { min-width: 0; padding: 10px 12px; background: var(--gray-50); border-radius: var(--radius-md); }
+/* `dd-field-full` no longer needs to span columns since the grid is
+   single-column already, but the class is kept so existing JSX
+   (Discovery, Serial, Services, Device URL) stays valid. */
+.dd-field-full { grid-column: 1 / -1; }
 .dd-fl { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-.dd-fv { font-size: 13px; font-weight: 500; color: var(--text-primary); word-break: break-all; }
-.dd-fv.mono { word-break: normal; white-space: nowrap; font-size: 12px; }
+.dd-fv {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    /* `overflow-wrap: anywhere` instead of `word-break: break-all` so
+       human text ("Private/Random MAC", "Tenda Technology Co.,Ltd.")
+       breaks at word boundaries when possible, and only mid-word as
+       a last resort for runs of unbreakable characters. */
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+}
+.dd-fv.mono {
+    font-size: 12px;
+    max-width: 100%;
+    word-break: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+}
+.dd-field-full .dd-fv { word-break: normal; overflow-wrap: anywhere; }
+
+/* Copyable value (IP, MAC, etc.) — subtle affordance:
+   pointer cursor, hover background tint, accent on hover.
+   Click triggers a clipboard write and the value text is
+   replaced briefly with the "Copied" feedback inline. */
+.dd-fv-copy {
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    margin: -2px -4px;
+    padding: 2px 4px;
+    transition: background 120ms, color 120ms;
+}
+.dd-fv-copy:hover {
+    background: var(--bg-hover, color-mix(in srgb, var(--color-accent) 8%, transparent));
+    color: var(--color-accent);
+}
+.dd-fv-copy:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+}
+.dd-fv-copied {
+    color: var(--color-success);
+    font-weight: 600;
+}
 
 .dd-loading {
     color: var(--text-muted); font-size: 13px; display: flex; flex-direction: column; gap: 6px; padding: 16px 0;

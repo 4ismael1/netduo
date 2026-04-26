@@ -1,4 +1,12 @@
 import { Skeleton, SkeletonCircle } from '../../components/Skeleton/Skeleton.jsx'
+// Eager-load Dashboard.css alongside the skeleton so the layout
+// classes (.dash, .dash-header, .dash-stats, .dash-cards-row, etc.)
+// are present at first paint. Without this import, the skeleton
+// renders BEFORE the Dashboard chunk's CSS arrives, causing the
+// initial layout to start unstyled (default block flow, full
+// width, no spacing) and snap into place once the lazy Dashboard
+// chunk finishes loading.
+import './Dashboard.css'
 
 /**
  * Full-page skeleton matching the Dashboard layout exactly.

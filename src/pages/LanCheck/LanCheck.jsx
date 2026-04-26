@@ -404,6 +404,8 @@ export default function LanCheck() {
     }
 
     useEffect(() => {
+        // Settings + safeScanDefault load right away — they affect what
+        // the user sees in Setup, so blocking on them is fine.
         bridge.configGet('lancheck.settings').then(saved => {
             if (!saved || typeof saved !== 'object') return
             if (PROFILE_PRESETS[saved.profile]) setProfile(saved.profile)
@@ -419,9 +421,21 @@ export default function LanCheck() {
         bridge.configGet('safeScanDefault').then(v => {
             if (v === true || v === 'true') setSafeMode(true)
         }).catch(() => { /* noop */ })
-        loadHistory().catch(error => {
-            logBridgeWarning('lancheck:history-load', error)
-        })
+
+        // Defer history load until the entrance animation paints. The
+        // History tab isn't visible on first render anyway — running the
+        // sqlite read + setState array inline at mount made the whole
+        // module feel laggy.
+        const handle = (typeof window.requestIdleCallback === 'function')
+            ? window.requestIdleCallback(
+                () => { loadHistory().catch(err => logBridgeWarning('lancheck:history-load', err)) },
+                { timeout: 1500 },
+            )
+            : setTimeout(() => { loadHistory().catch(err => logBridgeWarning('lancheck:history-load', err)) }, 80)
+        return () => {
+            if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(handle)
+            else clearTimeout(handle)
+        }
     }, [])
 
     function toggleSafeMode() {
@@ -790,24 +804,24 @@ export default function LanCheck() {
     }
 
     async function startLanSecurityScan() {
-        let effectiveBaseIP = baseIP
-        try {
-            const ifaces = await bridge.getNetworkInterfaces()
-            const autoBase = resolveAutoBaseFromInterfaces(ifaces)
-            if (autoBase) {
-                effectiveBaseIP = autoBase
-                if (autoBase !== baseIP) setBaseIP(autoBase)
-            }
-        } catch {
-            // keep current base IP when interface refresh is not available
-        }
-
-        const validated = validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
+        // Validate against the CURRENT baseIP first. The auto-base
+        // useEffect (line ~449) keeps baseIP in sync with the active
+        // network interface on mount + on `online` / network-change
+        // events, so the in-memory value is essentially always correct.
+        // Validating here lets us bail early on bad input (showing the
+        // error in the Setup view) without paying for an IPC round-trip
+        // before the UI has a chance to update.
+        const validated = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
         if (!validated.ok) {
             setInputError(validated.error)
             return
         }
 
+        // Switch to the Scan view IMMEDIATELY so the click feels snappy.
+        // Previously this happened AFTER `await bridge.getNetworkInterfaces()`,
+        // which could hold the click for 200-500 ms while netsh / ip /
+        // ifconfig spawned and resolved — the user perceived the button
+        // as unresponsive ("tarda varios segs en reaccionar").
         setInputError('')
         setStage('scan')
         setRunning(true)
@@ -825,9 +839,40 @@ export default function LanCheck() {
             analysis: 'idle',
         })
 
+        // NOW refresh the interface list in the background. If the
+        // active subnet has drifted since the last auto-base sync, we
+        // pick up the new base before kicking off the discovery sweep.
+        // The view is already in 'scan' state, so this is invisible to
+        // the user.
+        let effectiveBaseIP = baseIP
+        try {
+            const ifaces = await bridge.getNetworkInterfaces()
+            const autoBase = resolveAutoBaseFromInterfaces(ifaces)
+            if (autoBase) {
+                effectiveBaseIP = autoBase
+                if (autoBase !== baseIP) setBaseIP(autoBase)
+            }
+        } catch {
+            // keep current base IP when interface refresh is not available
+        }
+
+        // Re-validate with the (possibly updated) effective base. This
+        // is cheap; it's the IPC call above that was slow.
+        const finalValidated = effectiveBaseIP === baseIP
+            ? validated
+            : validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
+        if (!finalValidated.ok) {
+            // Extremely rare: auto-base resolved to an invalid prefix.
+            // Roll back the view + show the error.
+            setInputError(finalValidated.error)
+            setRunning(false)
+            setStage('setup')
+            return
+        }
+
         const cfg = PROFILE_PRESETS[profile]
         const portsToScan = selectedPorts
-        const { baseIP: safeBase, start, end } = validated
+        const { baseIP: safeBase, start, end } = finalValidated
         const scanStarted = Date.now()
 
         bridge.configSet('lancheck.settings', {
@@ -841,6 +886,9 @@ export default function LanCheck() {
             logBridgeWarning('lancheck:settings-persist', error)
         })
         pushActivity(`LAN check initialized for ${safeBase}.${start}-${end}`, 'info')
+        if (safeMode) {
+            pushActivity('Safe Scan mode active: lower concurrency, longer timeouts, multicast probes skipped', 'info')
+        }
         try {
             let discoveredHosts = []
             if (enableDiscovery) {
@@ -870,11 +918,21 @@ export default function LanCheck() {
                 pushActivity(`Discovery disabled: using focused target set (${discoveredHosts.length} hosts)`, discoveredHosts.length ? 'info' : 'warn')
             }
 
-            const upnpIntel = await bridge.lanUpnpScan(safeBase, start, end).catch(() => ({ ok: false, summary: null, devices: [] }))
-            const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
-            pushActivity(upnpResponders > 0 ? `UPnP/SSDP responders detected: ${upnpResponders}` : 'No UPnP/SSDP responders detected in selected scope', upnpResponders > 0 ? 'warn' : 'ok')
+            // Honor Safe Scan: per the toggle's own description ("skips
+            // TCP preheat and multicast probes"), UPnP/SSDP discovery
+            // is skipped entirely when safeMode is on. SSDP M-SEARCH
+            // floods the broadcast domain with multicast packets that
+            // older switches/APs handle poorly.
+            let upnpIntel = { ok: false, summary: null, devices: [] }
+            if (safeMode) {
+                pushActivity('UPnP/SSDP probe skipped (Safe Scan mode)', 'info')
+            } else {
+                upnpIntel = await bridge.lanUpnpScan(safeBase, start, end).catch(() => ({ ok: false, summary: null, devices: [] }))
+                const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
+                pushActivity(upnpResponders > 0 ? `UPnP/SSDP responders detected: ${upnpResponders}` : 'No UPnP/SSDP responders detected in selected scope', upnpResponders > 0 ? 'warn' : 'ok')
+            }
             setProgress(50)
-            setStepState(prev => ({ ...prev, upnp: 'done', services: 'running' }))
+            setStepState(prev => ({ ...prev, upnp: safeMode ? 'skipped' : 'done', services: 'running' }))
 
             const gateway = chooseGateway(discoveredHosts)
             pushActivity(gateway ? `Gateway candidate: ${gateway.ip}` : 'Gateway not identified in discovered scope', gateway ? 'info' : 'warn')
@@ -900,20 +958,43 @@ export default function LanCheck() {
             const hostByIp = new Map(targetHosts.map(host => [host.ip, host]))
 
             if (typeof bridge.lanSecurityScan === 'function') {
+                // Safe Scan: throttle the per-host port sweep too, not
+                // just the discovery sweep. Without these overrides the
+                // toggle had almost no visible effect because the
+                // service sweep is by far the dominant phase (dozens of
+                // TCP/UDP probes per host). Lower per-host concurrency,
+                // longer timeouts and a single retry attempt produce a
+                // much gentler scan profile suitable for legacy/sensitive
+                // networks at the cost of a longer total runtime.
+                const safeTcpConcurrency = safeMode ? 6 : undefined  // undefined = handler default (24)
+                const safeUdpConcurrency = safeMode ? 3 : undefined
+                const safeTimeoutMs = safeMode ? Math.max(cfg.timeoutMs, 2200) : cfg.timeoutMs
+                const safeTcpAttempts = safeMode ? 1 : (profile === 'quick' ? 1 : 2)
+                const safeUdpAttempts = safeMode ? 1 : (profile === 'deep' ? 2 : 1)
+
                 const scanTasks = targetHosts.map(host => async () => bridge.lanSecurityScan({
                     targets: [{ ip: host.ip }],
                     tcpPorts: portsToScan,
                     udpPorts: udpPortsToScan,
-                    timeoutMs: cfg.timeoutMs,
-                    tcpAttempts: profile === 'quick' ? 1 : 2,
-                    udpAttempts: profile === 'deep' ? 2 : 1,
+                    timeoutMs: safeTimeoutMs,
+                    tcpAttempts: safeTcpAttempts,
+                    udpAttempts: safeUdpAttempts,
                     includeServiceProbe: true,
                     hostConcurrency: 1,
+                    tcpConcurrency: safeTcpConcurrency,
+                    udpConcurrency: safeUdpConcurrency,
                 }))
+
+                // Across hosts: cut the parallelism in half when in
+                // Safe Scan so we never have more than a couple of
+                // hosts being probed at once.
+                const hostParallelism = safeMode
+                    ? Math.max(1, Math.min(3, Math.ceil(cfg.concurrency / 12)))
+                    : Math.max(1, Math.min(10, Math.ceil(cfg.concurrency / 5)))
 
                 const hostResponses = await runWithConcurrency(
                     scanTasks,
-                    Math.max(1, Math.min(10, Math.ceil(cfg.concurrency / 5))),
+                    hostParallelism,
                     (completed, total) => {
                         const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
                         setProgress(clamp(p, 50, 92))
