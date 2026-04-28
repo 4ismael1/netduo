@@ -11,7 +11,7 @@
   <a href="https://apps.microsoft.com/detail/9PP5SB94FD03">
     <img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-Download-0078D4?logo=microsoft&logoColor=white" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-1.3.1-3b82f6" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.3.2-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />

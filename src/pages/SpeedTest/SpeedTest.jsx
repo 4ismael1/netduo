@@ -24,6 +24,19 @@ function fmtTime(iso) {
     if (isNaN(d)) return ''
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
+/* Module-level cache for the speed-test server list. The list itself
+   is essentially static (it's just `SPEED_SERVERS` constant in
+   electron/main.js), but `bridge.speedGetServers()` still pays an IPC
+   round-trip on every component mount — typically 5-30 ms warm but
+   100-300 ms cold (first call after app startup). Without a cache, the
+   first time the user opens the SpeedTest module the picker DIV is
+   absent until the IPC resolves, then ~48 px of UI pop in and push
+   everything below it down — the user reported this as "la interfaz se
+   mueve la 1ra o 2da vez". Caching at module scope means subsequent
+   navigations rehydrate the list synchronously and the picker is
+   present from the first paint. */
+let _speedServersCache = null
+
 /* ── Grades ── */
 function getGrade(mbps) {
     if (!mbps) return null
@@ -85,8 +98,11 @@ export default function SpeedTest() {
     const cleanupRef = useRef(null)
     const phaseRef = useRef('idle')
 
-    // Server selector state
-    const [servers, setServers] = useState([])
+    // Server selector state. Hydrate synchronously from the module-
+    // level cache so re-entering the SpeedTest route paints with the
+    // server picker already in place (no layout shift when the IPC
+    // resolves milliseconds later).
+    const [servers, setServers] = useState(() => _speedServersCache || [])
     const [selectedServerId, setSelectedServerId] = useState('mlab')
     const [showServerPicker, setShowServerPicker] = useState(false)
     const [testInfo, setTestInfo] = useState(null) // { probeSpeed, dlTarget, ulTarget }
@@ -101,7 +117,10 @@ export default function SpeedTest() {
             logBridgeWarning('speedtest:history-load', error)
         })
         bridge.speedGetServers().then(s => {
-            if (s?.length) setServers(s)
+            if (s?.length) {
+                _speedServersCache = s
+                setServers(s)
+            }
         }).catch(error => {
             logBridgeWarning('speedtest:servers-load', error)
         })
@@ -318,33 +337,40 @@ export default function SpeedTest() {
                 <p className="v3-page-subtitle">Real-time download & upload measurement</p>
             </div>
 
-            {/* ── Server Selector ── */}
-            {servers.length > 1 && (
-                <div className="st-server-picker">
-                    <button className="st-server-btn" onClick={() => setShowServerPicker(!showServerPicker)} disabled={running}>
+            {/* ── Server Selector ──
+                The wrapper always renders so the layout reserves the
+                picker's height from the first paint. The inner button
+                is suppressed only when there's just one server (no
+                meaningful choice to make). When the IPC is still in
+                flight on a cold start, `servers` is `[]` and the
+                wrapper holds the slot empty — no shift when the list
+                arrives. */}
+            <div className="st-server-picker">
+                {(servers.length > 1 || servers.length === 0) && (
+                    <button className="st-server-btn" onClick={() => setShowServerPicker(!showServerPicker)} disabled={running || servers.length === 0}>
                         <Globe size={14} />
-                        <span className="st-server-btn-name">{selectedServer?.name || 'Select Server'}</span>
-                        <span className="st-server-btn-loc">{selectedServer?.location}</span>
+                        <span className="st-server-btn-name">{selectedServer?.name || (servers.length === 0 ? 'Loading servers…' : 'Select Server')}</span>
+                        <span className="st-server-btn-loc">{selectedServer?.location || ''}</span>
                         <ChevronDown size={14} className={`st-chevron ${showServerPicker ? 'open' : ''}`} />
                     </button>
-                    {showServerPicker && (
-                        <div className="st-server-dropdown">
-                            {servers.map(s => (
-                                <button key={s.id}
-                                    className={`st-server-opt ${s.id === selectedServerId ? 'active' : ''}`}
-                                    onClick={() => { setSelectedServerId(s.id); setShowServerPicker(false) }}
-                                >
-                                    <div className="st-server-opt-info">
-                                        <span className="st-server-opt-name">{s.name}</span>
-                                        <span className="st-server-opt-loc"><MapPin size={10} /> {s.location}</span>
-                                    </div>
-                                    {s.id === selectedServerId && <CheckCircle size={14} className="st-server-opt-check" />}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            )}
+                )}
+                {showServerPicker && (
+                    <div className="st-server-dropdown">
+                        {servers.map(s => (
+                            <button key={s.id}
+                                className={`st-server-opt ${s.id === selectedServerId ? 'active' : ''}`}
+                                onClick={() => { setSelectedServerId(s.id); setShowServerPicker(false) }}
+                            >
+                                <div className="st-server-opt-info">
+                                    <span className="st-server-opt-name">{s.name}</span>
+                                    <span className="st-server-opt-loc"><MapPin size={10} /> {s.location}</span>
+                                </div>
+                                {s.id === selectedServerId && <CheckCircle size={14} className="st-server-opt-check" />}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
 
             <div className="st-main v3-card">
                 {/* ── Speedometer Area ── */}
