@@ -197,6 +197,7 @@
     margin-bottom: 4px;
 }
 .stat-tile-value {
+    position: relative;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
@@ -207,6 +208,11 @@
     align-items: center;
     gap: 6px;
     min-height: 22px;
+}
+.stat-copy-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .stat-tile-value.copyable {
     cursor: pointer;
@@ -225,7 +231,7 @@
        "Copied!" (~60px) and left half the IP digits visible behind
        it — defeating the visual feedback. */
     left: 0;
-    right: 32px;
+    right: 0;
     transform: translateY(-50%);
     /* Fully opaque card background so nothing bleeds through. */
     background: var(--bg-card, var(--bg-surface, #fff));
@@ -242,6 +248,9 @@
     text-align: left;
     display: flex;
     align-items: center;
+}
+.ip-value-row .copied-flash {
+    right: 32px;
 }
 @keyframes copied-flash-in {
     from { opacity: 0; transform: translateY(-50%) translateX(-4px); }

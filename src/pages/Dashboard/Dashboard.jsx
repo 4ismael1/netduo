@@ -58,7 +58,8 @@ function StatTile({ icon, label, value, sub, accent }) {
             <div className="stat-tile-body">
                 <div className="stat-tile-label">{label}</div>
                 <div className={`stat-tile-value mono${value ? ' copyable' : ''}`} onClick={handleCopy} title={value ? 'Click to copy' : ''}>
-                    {copied ? <span className="copied-flash">Copied!</span> : (value || '-')}
+                    <span className="stat-copy-text">{value || '-'}</span>
+                    {copied && <span className="copied-flash">Copied!</span>}
                 </div>
                 <div className="stat-tile-sub">{sub || '\u00A0'}</div>
             </div>
@@ -76,6 +77,7 @@ export default function Dashboard() {
     const [gwPingState, setGwPingState] = useState(_pingCache?.gwPingState ?? 'idle')
     const [health, setHealth] = useState(net.loading ? 'loading' : 'good')
     const [signalPts, setSignalPts] = useState(_signalHistory)
+    const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
     const [showPublicIP, setShowPublicIP] = useState(false)
     const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
@@ -386,10 +388,14 @@ export default function Dashboard() {
                         <div className={`stat-tile-value mono${net.localIP ? ' copyable' : ''}`}
                             onClick={() => {
                                 if (!net.localIP) return
-                                navigator.clipboard.writeText(net.localIP)
+                                navigator.clipboard.writeText(net.localIP).then(() => {
+                                    setCopiedLocalIP(true)
+                                    setTimeout(() => setCopiedLocalIP(false), 1200)
+                                })
                             }}
                             title={net.localIP ? 'Click to copy' : ''}>
-                            {net.localIP || '\u2014'}
+                            <span className="stat-copy-text">{net.localIP || '\u2014'}</span>
+                            {copiedLocalIP && <span className="copied-flash">Copied!</span>}
                         </div>
                         <div className="stat-tile-sub">{net.ifaceName || '\u00A0'}</div>
                     </div>
@@ -728,7 +734,6 @@ export default function Dashboard() {
         </div>
     )
 }
-
 
 
 

@@ -7,6 +7,8 @@
 
 .v3-page-layout.lchk-page {
     padding: 18px 22px 14px;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
 }
 
 .lchk-page .v3-page-header {
