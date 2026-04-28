@@ -4,6 +4,7 @@ const fs = require('fs')
 const { exec, execFile, spawn } = require('child_process')
 const validators = require('./validators')
 const { filterGhosts } = require('./scanner/ghostFilter')
+const { PING_TIME_RE, isPingReply } = require('./scanner/pingOutput')
 const {
     normalizeNeighborState,
     normalizeNetshNeighborState,
@@ -120,8 +121,6 @@ function showBootErrorPage(win, title, details) {
     if (!win.isVisible()) win.show()
 }
 // ─── Helpers ──────────────────────────────────────────────────────────────
-const PING_TIME_RE = /(?:tiempo|time|zeit|temps|tempo|tyd)[=<]\s*(\d+\.?\d*)/i
-
 function run(cmd, timeout = 15000) {
     return new Promise(resolve => {
         exec(cmd, { timeout, windowsHide: true, encoding: 'utf8' }, (err, stdout, stderr) => {
@@ -2234,6 +2233,16 @@ function ipInRange(ip, baseIP, rangeStart, rangeEnd) {
     return !isNaN(last) && last >= rangeStart && last <= rangeEnd
 }
 
+function normalizeGatewayHint(value, baseIP) {
+    const ip = String(value || '').trim()
+    if (!validators.isIPv4(ip) || !ip.startsWith(`${baseIP}.`)) return null
+    const last = parseInt(ip.split('.').pop(), 10)
+    // Keep the hint narrow: common default gateways only. This prevents a
+    // renderer bug from turning an arbitrary client into a ghost-filter
+    // exemption while still disambiguating real .254 clients on .1 networks.
+    return last === 1 || last === 254 ? ip : null
+}
+
 function httpGetText(urlStr, timeoutMs = 2200, redirects = 2) {
     return new Promise((resolve) => {
         let urlObj
@@ -2533,7 +2542,7 @@ function tcpTouch(ip, port, timeoutMs = 320) {
     })
 }
 
-function udpTouch(ip, port) {
+function udpTouch(ip, port, settleMs = 360) {
     return new Promise((resolve) => {
         const socket = dgram.createSocket('udp4')
         let done = false
@@ -2544,10 +2553,12 @@ function udpTouch(ip, port) {
             try { socket.close() } catch { /* noop */ }
             resolve()
         }
-        const timer = setTimeout(finish, 400)
+        const timer = setTimeout(finish, settleMs)
         socket.once('error', finish)
         try {
-            socket.send(Buffer.from([0]), port, ip, finish)
+            socket.send(Buffer.from([0]), port, ip, (err) => {
+                if (err) finish()
+            })
         } catch {
             finish()
         }
@@ -2557,11 +2568,15 @@ function udpTouch(ip, port) {
 async function preheatNeighborCache(targets) {
     if (!targets?.length) return
     // UDP touches force ARP resolution even for hosts that silently drop TCP.
-    // TCP touches still help classify machines with common open services.
+    // Keep the socket alive briefly after send; resolving immediately can
+    // close before Windows has time to settle the neighbor cache.
     const ports = [445, 80]
     await parallelMap(targets, async (ip) => {
-        await udpTouch(ip, 9)
-        await udpTouch(ip, 137)
+        await Promise.all([
+            udpTouch(ip, 9),
+            udpTouch(ip, 137),
+        ])
+        // TCP touches still help classify machines with common open services.
         for (const port of ports) {
             await tcpTouch(ip, port, 220)
         }
@@ -2583,9 +2598,7 @@ function pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, activeSource = 'icmp')
             { timeout: Math.max(2500, timeoutWin + 1000), windowsHide: true, encoding: 'utf8' },
             (err, stdout) => {
                 const m = stdout && stdout.match(PING_TIME_RE)
-                const txt = String(stdout || '')
-                const hasReply = /(?:reply from|respuesta desde|bytes from|ttl[=\s:])/i.test(txt)
-                if ((m && !err) || hasReply) {
+                if (isPingReply(stdout)) {
                     return resolve({ ip, alive: true, time: m ? parseFloat(m[1]) : null, mac: null, activeSource })
                 }
                 resolve({ ip, alive: false })
@@ -2717,13 +2730,14 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     const localHostname = os.hostname()
 
     // Safe Scan mode: gentler profile for sensitive / legacy networks.
-    // - Lower ping concurrency (4 vs 24)
-    // - Longer per-ping timeout (2000 ms vs 600 ms)
-    // - Skip TCP-touch preheat (264 concurrent SYNs)
+    // - Lower ping concurrency (4 vs 32)
+    // - Longer per-ping timeout (2000 ms vs 1100 ms)
+    // - Skip UDP/TCP neighbor-cache preheat
     // - Skip SSDP/mDNS multicast discovery
     const safeMode = options && options.safeMode === true
-    const PING_CONCURRENCY = safeMode ? 4 : 24
-    const PING_TIMEOUT_WIN = safeMode ? 2000 : 600
+    const gatewayIp = normalizeGatewayHint(options?.gatewayIp, baseIP)
+    const PING_CONCURRENCY = safeMode ? 4 : 32
+    const PING_TIMEOUT_WIN = safeMode ? 2000 : 1100
     const PING_TIMEOUT_UNIX = safeMode ? 2 : 1  // seconds for -W on Unix
 
     // Clamp range (post-validation defence: even valid ints beyond 1-254
@@ -2759,6 +2773,23 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     if (!safeMode) {
         const silentTargets = targets.filter(ip => !byIp.has(ip))
         await preheatNeighborCache(silentTargets)
+
+        // Some Wi-Fi clients drop the first probe while waking from power
+        // save, then respond immediately after traffic reaches the AP. Do
+        // one extra ICMP pass over the same silent set in normal mode only.
+        // This is intentionally much cheaper than the old all-host 3s retry:
+        // current renderer batches are <=30 IPs, so this adds at most one
+        // lightweight ping wave per batch.
+        if (silentTargets.length) {
+            const wakeRes = await parallelMap(silentTargets, ip => pingHostOnce(
+                ip,
+                isWin,
+                Math.max(PING_TIMEOUT_WIN, 1400),
+                PING_TIMEOUT_UNIX,
+                'icmp-wake',
+            ), PING_CONCURRENCY)
+            for (const r of wakeRes.filter(r => r.alive)) byIp.set(r.ip, r)
+        }
     }
 
     // Phase 2.5: Targeted wake/confirm pass. The previous implementation
@@ -2863,7 +2894,9 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     await parallelMap(results, async (r) => {
         // Classification flags first (used by vendor and display fallbacks)
         const lastOctet = parseInt(r.ip.split('.').pop())
-        r.isGateway = lastOctet === 1 || lastOctet === 254
+        r.isGateway = gatewayIp
+            ? r.ip === gatewayIp
+            : (lastOctet === 1 || lastOctet === 254)
         r.isLocal = r.ip === local.ip || (r.mac && local.mac && r.mac === local.mac)
         r.isRandomized = isRandomizedMAC(r.mac) && !r.isLocal
         r.macEmpty = isEmptyMAC(r.mac)

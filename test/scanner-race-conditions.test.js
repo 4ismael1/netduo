@@ -37,10 +37,11 @@ describe('Scanner race-condition guards', () => {
         expect(detailBlock.indexOf('if (detailRunRef.current !== runId) return')).toBeLessThan(detailBlock.indexOf('setDetailData(extra)'))
     })
 
-    it('uses the safeMode value captured at scan start for every LAN scan batch', () => {
+    it('uses the captured scan options for every LAN scan batch', () => {
         const scanBlock = sliceBetween('async function startScan', 'function stopScan')
         expect(scanBlock).toMatch(/const scanId = scanRunRef\.current \+ 1/)
-        expect(scanBlock).toContain('bridge.lanScan(safeBaseIP, s, e, { safeMode })')
+        expect(scanBlock).toContain('const scanGatewayIp = net.gateway || null')
+        expect(scanBlock).toContain('bridge.lanScan(safeBaseIP, s, e, { safeMode, gatewayIp: scanGatewayIp })')
         expect(scanBlock.indexOf('bridge.lanScan')).toBeGreaterThan(scanBlock.indexOf('const scanId'))
     })
 })

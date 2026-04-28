@@ -76,7 +76,7 @@ export default function Dashboard() {
     const [gwPing, setGwPing] = useState(_pingCache?.gwPing ?? null)
     const [gwPingState, setGwPingState] = useState(_pingCache?.gwPingState ?? 'idle')
     const [health, setHealth] = useState(net.loading ? 'loading' : 'good')
-    const [signalPts, setSignalPts] = useState(_signalHistory)
+    const [signalPts, setSignalPts] = useState(() => [..._signalHistory])
     const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
     const [showPublicIP, setShowPublicIP] = useState(false)
@@ -137,9 +137,9 @@ export default function Dashboard() {
         function sampleSignal() {
             const dbm = pctToDbm(net.wifi?.signal)
             if (dbm == null) return
-            _signalHistory.push({ t: Date.now(), dbm })
-            _signalHistory = _signalHistory.slice(-MAX_SIGNAL_PTS)
-            setSignalPts([..._signalHistory])
+            const next = [..._signalHistory, { t: Date.now(), dbm }].slice(-MAX_SIGNAL_PTS)
+            _signalHistory = next
+            setSignalPts(next)
         }
         sampleSignal()
         signalRef.current = setInterval(sampleSignal, pollMs)
@@ -734,7 +734,6 @@ export default function Dashboard() {
         </div>
     )
 }
-
 
 
 

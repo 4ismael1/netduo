@@ -1004,6 +1004,7 @@ export default function Scanner() {
         const safeBaseIP = validated.baseIP
         const safeRangeStart = validated.start
         const safeRangeEnd = validated.end
+        const scanGatewayIp = net.gateway || null
         setBaseIP(safeBaseIP)
         // Clear newDeviceKeys at the start of every scan so devices
         // discovered live during this run aren't re-tagged with stale
@@ -1026,7 +1027,7 @@ export default function Scanner() {
         const foundRaw = []
         for (let s = safeRangeStart; s <= safeRangeEnd; s += SCAN_BATCH_SIZE) {
             const e = Math.min(s + SCAN_BATCH_SIZE - 1, safeRangeEnd)
-            const results = await bridge.lanScan(safeBaseIP, s, e, { safeMode })
+            const results = await bridge.lanScan(safeBaseIP, s, e, { safeMode, gatewayIp: scanGatewayIp })
             if (scanRunRef.current !== scanId) return
             if (results) {
                 const enriched = results.map(r => enrichForView(r))
@@ -1048,7 +1049,7 @@ export default function Scanner() {
         // gateway IP, fall back to looking it up in the OS ARP cache —
         // this prevents two different `192.168.1.x` networks from
         // sharing the same `ip:192.168.1` fallback identity.
-        const scanNetworkId = await resolveNetworkId(found, safeBaseIP, net.gateway)
+        const scanNetworkId = await resolveNetworkId(found, safeBaseIP, scanGatewayIp)
         setNetworkId(scanNetworkId)
         // Remember this mapping so next mount loads the right inventory
         // immediately instead of falling back to `ip:<subnet>` (which can
@@ -1215,9 +1216,9 @@ export default function Scanner() {
        so every card can render with a consistent visual. */
     const mergedDevices = useMemo(() => {
         const scanOnlySubnet = inventory.filter(i => !baseIP || i.baseIP === baseIP)
-        const base = mergeScanWithInventory(devices, scanOnlySubnet, newDeviceKeys)
+        const base = mergeScanWithInventory(devices, scanOnlySubnet, newDeviceKeys, { gatewayIp: net.gateway || null })
         return base.map(d => enrichForView(d))
-    }, [devices, inventory, newDeviceKeys, baseIP])
+    }, [devices, inventory, newDeviceKeys, baseIP, net.gateway])
 
     const visibleDevices = useMemo(() => {
         let pool = mergedDevices

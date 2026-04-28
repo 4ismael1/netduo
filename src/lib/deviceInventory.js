@@ -69,7 +69,8 @@ function isEmptyMac(mac) {
  *   - `firstSeen`: epoch ms of first observation (if in inventory)
  *   - `inventoryId`: the deviceKey (convenience for UI callbacks)
  */
-export function mergeScanWithInventory(scanDevices, inventoryItems, newKeySet = null) {
+export function mergeScanWithInventory(scanDevices, inventoryItems, newKeySet = null, options = {}) {
+    const gatewayIp = typeof options?.gatewayIp === 'string' ? options.gatewayIp.trim() : null
     const scanByKey = new Map()
     for (const device of scanDevices || []) {
         const k = stableKey(device)
@@ -115,14 +116,14 @@ export function mergeScanWithInventory(scanDevices, inventoryItems, newKeySet = 
         seenKeys.add(key)
         const inventory = inventoryByKey.get(key) || null
         const isNew = newSet.has(key)
-        merged.push(buildEntry(device, inventory, presenceForScanDevice(device, isNew), isNew))
+        merged.push(buildEntry(device, inventory, presenceForScanDevice(device, isNew), isNew, gatewayIp))
     }
 
     // Secondary pass: add inventory rows that weren't in the scan (offline
     // known devices). Preserve their descending last_seen order.
     for (const [key, inventory] of inventoryByKey) {
         if (seenKeys.has(key)) continue
-        merged.push(buildEntry(null, inventory, 'offline', false))
+        merged.push(buildEntry(null, inventory, 'offline', false, gatewayIp))
     }
 
     return merged
@@ -136,7 +137,7 @@ function presenceForScanDevice(device, isNew) {
     return isNew ? 'new' : 'online'
 }
 
-function buildEntry(scanDevice, inventory, presence, isNew = false) {
+function buildEntry(scanDevice, inventory, presence, isNew = false, gatewayIp = null) {
     const base = scanDevice || {}
     const inv = inventory || {}
 
@@ -148,7 +149,11 @@ function buildEntry(scanDevice, inventory, presence, isNew = false) {
     const mac = base.mac || inv.mac || null
     const lastOctet = ip ? parseInt(String(ip).split('.').pop(), 10) : NaN
     const ipSuggestsGateway = lastOctet === 1 || lastOctet === 254
-    const isGateway = base.isGateway === true || (scanDevice == null && ipSuggestsGateway)
+    const isGateway = base.isGateway === true || (
+        scanDevice == null && (
+            gatewayIp ? ip === gatewayIp : ipSuggestsGateway
+        )
+    )
     const isRandomized = base.isRandomized ?? isRandomizedMac(mac)
     const macEmpty = base.macEmpty ?? isEmptyMac(mac)
 

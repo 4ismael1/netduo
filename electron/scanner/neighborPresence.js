@@ -2,12 +2,13 @@
  * Pure helpers for interpreting OS neighbor-table rows.
  *
  * Windows keeps disconnected devices in Get-NetNeighbor as `Stale` for a
- * while. A stale MAC is useful inventory evidence, but it is not an active
- * proof that the device is online right now.
+ * while. A stale MAC is useful inventory evidence, but it is not active
+ * proof that the device is online right now. It is still worth one active
+ * retry because Wi-Fi clients often remain Stale while connected.
  */
 
 const BAD_NEIGHBOR_STATES = new Set(['failed', 'incomplete', 'invalid', 'unreachable'])
-const ACTIVE_RETRY_STATES = new Set(['reachable', 'delay', 'probe', 'permanent'])
+const ACTIVE_RETRY_STATES = new Set(['reachable', 'delay', 'probe', 'permanent', 'stale'])
 const STATE_RANK = {
     reachable: 7,
     permanent: 6,

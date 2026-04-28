@@ -121,6 +121,32 @@ describe('mergeScanWithInventory — offline flag re-derivation', () => {
         expect(merged[0].isGateway).toBe(true)
     })
 
+    it('does not mark an offline .254 client as gateway when the real gateway is known', () => {
+        const inventory = [{
+            deviceKey: 'mac:fefdfcba41d5',
+            baseIP: '192.168.100',
+            ip: '192.168.100.254',
+            mac: 'fe:fd:fc:ba:41:d5',
+            type: 'Network Device',
+            lastSeen: 1, firstSeen: 1,
+        }]
+        const merged = mergeScanWithInventory([], inventory, null, { gatewayIp: '192.168.100.1' })
+        expect(merged[0].isGateway).toBe(false)
+    })
+
+    it('can still mark an offline .254 gateway when that is the known gateway', () => {
+        const inventory = [{
+            deviceKey: 'mac:aabbccddee01',
+            baseIP: '192.168.100',
+            ip: '192.168.100.254',
+            mac: 'aa:bb:cc:dd:ee:01',
+            type: 'Router',
+            lastSeen: 1, firstSeen: 1,
+        }]
+        const merged = mergeScanWithInventory([], inventory, null, { gatewayIp: '192.168.100.254' })
+        expect(merged[0].isGateway).toBe(true)
+    })
+
     it('does not flag non-randomized MACs as randomized', () => {
         const inventory = [{
             deviceKey: 'mac:001122334455',

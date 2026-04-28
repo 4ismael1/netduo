@@ -3,7 +3,7 @@
  *
  * Disconnected Windows devices can linger as Get-NetNeighbor=Stale. These
  * helpers decide which entries are worth an active retry and which should
- * remain cache-only evidence.
+ * remain cache-only evidence when they still do not answer.
  */
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
@@ -48,7 +48,9 @@ describe('scanner neighbor presence helpers', () => {
         expect(shouldRetryNeighbor({ state: 'unknown', source: 'arp' })).toBe(true)
         expect(shouldRetryNeighbor({ state: 'unknown', source: 'netsh' })).toBe(false)
         expect(shouldRetryNeighbor({ state: 'unknown', source: 'netneighbor' })).toBe(false)
-        expect(shouldRetryNeighbor({ state: 'stale', source: 'netneighbor' })).toBe(false)
+        expect(shouldRetryNeighbor({ state: 'stale', source: 'netneighbor' })).toBe(true)
+        expect(shouldRetryNeighbor({ state: 'stale', source: 'netsh' })).toBe(true)
+        expect(shouldRetryNeighbor({ state: 'unreachable', source: 'netsh' })).toBe(false)
     })
 
     it('keeps the highest-quality neighbor entry', () => {
