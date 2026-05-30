@@ -312,7 +312,7 @@ export default function Settings() {
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>
                         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>Created and maintained by Ismael Paulino (@4ismael1)</div>
-                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>License: AGPL-3.0-only. No warranty.</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>License: AGPL-3.0-only | No warranty.</div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
                             <button
                                 type="button"
