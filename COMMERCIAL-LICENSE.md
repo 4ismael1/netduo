@@ -1,13 +1,19 @@
 # NetDuo Commercial Licensing
 
-NetDuo is published under **PolyForm Noncommercial 1.0.0** for noncommercial use.
+NetDuo is published as free and open source software under
+**GNU Affero General Public License v3.0 only (AGPL-3.0-only)**.
 
-If you need any of the following, you must obtain a commercial license:
+AGPL-3.0-only allows commercial use, redistribution, and modification,
+provided that all license obligations are followed.
 
-- Commercial/internal business deployment beyond noncommercial scope
-- Resale, redistribution, or bundling in paid products
+If you need terms different from AGPL-3.0-only, you must obtain a separate
+commercial license. Examples:
+
+- Proprietary redistribution without AGPL source-code obligations
+- White-label or OEM distribution under different branding terms
 - Managed hosting / SaaS / MSP offerings that include NetDuo
-- White-label or OEM integrations
+- Bundling NetDuo into closed-source paid products
+- Custom support, warranty, indemnity, or private licensing terms
 
 ## Contact
 
@@ -17,5 +23,6 @@ For commercial licensing terms, contact the project maintainer:
 
 ## Notes
 
-- A commercial license can include rights not granted by the public noncommercial license.
-- Until a separate written agreement exists, usage remains under the default noncommercial terms.
+- A commercial license can include rights not granted by AGPL-3.0-only.
+- Until a separate written agreement exists, usage remains under AGPL-3.0-only.
+- This file does not replace or modify the public AGPL-3.0-only license.

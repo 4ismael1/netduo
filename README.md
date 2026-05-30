@@ -15,7 +15,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
-  <img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-orange" />
+  <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0--only-b91c1c" />
 </p>
 
 NetDuo is a production-oriented desktop app for network operations and security validation.
@@ -238,20 +238,26 @@ Unauthorized network scanning may violate law or policy.
 
 ## License
 
-This project is licensed under the **PolyForm Noncommercial License 1.0.0**.
+This project is licensed under the **GNU Affero General Public License v3.0 only**.
 
 - Full text: [LICENSE](LICENSE)
-- URL: `https://polyformproject.org/licenses/noncommercial/1.0.0`
-- SPDX identifier: `PolyForm-Noncommercial-1.0.0`
+- URL: `https://www.gnu.org/licenses/agpl-3.0.html`
+- SPDX identifier: `AGPL-3.0-only`
 
 Summary:
 
-- Personal, educational, research, hobby, and noncommercial organizational use is allowed.
-- Commercial use is not allowed under the default open license.
-- If you redistribute, keep license and required notices.
-- Required redistribution notices are listed in [NOTICE](NOTICE) and must remain included.
+- You may use, study, modify, and redistribute NetDuo under AGPL-3.0-only.
+- Modified versions must remain under AGPL-3.0-only when distributed.
+- If you distribute binaries, you must provide the corresponding source code.
+- If you modify NetDuo and let users interact with it remotely over a network,
+  you must offer those users access to the corresponding source code.
+- Keep applicable copyright notices, license notices, warranty disclaimers, and
+  reasonable author attributions.
+- Project notices and credits are listed in [NOTICE](NOTICE) and must remain
+  included where required by AGPL-3.0-only.
 
-For paid/commercial usage, read [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+For proprietary, OEM, white-label, warranty, or other custom terms outside
+AGPL-3.0-only, read [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
 ---
 

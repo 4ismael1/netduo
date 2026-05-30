@@ -3,7 +3,7 @@
   "version": "1.3.2",
   "private": true,
   "author": "Ismael Paulino",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-only",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite --port 5173\" \"wait-on http://localhost:5173 && electron .\"",

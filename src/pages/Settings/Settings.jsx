@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from 'react'
-import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield, Trash2, CheckCircle2 } from 'lucide-react'
+import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield, Trash2, CheckCircle2, FileText } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import './Settings.css'
@@ -133,9 +133,17 @@ export default function Settings() {
     }
 
     function openGithub() {
-        bridge.openExternal('https://github.com/4ismael1').catch(error => {
+        bridge.openExternal('https://github.com/4ismael1/netduo').catch(error => {
             logBridgeWarning('settings:open-github', error)
-            window.open('https://github.com/4ismael1', '_blank', 'noopener,noreferrer')
+            window.open('https://github.com/4ismael1/netduo', '_blank', 'noopener,noreferrer')
+        })
+    }
+
+    function openLicense() {
+        const url = 'https://www.gnu.org/licenses/agpl-3.0.html'
+        bridge.openExternal(url).catch(error => {
+            logBridgeWarning('settings:open-license', error)
+            window.open(url, '_blank', 'noopener,noreferrer')
         })
     }
 
@@ -303,7 +311,8 @@ export default function Settings() {
                             </span>
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>
-                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>Developer: Ismael (@4ismael1)</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>Created and maintained by Ismael Paulino (@4ismael1)</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>License: AGPL-3.0-only. No warranty.</div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
                             <button
                                 type="button"
@@ -313,7 +322,17 @@ export default function Settings() {
                             >
                                 <Github size={14} />
                                 <ExternalLink size={13} />
-                                Visit GitHub
+                                Source Code
+                            </button>
+                            <button
+                                type="button"
+                                onClick={openLicense}
+                                className="v3-btn v3-btn-secondary"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                            >
+                                <FileText size={14} />
+                                <ExternalLink size={13} />
+                                License
                             </button>
                             <button
                                 type="button"
