@@ -29,7 +29,7 @@ It combines real-time diagnostics, LAN discovery, WAN exposure testing, and hist
   </a>
 </p>
 
-- **Microsoft Store (recommended):** [apps.microsoft.com/detail/9PP5SB94FD03](https://apps.microsoft.com/detail/9PP5SB94FD03) — auto-updates, clean install, no SmartScreen prompts.
+- **Microsoft Store (recommended):** [apps.microsoft.com/detail/9PP5SB94FD03](https://apps.microsoft.com/detail/9PP5SB94FD03) - auto-updates, clean install, no SmartScreen prompts.
 - **Standalone installer:** grab the latest `NetDuo Setup X.Y.Z.exe` from [GitHub Releases](https://github.com/4ismael1/netduo/releases).
 
 ## Table of Contents
@@ -66,19 +66,19 @@ Main value:
 
 - Real-time latency, packet loss, and host monitoring.
 - LAN device discovery with vendor, hostname, and MAC identification.
-- **Per-network persistent inventory** — devices are tracked by gateway MAC, so switching Wi-Fi networks keeps each inventory cleanly separate (even across subnets that happen to share `192.168.x.0/24`).
-- **Fing-style device state** — Online / Offline / New badges, editable nicknames, notes and device-type overrides; new-device desktop notifications.
-- **Deterministic proxy-ARP ghost filter** — phantom `.254` / shared-MAC hosts from ICMP-proxying routers (Tenda, TP-Link, ISP CPEs) never reach the inventory.
+- **Per-network persistent inventory** - devices are tracked by gateway MAC, so switching Wi-Fi networks keeps each inventory cleanly separate (even across subnets that happen to share `192.168.x.0/24`).
+- **Fing-style device state** - Online / Offline / New badges, editable nicknames, notes and device-type overrides; new-device desktop notifications.
+- **Deterministic proxy-ARP ghost filter** - phantom `.254` / shared-MAC hosts from ICMP-proxying routers (Tenda, TP-Link, ISP CPEs) never reach the inventory.
 - LAN Check with staged scan pipeline, paginated asset snapshots, and persistent report history.
 - WAN Check with synchronized multi-probe scanning, auto-saved report history, and full PDF/CSV export.
 - TCP/UDP transport modes with profile-based execution.
 - **PDF / CSV export** across 6 modules (LAN Scanner, LAN Check, WAN Probe, Speed Test, Monitor, Traceroute, DNS).
-- **Safe Scan mode** — gentler ICMP profile for legacy switches and sensitive infrastructure.
+- **Safe Scan mode** - gentler ICMP profile for legacy switches and sensitive infrastructure.
 - Adaptive speed test (M-Lab NDT7, Cloudflare, Hetzner, OVH) with historical trends.
 - Built-in protocol utilities (SSL, WHOIS, MTR, WoL, ARP, DNS benchmark, subnet calc).
 - **Cancel anywhere**: every long-running operation (scan, speed test, probe, trace) can be stopped instantly from the UI.
-- **DB self-healing** — corrupt SQLite files are quarantined and recreated automatically on startup.
-- No telemetry, no analytics, no tracking — fully local.
+- **DB self-healing** - corrupt SQLite files are quarantined and recreated automatically on startup.
+- No telemetry, no analytics, no tracking - fully local.
 - Desktop-native persistence and settings management.
 
 ## Modules
@@ -89,7 +89,7 @@ Main value:
 - `Monitor`: continuous host telemetry for latency and packet loss with configurable alerts.
 - `Diagnostics`: traceroute, live ping, MTR, parallel DNS resolution, port checker, port scanner.
 - `Tools`: SSL inspector, HTTP tester, WHOIS, DNS benchmark, subnet calculator, ARP cache, Wake-on-LAN.
-- `LAN Check`: setup → scanning → report → history workflow for local security auditing.
+- `LAN Check`: setup -> scanning -> report -> history workflow for local security auditing.
 - `WAN Check`: quick/advanced/deep profiles, multi-probe orchestration, normalized findings.
 - `Network`: full interface inventory, public IP with geolocation, Wi-Fi, VPN, DNS config.
 - `History`: centralized activity timeline across every module.

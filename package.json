@@ -52,7 +52,7 @@
   "build": {
     "appId": "com.netduo.app",
     "productName": "NetDuo",
-    "copyright": "Copyright © 2026 Ismael Paulino",
+    "copyright": "Copyright (c) 2026 Ismael Paulino",
     "directories": {
       "output": "dist-electron"
     },
