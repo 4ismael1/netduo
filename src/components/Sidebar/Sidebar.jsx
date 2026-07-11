@@ -31,11 +31,11 @@ function OperationIndicator({ operation }) {
     if (!operation) return null
     const label = operation.label || 'Operation in progress'
     const statusGlyph = operation.status === 'done'
-        ? <Check size={12} strokeWidth={2.4} aria-hidden="true" />
+        ? <Check size={11} strokeWidth={2.4} aria-hidden="true" />
         : operation.status === 'error'
-            ? <AlertTriangle size={12} strokeWidth={2.2} aria-hidden="true" />
+            ? <AlertTriangle size={11} strokeWidth={2.2} aria-hidden="true" />
             : operation.status === 'cancelled'
-                ? <X size={12} strokeWidth={2.2} aria-hidden="true" />
+                ? <X size={11} strokeWidth={2.2} aria-hidden="true" />
                 : <OperationGlyph kind={operation.kind} />
     return (
         <span

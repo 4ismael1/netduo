@@ -176,10 +176,10 @@
 
 .nav-operation {
     position: absolute;
-    right: -10px;
-    bottom: -9px;
-    width: 18px;
-    height: 18px;
+    right: -8px;
+    bottom: -7px;
+    width: 16px;
+    height: 16px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -187,7 +187,7 @@
     background: color-mix(in srgb, var(--bg-surface) 94%, var(--color-accent) 6%);
     border-radius: 50%;
     border: 1px solid color-mix(in srgb, var(--color-accent) 32%, var(--border-light));
-    box-shadow: 0 2px 7px rgba(15, 23, 42, .16), 0 0 0 2px var(--bg-surface);
+    box-shadow: 0 1px 5px rgba(15, 23, 42, .14), 0 0 0 1.5px var(--bg-surface);
     overflow: visible;
     isolation: isolate;
 }
@@ -293,17 +293,17 @@
 .nav-operation-count {
     position: absolute;
     z-index: 4;
-    top: -7px;
-    right: -8px;
-    min-width: 12px;
-    height: 12px;
+    top: -6px;
+    right: -7px;
+    min-width: 11px;
+    height: 11px;
     padding: 0 2px;
     border-radius: 999px;
     background: var(--color-accent);
     color: #fff;
-    font-size: 8px;
+    font-size: 7px;
     font-weight: 700;
-    line-height: 12px;
+    line-height: 11px;
     text-align: center;
 }
 

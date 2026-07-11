@@ -2,15 +2,15 @@ import { Activity, Radar } from 'lucide-react'
 
 const svgProps = {
     viewBox: '0 0 18 18',
-    width: 16,
-    height: 16,
+    width: 14,
+    height: 14,
     fill: 'none',
     'aria-hidden': true,
 }
 
 export default function OperationGlyph({ kind }) {
     if (kind === 'scan') {
-        return <Radar size={13} strokeWidth={2} className="op-glyph op-glyph-scan" aria-hidden="true" />
+        return <Radar size={12} strokeWidth={2} className="op-glyph op-glyph-scan" aria-hidden="true" />
     }
 
     if (kind === 'check') {
@@ -100,5 +100,5 @@ export default function OperationGlyph({ kind }) {
         )
     }
 
-    return <Activity size={13} strokeWidth={2} className="op-glyph" aria-hidden="true" />
+    return <Activity size={12} strokeWidth={2} className="op-glyph" aria-hidden="true" />
 }
