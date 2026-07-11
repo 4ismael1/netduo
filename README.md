@@ -16,6 +16,7 @@
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
   <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0--only-b91c1c" />
+  <a href="https://deepwiki.com/4ismael1/netduo"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
 NetDuo is a production-oriented desktop app for network operations and security validation.
