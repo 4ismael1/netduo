@@ -27,6 +27,15 @@ export function updateOperation(id, details) {
 
 export function endOperation(id, status = 'done', details = {}) {
     if (!snapshot[id]) return
+    // A user-cancelled task has no remaining background work to report.
+    // Remove it immediately so leaving the module cannot surface a stale
+    // cancellation badge in the sidebar.
+    if (status === 'cancelled') {
+        const next = { ...snapshot }
+        delete next[id]
+        emit(next)
+        return
+    }
     const finished = { ...snapshot[id], ...details, status, finishedAt: Date.now() }
     emit({ ...snapshot, [id]: finished })
     const timeout = setTimeout(() => {

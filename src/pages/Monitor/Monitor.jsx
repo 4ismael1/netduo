@@ -197,7 +197,7 @@ export default function Monitor() {
         alertedHostsRef.current.clear()
         breachStreakRef.current.clear()
         setRunning(false)
-        endOperation('monitor', 'done', { label: 'Live monitoring stopped' })
+        endOperation('monitor', 'cancelled', { label: 'Live monitoring stopped' })
     }
 
     function addHost() {

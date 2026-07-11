@@ -37,4 +37,11 @@ describe('operation registry', () => {
         vi.advanceTimersByTime(3500)
         expect(getOperationSnapshot()['lan-check']).toBeUndefined()
     })
+
+    it('removes cancelled operations immediately', () => {
+        beginOperation('speed-test', { path: '/speedtest', kind: 'speed' })
+        endOperation('speed-test', 'cancelled', { label: 'Speed test cancelled' })
+
+        expect(getOperationSnapshot()['speed-test']).toBeUndefined()
+    })
 })
