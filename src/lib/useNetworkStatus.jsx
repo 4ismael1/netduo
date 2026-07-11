@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import bridge from './electronBridge'
 import { logBridgeWarning } from './devLog.js'
-import { DEFAULT_POLL_INTERVAL_SECONDS, normalizePollIntervalMs } from './polling.js'
 
 /**
  * useNetworkStatus — centralized Context-based hook that tracks the live
@@ -21,7 +20,7 @@ const WIFI_NAME_RE = /(wi-?fi|wlan|wireless|802\.11)/i
 const ETHERNET_NAME_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|intel\(r\).*ethernet|gigabit)/i
 const VPN_NAME_RE = /(vpn|openvpn|wireguard|wg\d+|wintun|nordlynx|tailscale|zerotier|hamachi|ppp|utun\d*|tun\d*|tap\d*|ikev2|l2tp|sstp|pptp)/i
 const VIRTUAL_NAME_RE = /(virtual|vmware|vethernet|hyper-v|loopback|bluetooth|hamachi|zerotier|tailscale|wireguard|wintun|tun|tap)/i
-const DEFAULT_FAST_POLL_MS = DEFAULT_POLL_INTERVAL_SECONDS * 1000
+const STRUCTURAL_POLL_MS = 30000
 const DEFAULT_SLOW_POLL_MS = 60000
 
 function inferLinkType(iface = {}) {
@@ -75,8 +74,8 @@ export function NetworkStatusProvider({ children }) {
     const [networkContext, setNetworkContext] = useState(null)
     const [networkContexts, setNetworkContexts] = useState([])
     const [loading, setLoading] = useState(true)
-    const [fastPollMs, setFastPollMs] = useState(DEFAULT_FAST_POLL_MS)
     const mountedRef = useRef(true)
+    const fetchInFlightRef = useRef(false)
     const wifiRef = useRef(null)
     const publicIPRef = useRef(null)
     const vpnStatusRef = useRef(null)
@@ -106,7 +105,27 @@ export function NetworkStatusProvider({ children }) {
         new Promise(resolve => setTimeout(() => resolve(undefined), ms)),
     ])
 
+    const fetchInternetIdentity = useCallback(async ({ includeGeo = false, refreshPublicIp = false } = {}) => {
+        let pip = publicIPRef.current
+        if (refreshPublicIp || !pip || pip === 'Unavailable' || pip === 'Unknown') {
+            try {
+                pip = await bridge.getPublicIP()
+                if (!mountedRef.current) return
+                publicIPRef.current = pip
+                setPublicIP(pip)
+            } catch { /* keep the last known value */ }
+        }
+        if (onlineNetworkInfoRef.current && includeGeo && pip && pip !== 'Unavailable' && pip !== 'Unknown') {
+            try {
+                const g = await bridge.getIPGeo(pip)
+                if (mountedRef.current) setGeo(g)
+            } catch { /* keep the last known value */ }
+        }
+    }, [])
+
     const fetchAll = useCallback(async ({ skipWifi = false, skipGeo = false } = {}) => {
+        if (fetchInFlightRef.current) return
+        fetchInFlightRef.current = true
         try {
             // ── Phase 1: all local calls in parallel — unblocks UI when done ──
             // Each call has a 4s safety timeout so the skeleton never gets stuck
@@ -164,7 +183,8 @@ export function NetworkStatusProvider({ children }) {
                 const hasVpnInterface = list.some(item =>
                     item?.family === 'IPv4' &&
                     !item?.internal &&
-                    VPN_NAME_RE.test(`${String(item?.name || '')} ${String(item?.interfaceDescription || '')}`),
+                    VPN_NAME_RE.test(`${String(item?.name || '')} ${String(item?.interfaceDescription || '')}`) &&
+                    /^(up|connected)$/i.test(String(item?.interfaceStatus || '').trim()),
                 )
                 const vpnActiveFromProbe = Boolean(nextVpnStatus?.active)
 
@@ -210,38 +230,24 @@ export function NetworkStatusProvider({ children }) {
 
             // Public IP is a core diagnostic value. Detailed geolocation
             // remains behind the explicit privacy option in Settings.
-            let pip = publicIPRef.current
-            if (!skipGeo || !pip || pip === 'Unavailable' || pip === 'Unknown') {
-                try {
-                    pip = await bridge.getPublicIP()
-                    if (!mountedRef.current) return
-                    setPublicIP(pip)
-                } catch { /* ok */ }
-            }
-            if (onlineNetworkInfoRef.current && !skipGeo && pip && pip !== 'Unavailable' && pip !== 'Unknown') {
-                try {
-                    const g = await bridge.getIPGeo(pip)
-                    if (mountedRef.current) setGeo(g)
-                } catch { /* ok */ }
-            }
+            await fetchInternetIdentity({ includeGeo: !skipGeo, refreshPublicIp: !skipGeo })
         } catch { /* silent */ }
-    }, [])
+        finally { fetchInFlightRef.current = false }
+    }, [fetchInternetIdentity])
 
     useEffect(() => {
         mountedRef.current = true
-        fetchAll({ skipWifi: false, skipGeo: true })
+        const initialFetch = fetchAll({ skipWifi: false, skipGeo: true })
 
-        bridge.configGetPublic(['pollInterval', 'onlineNetworkInfo']).then(cfg => {
+        bridge.configGetPublic(['onlineNetworkInfo']).then(async cfg => {
             if (!mountedRef.current) return
-            setFastPollMs(normalizePollIntervalMs(cfg?.pollInterval))
             const enabled = cfg?.onlineNetworkInfo !== false
             onlineNetworkInfoRef.current = enabled
             setOnlineNetworkInfo(enabled)
-            if (enabled) fetchAll({ skipWifi: true, skipGeo: false })
+            await initialFetch
+            if (enabled) fetchInternetIdentity({ includeGeo: true })
         }).catch(error => {
-            logBridgeWarning('network-status:poll-interval-load', error)
-            if (!mountedRef.current) return
-            setFastPollMs(DEFAULT_FAST_POLL_MS)
+            logBridgeWarning('network-status:config-load', error)
         })
 
         // Listen for network changes from Electron
@@ -257,14 +263,11 @@ export function NetworkStatusProvider({ children }) {
 
         const offConfigChanged = bridge.onConfigChanged?.(({ key, value, deleted }) => {
             if (!mountedRef.current) return
-            if (key === 'pollInterval') {
-                setFastPollMs(deleted ? DEFAULT_FAST_POLL_MS : normalizePollIntervalMs(value))
-            }
             if (key === 'onlineNetworkInfo') {
                 const enabled = deleted || value === true
                 onlineNetworkInfoRef.current = enabled
                 setOnlineNetworkInfo(enabled)
-                if (enabled) fetchAll({ skipWifi: true, skipGeo: false })
+                if (enabled) fetchInternetIdentity({ includeGeo: true })
                 else {
                     setGeo(null)
                 }
@@ -272,9 +275,9 @@ export function NetworkStatusProvider({ children }) {
         })
 
         // Keep Ethernet/Wi-Fi status fresh even if no WLAN event is emitted.
-        const fastPoll = setInterval(() => {
+        const structuralPoll = setInterval(() => {
             fetchAll({ skipWifi: true, skipGeo: true })
-        }, fastPollMs)
+        }, STRUCTURAL_POLL_MS)
 
         // Refresh public internet identity periodically.
         const slowPoll = setInterval(() => {
@@ -297,12 +300,12 @@ export function NetworkStatusProvider({ children }) {
             if (typeof offChanged === 'function') offChanged()
             if (typeof offSignal === 'function') offSignal()
             if (typeof offConfigChanged === 'function') offConfigChanged()
-            clearInterval(fastPoll)
+            clearInterval(structuralPoll)
             clearInterval(slowPoll)
             window.removeEventListener('online', onOnline)
             window.removeEventListener('offline', onOffline)
         }
-    }, [fastPollMs, fetchAll])
+    }, [fetchAll, fetchInternetIdentity])
 
     const value = {
         wifi, interfaces, localIP, gateway, ifaceName,

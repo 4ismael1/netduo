@@ -15,7 +15,7 @@ describe('privacy-sensitive network lookups', () => {
         expect(settings).toMatch(/\[macVendorOnline, setMacVendorOnline\] = useState\(true\)/)
         expect(networkStatus).toMatch(/onlineNetworkInfoRef = useRef\(true\)/)
         expect(networkStatus).toContain('Public IP is a core diagnostic value.')
-        expect(networkStatus).toMatch(/onlineNetworkInfoRef\.current && !skipGeo/)
+        expect(networkStatus).toMatch(/onlineNetworkInfoRef\.current && includeGeo/)
         expect(main).toContain('https://api.ipify.org?format=json')
         expect(main).toContain('https://icanhazip.com')
         expect(main).toMatch(/onlineAllowed === false/)

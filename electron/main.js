@@ -1,7 +1,7 @@
 ﻿const { app, BrowserWindow, ipcMain, nativeTheme, session, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { exec, execFile, spawn } = require('child_process')
+const { execFile, spawn } = require('child_process')
 const validators = require('./validators')
 const { filterGhosts } = require('./scanner/ghostFilter')
 const { PING_TIME_RE, isPingReply } = require('./scanner/pingOutput')
@@ -22,7 +22,8 @@ const http = require('http')
 const WsClient = require('ws')
 const database = require('./database')
 const reports = require('./reports')
-const { buildWindowsNetworkContextScript, normalizeContexts, contextsFromOsInterfaces } = require('./networkContext')
+const { normalizeContexts, contextsFromOsInterfaces } = require('./networkContext')
+const { isActiveVpnCandidate } = require('./vpnDetection')
 
 // Use Electron packaging state instead of NODE_ENV.
 // In installed builds NODE_ENV is often undefined, and relying on it can
@@ -122,14 +123,6 @@ function showBootErrorPage(win, title, details) {
     if (!win.isVisible()) win.show()
 }
 // ─── Helpers ──────────────────────────────────────────────────────────────
-function run(cmd, timeout = 15000) {
-    return new Promise(resolve => {
-        exec(cmd, { timeout, windowsHide: true, encoding: 'utf8' }, (err, stdout, stderr) => {
-            resolve({ err, out: (stdout || '') + (stderr || '') })
-        })
-    })
-}
-
 function parseJsonSafe(text, fallback) {
     try {
         return JSON.parse(text)
@@ -158,20 +151,116 @@ function stripControlChars(text) {
     return output
 }
 
+const WINDOWS_NATIVE_SNAPSHOT_TTL_MS = 60000
+const DNS_SERVER_CACHE_TTL_MS = 300000
+const WIFI_SNAPSHOT_TTL_MS = 4000
+
+let _windowsNativeSnapshotCache = { value: null, ts: 0, pending: null, generation: 0 }
+let _dnsServersCache = { value: null, ts: 0, pending: null, generation: 0 }
+let _wifiSnapshotCache = { value: null, ts: 0, pending: null }
+let _lastInterfaceFingerprint = null
+
+function buildWindowsNativeSnapshotScript() {
+    return [
+        '$ErrorActionPreference = "SilentlyContinue"',
+        '$adapters = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Select-Object Name, InterfaceDescription, Status, InterfaceType, ifIndex, MacAddress',
+        '$ipInterfaces = Get-NetIPInterface -AddressFamily IPv4 -IncludeAllCompartments -ErrorAction SilentlyContinue | Select-Object InterfaceAlias, InterfaceIndex, ConnectionState',
+        '$ipAddresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength',
+        '$routes = Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object DestinationPrefix, NextHop, InterfaceAlias, InterfaceIndex, RouteMetric, InterfaceMetric',
+        '$defaultRoutes = $routes | Where-Object { $_.DestinationPrefix -eq "0.0.0.0/0" } | Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}',
+        '$contexts = foreach ($route in $defaultRoutes) {',
+        '  $ip = $ipAddresses | Where-Object { $_.InterfaceIndex -eq $route.InterfaceIndex -and $_.IPAddress -notlike "169.254.*" } | Select-Object -First 1',
+        '  if ($ip) {',
+        '    $adapter = $adapters | Where-Object { $_.ifIndex -eq $route.InterfaceIndex } | Select-Object -First 1',
+        '    [PSCustomObject]@{',
+        '      IPAddress=$ip.IPAddress; PrefixLength=$ip.PrefixLength; NextHop=$route.NextHop;',
+        '      InterfaceAlias=$route.InterfaceAlias; InterfaceIndex=$route.InterfaceIndex;',
+        '      InterfaceDescription=$adapter.InterfaceDescription; Status=$adapter.Status; MacAddress=$adapter.MacAddress;',
+        '      RouteMetric=$route.RouteMetric; InterfaceMetric=$route.InterfaceMetric',
+        '    }',
+        '  }',
+        '}',
+        '[PSCustomObject]@{ adapters=$adapters; ipInterfaces=$ipInterfaces; ipAddresses=$ipAddresses; routes=$routes; contexts=$contexts } | ConvertTo-Json -Compress -Depth 6',
+    ].join('\n')
+}
+
+function currentInterfaceFingerprint() {
+    const rows = []
+    for (const [name, addresses] of Object.entries(os.networkInterfaces())) {
+        for (const address of addresses || []) {
+            if (address?.family !== 'IPv4' || address?.internal) continue
+            rows.push(`${name}|${address.address}|${address.netmask || ''}|${address.mac || ''}`)
+        }
+    }
+    return rows.sort().join(';')
+}
+
+function invalidateNativeNetworkCaches() {
+    for (const cache of [_windowsNativeSnapshotCache, _dnsServersCache]) {
+        cache.value = null
+        cache.ts = 0
+        cache.pending = null
+        cache.generation += 1
+    }
+    _vpnStatusCache.value = null
+    _vpnStatusCache.ts = 0
+    _vpnStatusCache.pending = null
+    _vpnStatusCache.generation += 1
+}
+
+function observeInterfaceFingerprint() {
+    const next = currentInterfaceFingerprint()
+    if (_lastInterfaceFingerprint == null) {
+        _lastInterfaceFingerprint = next
+        return false
+    }
+    if (_lastInterfaceFingerprint === next) return false
+    _lastInterfaceFingerprint = next
+    invalidateNativeNetworkCaches()
+    return true
+}
+
+async function getWindowsNativeSnapshot() {
+    if (process.platform !== 'win32') return null
+    const now = Date.now()
+    if (_windowsNativeSnapshotCache.value && (now - _windowsNativeSnapshotCache.ts) < WINDOWS_NATIVE_SNAPSHOT_TTL_MS) {
+        return _windowsNativeSnapshotCache.value
+    }
+    if (_windowsNativeSnapshotCache.pending) return _windowsNativeSnapshotCache.pending
+
+    const generation = _windowsNativeSnapshotCache.generation
+    const pending = (async () => {
+        const { err, out } = await runProgram('powershell', [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            buildWindowsNativeSnapshotScript(),
+        ], 12000)
+        const parsed = (!err && out)
+            ? parseJsonSafe(out.trim(), null)
+            : null
+        const value = parsed && typeof parsed === 'object'
+            ? parsed
+            : { adapters: [], ipInterfaces: [], ipAddresses: [], routes: [], contexts: [], error: err?.message || 'invalid Windows network snapshot' }
+        if (_windowsNativeSnapshotCache.generation === generation) {
+            _windowsNativeSnapshotCache.value = value
+            _windowsNativeSnapshotCache.ts = Date.now()
+        }
+        return value
+    })()
+    _windowsNativeSnapshotCache.pending = pending
+    try {
+        return await pending
+    } finally {
+        if (_windowsNativeSnapshotCache.pending === pending) _windowsNativeSnapshotCache.pending = null
+    }
+}
+
 async function getWindowsAdapterHints() {
     if (process.platform !== 'win32') return {}
-    const psCmd = [
-        'powershell',
-        '-NoProfile',
-        '-Command',
-        '"Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, InterfaceType | ConvertTo-Json -Compress"',
-    ].join(' ')
-
-    const { err, out } = await run(psCmd, 10000)
-    if (err || !out) return {}
-
-    const parsed = parseJsonSafe(out.trim(), [])
-    const rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : [])
+    let parsed
+    try { parsed = await getWindowsNativeSnapshot() } catch { return {} }
+    const rows = asArray(parsed?.adapters)
     const map = {}
     for (const row of rows) {
         const name = String(row?.Name || '').trim()
@@ -267,21 +356,11 @@ function summarizeGenericVpnStatus() {
 }
 
 async function detectWindowsVpnStatus() {
-    const psCmd = [
-        'powershell',
-        '-NoProfile',
-        '-Command',
-        `"@{
-adapters = Get-NetAdapter -IncludeHidden | Select-Object Name, InterfaceDescription, Status, InterfaceType, ifIndex
-ipInterfaces = Get-NetIPInterface -AddressFamily IPv4 -IncludeAllCompartments | Select-Object InterfaceAlias, InterfaceIndex, ConnectionState
-ipAddresses = Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, IPAddress
-routes = Get-NetRoute -AddressFamily IPv4 | Select-Object DestinationPrefix, NextHop, InterfaceAlias, InterfaceIndex
-} | ConvertTo-Json -Compress -Depth 6"`,
-    ].join(' ')
-
     const now = new Date().toISOString()
-    const { err, out } = await run(psCmd, 12000)
-    if (err || !out) {
+    let parsed
+    try {
+        parsed = await getWindowsNativeSnapshot()
+    } catch {
         return {
             active: false,
             source: 'windows-netstack',
@@ -294,8 +373,6 @@ routes = Get-NetRoute -AddressFamily IPv4 | Select-Object DestinationPrefix, Nex
             },
         }
     }
-
-    const parsed = parseJsonSafe(out.trim(), null)
     if (!parsed || typeof parsed !== 'object') {
         return {
             active: false,
@@ -408,7 +485,7 @@ routes = Get-NetRoute -AddressFamily IPv4 | Select-Object DestinationPrefix, Nex
 
     candidates.sort((a, b) => b.score - a.score)
     const best = candidates[0] || null
-    const active = !!(best && (best.score >= 5 || (best.localIps.length > 0 && best.routeCount > 0)))
+    const active = !!(best && isActiveVpnCandidate(best))
 
     return {
         active,
@@ -437,22 +514,25 @@ routes = Get-NetRoute -AddressFamily IPv4 | Select-Object DestinationPrefix, Nex
     }
 }
 
-let _vpnStatusCache = { value: null, ts: 0, pending: null }
+let _vpnStatusCache = { value: null, ts: 0, pending: null, generation: 0 }
 
 async function getVpnStatus() {
     const now = Date.now()
-    if (_vpnStatusCache.value && (now - _vpnStatusCache.ts) < 3500) {
+    if (_vpnStatusCache.value && (now - _vpnStatusCache.ts) < WINDOWS_NATIVE_SNAPSHOT_TTL_MS) {
         return _vpnStatusCache.value
     }
     if (_vpnStatusCache.pending) return _vpnStatusCache.pending
 
-    _vpnStatusCache.pending = (async () => {
+    const generation = _vpnStatusCache.generation
+    const pending = (async () => {
         try {
             const status = process.platform === 'win32'
                 ? await detectWindowsVpnStatus()
                 : summarizeGenericVpnStatus()
-            _vpnStatusCache.value = status
-            _vpnStatusCache.ts = Date.now()
+            if (_vpnStatusCache.generation === generation) {
+                _vpnStatusCache.value = status
+                _vpnStatusCache.ts = Date.now()
+            }
             return status
         } catch (error) {
             const fallback = {
@@ -466,15 +546,17 @@ async function getVpnStatus() {
                     routeCount: 0,
                 },
             }
-            _vpnStatusCache.value = fallback
-            _vpnStatusCache.ts = Date.now()
+            if (_vpnStatusCache.generation === generation) {
+                _vpnStatusCache.value = fallback
+                _vpnStatusCache.ts = Date.now()
+            }
             return fallback
         } finally {
-            _vpnStatusCache.pending = null
+            if (_vpnStatusCache.pending === pending) _vpnStatusCache.pending = null
         }
     })()
-
-    return _vpnStatusCache.pending
+    _vpnStatusCache.pending = pending
+    return pending
 }
 
 function runProgram(cmd, args = [], timeout = 15000) {
@@ -726,10 +808,10 @@ let _lastChannel = null
 let _netWatchTimer = null
 let _wifiConnected = null  // true/false/null
 
-async function getWifiSnapshot() {
+async function loadWifiSnapshot() {
     if (process.platform !== 'win32') return null
     try {
-        const { out } = await run('netsh wlan show interfaces', 5000)
+        const { out } = await runProgram('netsh', ['wlan', 'show', 'interfaces'], 5000)
         if (!out) return null
         const lines = out.split('\n')
         const get = (...keys) => {
@@ -799,13 +881,42 @@ async function getWifiSnapshot() {
     } catch { return null }
 }
 
+async function getWifiSnapshot() {
+    const now = Date.now()
+    if (_wifiSnapshotCache.value && (now - _wifiSnapshotCache.ts) < WIFI_SNAPSHOT_TTL_MS) {
+        return _wifiSnapshotCache.value
+    }
+    if (_wifiSnapshotCache.pending) return _wifiSnapshotCache.pending
+    const pending = loadWifiSnapshot().then(value => {
+        _wifiSnapshotCache.value = value
+        _wifiSnapshotCache.ts = Date.now()
+        return value
+    }).finally(() => {
+        if (_wifiSnapshotCache.pending === pending) _wifiSnapshotCache.pending = null
+    })
+    _wifiSnapshotCache.pending = pending
+    return pending
+}
+
 function startNetworkWatcher() {
     _netWatchTimer = setInterval(async () => {
         if (!mainWin || mainWin.isDestroyed()) return
+        const interfaceChanged = observeInterfaceFingerprint()
         const snap = await getWifiSnapshot()
-        if (!snap) return
+        if (!snap) {
+            if (interfaceChanged) mainWin.webContents.send('network:changed', { event: 'interface-change', wifi: null })
+            return
+        }
 
         const nowConnected = snap.connected
+        if (_wifiConnected === null) {
+            _lastSSID = snap.ssid || null
+            _lastBSSID = snap.bssid || null
+            _lastSignal = snap.signal || null
+            _lastChannel = snap.channel || null
+            _wifiConnected = nowConnected
+            return
+        }
         const ssidChanged = snap.ssid !== _lastSSID
         const bssidChanged = snap.bssid !== _lastBSSID
         const channelChanged = snap.channel !== _lastChannel
@@ -813,11 +924,16 @@ function startNetworkWatcher() {
         const reconnected = _wifiConnected === false && nowConnected
 
         if (disconnected) {
+            invalidateNativeNetworkCaches()
             mainWin.webContents.send('network:changed', { event: 'disconnected', wifi: null })
-        } else if (reconnected || (_wifiConnected === null && nowConnected)) {
+        } else if (reconnected) {
+            invalidateNativeNetworkCaches()
             mainWin.webContents.send('network:changed', { event: 'connected', wifi: snap })
         } else if (nowConnected && (ssidChanged || bssidChanged || channelChanged)) {
+            invalidateNativeNetworkCaches()
             mainWin.webContents.send('network:changed', { event: 'network-switch', wifi: snap })
+        } else if (interfaceChanged) {
+            mainWin.webContents.send('network:changed', { event: 'interface-change', wifi: snap })
         } else if (nowConnected && snap.signal !== _lastSignal) {
             mainWin.webContents.send('network:signal', { signal: snap.signal })
         }
@@ -827,7 +943,7 @@ function startNetworkWatcher() {
         _lastSignal = snap.signal || null
         _lastChannel = snap.channel || null
         _wifiConnected = nowConnected
-    }, 5000)
+    }, 10000)
 }
 
 function stopNetworkWatcher() {
@@ -922,6 +1038,7 @@ app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) creat
 // ═══════════════════════════════════════════════════════
 
 ipcMain.handle('get-network-interfaces', async () => {
+    observeInterfaceFingerprint()
     const ifaces = os.networkInterfaces()
     const hints = await getWindowsAdapterHints()
     const result = []
@@ -942,20 +1059,11 @@ ipcMain.handle('get-network-interfaces', async () => {
 })
 
 ipcMain.handle('get-network-context', async () => {
+    observeInterfaceFingerprint()
     if (process.platform === 'win32') {
-        const script = buildWindowsNetworkContextScript()
-
         try {
-            const output = await new Promise((resolve, reject) => {
-                execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-                    timeout: 8000,
-                    windowsHide: true,
-                    encoding: 'utf8',
-                    maxBuffer: 1024 * 1024,
-                }, (error, stdout) => error ? reject(error) : resolve(stdout || ''))
-            })
-            const parsed = parseJsonSafe(output.trim(), [])
-            const contexts = normalizeContexts(parsed, 'windows-default-route')
+            const snapshot = await getWindowsNativeSnapshot()
+            const contexts = normalizeContexts(asArray(snapshot?.contexts), 'windows-default-route')
             if (contexts.length) {
                 const fallback = contextsFromOsInterfaces()
                 const seen = new Set(contexts.map(item => item.address))
@@ -1054,12 +1162,12 @@ ipcMain.handle('get-wifi-info', async () => {
 })
 
 // ── DNS Servers ───────────────────────────────────────
-ipcMain.handle('get-dns-servers', async () => {
+async function loadDnsServers() {
     // dns.getServers() often returns stub/loopback (127.0.0.1, ::1) or
     // link-local IPv6 (fe80::) instead of the real upstream DNS.
     // Always try ipconfig /all first on Windows to get the actual DNS servers.
     try {
-        const { out } = await run('ipconfig /all', 5000)
+        const { out } = await runProgram('ipconfig', ['/all'], 5000)
         if (out) {
             // Parse DNS server lines: they follow "Servidores DNS" / "DNS Servers" label
             // and may span multiple indented continuation lines
@@ -1106,11 +1214,36 @@ ipcMain.handle('get-dns-servers', async () => {
         if (!aIsLinkLocal && bIsLinkLocal) return -1
         return 0
     })
+}
+
+async function getDnsServersCached() {
+    const now = Date.now()
+    if (_dnsServersCache.value && (now - _dnsServersCache.ts) < DNS_SERVER_CACHE_TTL_MS) {
+        return _dnsServersCache.value
+    }
+    if (_dnsServersCache.pending) return _dnsServersCache.pending
+    const generation = _dnsServersCache.generation
+    const pending = loadDnsServers().then(value => {
+        if (_dnsServersCache.generation === generation) {
+            _dnsServersCache.value = value
+            _dnsServersCache.ts = Date.now()
+        }
+        return value
+    }).finally(() => {
+        if (_dnsServersCache.pending === pending) _dnsServersCache.pending = null
+    })
+    _dnsServersCache.pending = pending
+    return pending
+}
+
+ipcMain.handle('get-dns-servers', async () => {
+    observeInterfaceFingerprint()
+    return getDnsServersCached()
 })
 
 // ── ARP Table ─────────────────────────────────────────
 ipcMain.handle('get-arp-table', async () => {
-    const { out } = await run('arp -a', 5000)
+    const { out } = await runProgram('arp', ['-a'], 5000)
     const entries = []
     out.split('\n').forEach(line => {
         // Windows: "  192.168.1.1           c4-e9-84-1c-22-fa     dynamic"
@@ -2816,7 +2949,7 @@ async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
 
     // ARP cache
     try {
-        const { out: arpOut } = await run('arp -a', 5000)
+        const { out: arpOut } = await runProgram('arp', ['-a'], 5000)
         arpOut.split('\n').forEach(line => {
             const m = line.match(/\s*([\d.]+)\s+([0-9a-f:.-]{11,})/i)
             if (!m) return
@@ -2837,13 +2970,12 @@ async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
     // Windows neighbor table is often richer than arp -a.
     if (process.platform === 'win32') {
         try {
-            const psCmd = [
-                'powershell',
+            const { err, out } = await runProgram('powershell', [
                 '-NoProfile',
+                '-NonInteractive',
                 '-Command',
-                '"Get-NetNeighbor -AddressFamily IPv4 | Select-Object IPAddress, LinkLayerAddress, State | ConvertTo-Json -Compress"',
-            ].join(' ')
-            const { err, out } = await run(psCmd, 6500)
+                'Get-NetNeighbor -AddressFamily IPv4 | Select-Object IPAddress, LinkLayerAddress, State | ConvertTo-Json -Compress',
+            ], 6500)
             if (!err && out) {
                 const parsed = parseJsonSafe(out.trim(), [])
                 const rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : [])
@@ -2869,7 +3001,7 @@ async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
         // Get-NetNeighbor call can return Access denied. `netsh` exposes the
         // same table without elevation, localized state names included.
         try {
-            const { err, out } = await run('netsh interface ipv4 show neighbors', 6500)
+            const { err, out } = await runProgram('netsh', ['interface', 'ipv4', 'show', 'neighbors'], 6500)
             if (!err && out) {
                 for (const line of out.split(/\r?\n/)) {
                     const m = line.match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+((?:[0-9a-f]{2}[-:]){5}[0-9a-f]{2})\s+(.+?)\s*$/i)
@@ -3326,7 +3458,8 @@ ipcMain.handle('speed-latency', async () => {
     const isWin = process.platform === 'win32'
     const pings = []
     for (const t of ['1.1.1.1', '8.8.8.8', '9.9.9.9']) {
-        const { out } = await run(isWin ? `ping -n 5 ${t}` : `ping -c 5 ${t}`, 15000)
+        const args = isWin ? ['-n', '5', t] : ['-c', '5', t]
+        const { out } = await runProgram('ping', args, 15000)
         pings.push(...parsePingTimes(out))
     }
     if (!pings.length) return { latency: null, jitter: null }
