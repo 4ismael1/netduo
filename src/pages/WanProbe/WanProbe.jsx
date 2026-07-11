@@ -40,6 +40,8 @@ import {
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation } from '../../lib/operationRegistry.js'
 import './WanProbe.css'
 
 const TOKEN_PREFIX = 'NDUO_PROBE_V1:'
@@ -1385,16 +1387,16 @@ export default function WanProbe() {
     const [udpRangeTo, setUdpRangeTo] = useState('')
 
     const [setupError, setSetupError] = useState('')
-    const [scanError, setScanError] = useState('')
+    const [scanError, setScanError] = useSessionState('wan-check', 'scanError', '')
     const [configLoaded, setConfigLoaded] = useState(false)
 
-    const [scanState, setScanState] = useState('idle')
-    const [view, setView] = useState('setup')
-    const [scanElapsedMs, setScanElapsedMs] = useState(0)
+    const [scanState, setScanState] = useSessionState('wan-check', 'scanState', 'idle')
+    const [view, setView] = useSessionState('wan-check', 'view', 'setup')
+    const [scanElapsedMs, setScanElapsedMs] = useSessionState('wan-check', 'scanElapsedMs', 0)
     const [copiedTag, setCopiedTag] = useState('')
 
-    const [probeRuns, setProbeRuns] = useState({})
-    const [activeReportProbeId, setActiveReportProbeId] = useState('')
+    const [probeRuns, setProbeRuns] = useSessionState('wan-check', 'probeRuns', {})
+    const [activeReportProbeId, setActiveReportProbeId] = useSessionState('wan-check', 'activeReportProbeId', '')
     const [portStateFilter, setPortStateFilter] = useState('all')
     const [portProtocolFilter, setPortProtocolFilter] = useState('all')
     const [portSearch, setPortSearch] = useState('')
@@ -1402,9 +1404,9 @@ export default function WanProbe() {
     const [historyRows, setHistoryRows] = useState([])
     const [historyLoading, setHistoryLoading] = useState(false)
 
-    const scanStartedAtRef = useRef(0)
-    const scanClockRef = useRef(null)
-    const runCancelRef = useRef({ cancelled: false })
+    const scanStartedAtRef = getSessionRef('wan-check', 'scanStartedAt', 0)
+    const scanClockRef = getSessionRef('wan-check', 'scanClock', null)
+    const runCancelRef = getSessionRef('wan-check', 'runCancel', { cancelled: false })
 
     const customPortsParsed = useMemo(() => parsePortsInput(customPortsInput), [customPortsInput])
     const rangeParsed = useMemo(() => parsePortRangeInput(rangeFrom, rangeTo), [rangeFrom, rangeTo])
@@ -2071,13 +2073,12 @@ export default function WanProbe() {
 
         return () => {
             mounted = false
-            runCancelRef.current.cancelled = true
             if (scanClockRef.current) {
                 clearInterval(scanClockRef.current)
                 scanClockRef.current = null
             }
         }
-    }, [])
+    }, [scanClockRef])
 
     useEffect(() => {
         if (!configLoaded) return
@@ -2103,7 +2104,7 @@ export default function WanProbe() {
         if (!completedRuns.some(run => run.probeId === activeReportProbeId)) {
             setActiveReportProbeId(completedRuns[0].probeId)
         }
-    }, [activeReportProbeId, completedRuns])
+    }, [activeReportProbeId, completedRuns, setActiveReportProbeId])
 
     useEffect(() => {
         setReportPage(1)
@@ -2133,7 +2134,7 @@ export default function WanProbe() {
                 scanClockRef.current = null
             }
         }
-    }, [scanState])
+    }, [scanClockRef, scanStartedAtRef, scanState, setScanElapsedMs])
 
     function applyToken() {
         const parsed = parseConnectToken(tokenInput)
@@ -2339,6 +2340,7 @@ export default function WanProbe() {
     function resetResultsView() {
         if (scanState === 'running') {
             runCancelRef.current.cancelled = true
+            endOperation('wan-check', 'cancelled', { label: 'WAN check cancelled' })
         }
         runCancelRef.current = { cancelled: false }
         if (scanClockRef.current) {
@@ -2724,6 +2726,12 @@ export default function WanProbe() {
 
         setScanState('running')
         setView('running')
+        beginOperation('wan-check', {
+            path: '/wan-probe',
+            kind: 'wan',
+            label: 'WAN check in progress',
+            targetMode: useCustomTarget ? 'custom' : 'automatic',
+        })
 
         const tasks = connectedSelectedProbes.map(probe => runProbeScan(probe, payload, cancelToken))
         const taskResults = await Promise.all(tasks)
@@ -2736,6 +2744,9 @@ export default function WanProbe() {
         }
         setScanState('done')
         setView('report')
+        endOperation('wan-check', successCount ? 'done' : 'error', {
+            label: successCount ? 'WAN check completed' : 'WAN check failed',
+        })
     }
 
     function cancelScan() {
@@ -2743,12 +2754,14 @@ export default function WanProbe() {
         setScanState('done')
         setView('report')
         setScanError('Scan cancelled. Partial results are shown below.')
+        endOperation('wan-check', 'cancelled', { label: 'WAN check cancelled' })
     }
 
     function goToSetup() {
         if (scanState === 'running') {
             runCancelRef.current.cancelled = true
             setScanState('done')
+            endOperation('wan-check', 'cancelled', { label: 'WAN check cancelled' })
         }
         setView('setup')
     }

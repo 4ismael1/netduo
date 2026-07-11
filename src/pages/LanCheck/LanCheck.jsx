@@ -28,6 +28,8 @@ import {
     Wifi,
     XCircle,
 } from 'lucide-react'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation, updateOperation } from '../../lib/operationRegistry.js'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
@@ -376,24 +378,24 @@ export default function LanCheck() {
     const [rangeEnd, setRangeEnd] = useState(254)
     const [scopeMode, setScopeMode] = useState('auto')
     const [selectedInterfaceAddress, setSelectedInterfaceAddress] = useState('')
-    const [inputError, setInputError] = useState('')
+    const [inputError, setInputError] = useSessionState('lan-check', 'inputError', '')
 
-    const [stage, setStage] = useState('setup')
-    const [running, setRunning] = useState(false)
-    const [progress, setProgress] = useState(0)
-    const [stepState, setStepState] = useState({ discovery: 'idle', upnp: 'idle', services: 'idle', analysis: 'idle' })
-    const [activity, setActivity] = useState([])
-    const [discovered, setDiscovered] = useState([])
-    const [report, setReport] = useState(null)
-    const [scanStartedAt, setScanStartedAt] = useState(null)
-    const [scanFinishedAt, setScanFinishedAt] = useState(null)
-    const [reportPage, setReportPage] = useState(1)
+    const [stage, setStage] = useSessionState('lan-check', 'stage', 'setup')
+    const [running, setRunning] = useSessionState('lan-check', 'running', false)
+    const [progress, setProgress] = useSessionState('lan-check', 'progress', 0)
+    const [stepState, setStepState] = useSessionState('lan-check', 'stepState', { discovery: 'idle', upnp: 'idle', services: 'idle', analysis: 'idle' })
+    const [activity, setActivity] = useSessionState('lan-check', 'activity', [])
+    const [discovered, setDiscovered] = useSessionState('lan-check', 'discovered', [])
+    const [report, setReport] = useSessionState('lan-check', 'report', null)
+    const [scanStartedAt, setScanStartedAt] = useSessionState('lan-check', 'scanStartedAt', null)
+    const [scanFinishedAt, setScanFinishedAt] = useSessionState('lan-check', 'scanFinishedAt', null)
+    const [reportPage, setReportPage] = useSessionState('lan-check', 'reportPage', 1)
 
     const [historyRows, setHistoryRows] = useState([])
     const [historyLoading, setHistoryLoading] = useState(false)
     const [historyQuery, setHistoryQuery] = useState('')
     const autoBaseResolvedRef = useRef(false)
-    const scanRunRef = useRef(0)
+    const scanRunRef = getSessionRef('lan-check', 'scanRun', 0)
     const selectedNetworkContext = useMemo(() => {
         const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
         return contexts.find(item => item.address === selectedInterfaceAddress) || net.networkContext || null
@@ -544,7 +546,7 @@ export default function LanCheck() {
 
     useEffect(() => {
         if (reportPage > totalPages) setReportPage(totalPages)
-    }, [reportPage, totalPages])
+    }, [reportPage, setReportPage, totalPages])
 
     const filteredHistory = useMemo(() => {
         const q = historyQuery.trim().toLowerCase()
@@ -877,6 +879,12 @@ export default function LanCheck() {
             services: 'idle',
             analysis: 'idle',
         })
+        beginOperation('lan-check', {
+            path: '/lan-check',
+            kind: 'check',
+            label: 'LAN security check in progress',
+            progress: 0,
+        })
 
         // NOW refresh the interface list in the background. If the
         // active subnet has drifted since the last auto-base sync, we
@@ -916,6 +924,7 @@ export default function LanCheck() {
             setInputError(finalValidated.error)
             setRunning(false)
             setStage('setup')
+            endOperation('lan-check', 'error', { label: 'LAN security check could not start' })
             return
         }
 
@@ -970,7 +979,9 @@ export default function LanCheck() {
                         discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
                         setDiscovered(discoveredHosts)
                         completedHosts += chunkEnd - chunkStart + 1
-                        setProgress(clamp(Math.round((completedHosts / span) * 34), 1, 34))
+                        const nextProgress = clamp(Math.round((completedHosts / span) * 34), 1, 34)
+                        setProgress(nextProgress)
+                        updateOperation('lan-check', { progress: nextProgress })
                     }
                 }
                 pushActivity(`Discovery completed: ${discoveredHosts.length} hosts detected`, 'ok')
@@ -1231,6 +1242,7 @@ export default function LanCheck() {
             setRunning(false)
             setScanFinishedAt(finishedAt)
             setStage('report')
+            endOperation('lan-check', 'done', { label: 'LAN security check completed', progress: 100 })
             pushActivity(`Analysis completed: risk ${riskBand.label} (${riskScore}/100)`, riskScore >= 51 ? 'warn' : 'ok')
 
             const savedRows = await bridge.lanCheckHistoryAdd({ report: reportPayload }).catch(() => null)
@@ -1245,6 +1257,7 @@ export default function LanCheck() {
             setInputError(error?.message || 'LAN security scan failed unexpectedly')
             setStage('setup')
             pushActivity(`Scan failed: ${error?.message || 'unexpected error'}`, 'error')
+            endOperation('lan-check', 'error', { label: 'LAN security check failed' })
         }
     }
 
@@ -1257,6 +1270,7 @@ export default function LanCheck() {
         setInputError('')
         setStage('setup')
         setStepState({ discovery: 'idle', upnp: 'idle', services: 'idle', analysis: 'idle' })
+        endOperation('lan-check', 'cancelled', { label: 'LAN security check cancelled' })
     }
 
     const progressRingStyle = useMemo(() => ({

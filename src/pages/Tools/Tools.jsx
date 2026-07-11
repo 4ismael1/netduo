@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
     Wrench, Fingerprint, Search, Network, Zap,
     Shield, Loader2, CheckCircle, XCircle, AlertCircle,
     Globe, Send, Clock, Server, Wifi, Calculator
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation, updateOperation, useOperations } from '../../lib/operationRegistry.js'
 import { isValidHostname, isValidMac, isValidTarget, normalizeMac, normalizeTargetInput } from '../../lib/validation'
 import './Tools.css'
 
@@ -439,20 +441,22 @@ const DNS_SERVERS = [
 const BENCH_DOMAINS = ['google.com', 'cloudflare.com', 'github.com', 'amazon.com', 'microsoft.com']
 
 function DnsBenchmark() {
-    const [running, setRunning] = useState(false)
-    const [results, setResults] = useState(null)
-    const runRef = useRef(0)
+    const [running, setRunning] = useSessionState('tools-dns-benchmark', 'running', false)
+    const [results, setResults] = useSessionState('tools-dns-benchmark', 'results', null)
+    const runRef = getSessionRef('tools-dns-benchmark', 'run', 0)
 
     const stopBench = useCallback(() => {
         runRef.current += 1
         setRunning(false)
-    }, [])
+        endOperation('tools-dns-benchmark', 'cancelled', { label: 'DNS benchmark stopped' })
+    }, [runRef, setRunning])
 
     const runBench = useCallback(async () => {
         setRunning(true)
         setResults(null)
         const runId = ++runRef.current
         const out = []
+        beginOperation('tools-dns-benchmark', { path: '/tools', kind: 'benchmark', label: 'Benchmarking DNS resolvers', progress: 0 })
 
         for (const server of DNS_SERVERS) {
             const times = []
@@ -474,13 +478,15 @@ function DnsBenchmark() {
 
             // Update progressively
             if (runRef.current === runId) setResults([...out])
+            updateOperation('tools-dns-benchmark', { progress: Math.round((out.length / DNS_SERVERS.length) * 100) })
         }
 
         if (runRef.current === runId) {
             setRunning(false)
+            endOperation('tools-dns-benchmark', 'done', { label: 'DNS benchmark completed', progress: 100 })
             bridge.historyAdd({ module: 'Tools', type: 'DNS Benchmark', detail: `${DNS_SERVERS.length} resolvers`, results: { servers: out.map(s => ({ label: s.label, avg: s.avg })) } })
         }
-    }, [])
+    }, [runRef, setResults, setRunning])
 
     const sorted = results ? [...results].sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999)) : null
     const bestAvg = sorted?.[0]?.avg
@@ -564,8 +570,10 @@ const TOOLS = [
 ]
 
 export default function Tools() {
-    const [active, setActive] = useState('ssl')
+    const [active, setActive] = useSessionState('tools', 'active', 'ssl')
     const ActiveComp = TOOLS.find(t => t.id === active)?.Component
+    const operations = useOperations()
+    const dnsOperation = operations['tools-dns-benchmark']
 
     return (
         <div className="v3-page-layout page-enter">
@@ -575,16 +583,21 @@ export default function Tools() {
             </div>
 
             <div className="pill-tabs">
-                {TOOLS.map(({ id, label, Icon }) => (
+                {TOOLS.map(({ id, label, Icon }) => {
+                    const isRunning = id === 'dns' && (dnsOperation?.status === 'running' || dnsOperation?.status === 'cancelling')
+                    return (
                     <button
                         key={id}
-                        className={`pill-tab ${active === id ? 'active' : ''}`}
+                        className={`pill-tab ${active === id ? 'active' : ''}${isRunning ? ' has-operation operation-benchmark' : ''}`}
                         onClick={() => setActive(id)}
+                        title={isRunning ? dnsOperation.label : undefined}
                     >
                         <Icon size={16} />
                         <span>{label}</span>
+                        {isRunning && <span className="tool-tab-operation-bars" aria-label={dnsOperation.label}><i /><i /><i /></span>}
                     </button>
-                ))}
+                    )
+                })}
             </div>
 
             {ActiveComp && <ActiveComp key={active} />}

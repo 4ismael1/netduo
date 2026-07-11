@@ -564,6 +564,7 @@ function createWindow() {
             webSecurity: true,
             allowRunningInsecureContent: false,
             webviewTag: false,
+            devTools: isDev,
         },
     })
 
@@ -637,6 +638,18 @@ function createWindow() {
         } catch { /* drop silently */ }
         return { action: 'deny' }
     })
+
+    if (!isDev) {
+        // Production builds must not expose Chromium's inspector. Keep
+        // development builds debuggable without shipping that surface to users.
+        win.webContents.on('before-input-event', (event, input) => {
+            const key = String(input.key || '').toLowerCase()
+            const devToolsShortcut = key === 'f12'
+                || (input.control && input.shift && (key === 'i' || key === 'j' || key === 'c'))
+            if (devToolsShortcut) event.preventDefault()
+        })
+        win.webContents.on('context-menu', event => event.preventDefault())
+    }
 
     if (isDev) {
         win.loadURL(`http://localhost:5173/?bootTheme=${bootTheme}`)

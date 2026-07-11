@@ -8,6 +8,8 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { deriveProgressMbps, isStalePhaseEvent } from '../../lib/speedMetrics'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation, updateOperation } from '../../lib/operationRegistry.js'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './SpeedTest.css'
 
@@ -91,29 +93,30 @@ function gaugeMaxFor(...values) {
 }
 
 export default function SpeedTest() {
-    const [phase, setPhase] = useState('idle')
-    const [server, setServer] = useState(null)
-    const [latency, setLatency] = useState(null)
-    const [jitter, setJitter] = useState(null)
-    const [liveSpeed, setLiveSpeed] = useState(0)
-    const [avgSpeed, setAvgSpeed] = useState(0)
-    const [progress, setProgress] = useState(0)
-    const [dlSpeed, setDlSpeed] = useState(null)
-    const [ulSpeed, setUlSpeed] = useState(null)
-    const [error, setError] = useState(null)
-    const [history, setHistory] = useState([])
-    const [cancelling, setCancelling] = useState(false)
-    const cleanupRef = useRef(null)
-    const phaseRef = useRef('idle')
+    const [phase, setPhase] = useSessionState('speed-test', 'phase', 'idle')
+    const [server, setServer] = useSessionState('speed-test', 'server', null)
+    const [latency, setLatency] = useSessionState('speed-test', 'latency', null)
+    const [jitter, setJitter] = useSessionState('speed-test', 'jitter', null)
+    const [liveSpeed, setLiveSpeed] = useSessionState('speed-test', 'liveSpeed', 0)
+    const [avgSpeed, setAvgSpeed] = useSessionState('speed-test', 'avgSpeed', 0)
+    const [progress, setProgress] = useSessionState('speed-test', 'progress', 0)
+    const [dlSpeed, setDlSpeed] = useSessionState('speed-test', 'dlSpeed', null)
+    const [ulSpeed, setUlSpeed] = useSessionState('speed-test', 'ulSpeed', null)
+    const [error, setError] = useSessionState('speed-test', 'error', null)
+    const [history, setHistory] = useSessionState('speed-test', 'history', [])
+    const [cancelling, setCancelling] = useSessionState('speed-test', 'cancelling', false)
+    const cleanupRef = getSessionRef('speed-test', 'cleanup', null)
+    const phaseRef = getSessionRef('speed-test', 'phaseRef', 'idle')
+    const networkChangedRef = getSessionRef('speed-test', 'networkChanged', false)
 
     // Server selector state. Hydrate synchronously from the module-
     // level cache so re-entering the SpeedTest route paints with the
     // server picker already in place (no layout shift when the IPC
     // resolves milliseconds later).
     const [servers, setServers] = useState(() => _speedServersCache || [])
-    const [selectedServerId, setSelectedServerId] = useState('mlab')
+    const [selectedServerId, setSelectedServerId] = useSessionState('speed-test', 'selectedServerId', 'mlab')
     const [showServerPicker, setShowServerPicker] = useState(false)
-    const [testInfo, setTestInfo] = useState(null) // { probeSpeed, dlTarget, ulTarget }
+    const [testInfo, setTestInfo] = useSessionState('speed-test', 'testInfo', null) // { probeSpeed, dlTarget, ulTarget }
     const [histPage, setHistPage] = useState(0)
     const HIST_PER_PAGE = 10
 
@@ -132,7 +135,7 @@ export default function SpeedTest() {
         }).catch(error => {
             logBridgeWarning('speedtest:servers-load', error)
         })
-    }, [])
+    }, [setHistory])
 
     const onProgress = useCallback((d) => {
         const p = d?.phase
@@ -180,6 +183,7 @@ export default function SpeedTest() {
             setLiveSpeed(displayMbps)
             setAvgSpeed(displayMbps)
             setProgress(progressVal)
+            updateOperation('speed-test', { progress: progressVal, label: 'Testing download speed' })
             return
         }
         if (p === 'download-done') {
@@ -206,6 +210,7 @@ export default function SpeedTest() {
             setLiveSpeed(displayMbps)
             setAvgSpeed(displayMbps)
             setProgress(progressVal)
+            updateOperation('speed-test', { progress: progressVal, label: 'Testing upload speed' })
             return
         }
         if (p === 'upload-done') {
@@ -221,6 +226,7 @@ export default function SpeedTest() {
             phaseRef.current = 'done'
             setPhase('done')
             setProgress(100)
+            endOperation('speed-test', 'done', { label: 'Speed test completed', progress: 100 })
             if (d.result) {
                 setDlSpeed(d.result.download)
                 setUlSpeed(d.result.upload)
@@ -231,6 +237,15 @@ export default function SpeedTest() {
             return
         }
         if (p === 'cancelled') {
+            if (networkChangedRef.current) {
+                networkChangedRef.current = false
+                phaseRef.current = 'error'
+                setPhase('error')
+                setCancelling(false)
+                setError('The connection changed during the test. Run it again on the current network.')
+                endOperation('speed-test', 'error', { label: 'Speed test stopped because the network changed' })
+                return
+            }
             phaseRef.current = 'idle'
             setPhase('idle')
             setCancelling(false)
@@ -239,14 +254,16 @@ export default function SpeedTest() {
             setLatency(null); setJitter(null)
             setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
             setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
+            endOperation('speed-test', 'cancelled', { label: 'Speed test cancelled' })
             return
         }
         if (p === 'error') {
             phaseRef.current = 'error'
             setPhase('error')
             setError(d.message || 'Failed')
+            endOperation('speed-test', 'error', { label: 'Speed test failed' })
         }
-    }, [])
+    }, [networkChangedRef, phaseRef, setAvgSpeed, setCancelling, setDlSpeed, setError, setJitter, setLatency, setLiveSpeed, setPhase, setProgress, setServer, setTestInfo, setUlSpeed])
 
     async function runTest() {
         // Clean up any previous listener first
@@ -255,9 +272,16 @@ export default function SpeedTest() {
 
         // Full state reset
         phaseRef.current = 'init'
+        networkChangedRef.current = false
         setPhase('init'); setError(null); setServer(null); setCancelling(false)
         setLatency(null); setJitter(null); setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
         setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
+        beginOperation('speed-test', {
+            path: '/speedtest',
+            kind: 'speed',
+            label: 'Preparing speed test',
+            progress: 0,
+        })
 
         const unsub = bridge.onSpeedProgress(onProgress)
         cleanupRef.current = unsub
@@ -275,6 +299,7 @@ export default function SpeedTest() {
                 setJitter(prev => prev ?? r.jitter)
                 setServer(prev => prev ?? r.server)
                 setProgress(100)
+                endOperation('speed-test', 'done', { label: 'Speed test completed', progress: 100 })
                 const h = {
                     download: r.download, upload: r.upload, latency: r.latency, jitter: r.jitter,
                     server: r.server?.name || selectedServerId,
@@ -294,6 +319,7 @@ export default function SpeedTest() {
             phaseRef.current = 'error'
             setError('An error occurred.')
             setPhase('error')
+            endOperation('speed-test', 'error', { label: 'Speed test failed' })
         }
         finally {
             if (typeof unsub === 'function') unsub()
@@ -301,8 +327,6 @@ export default function SpeedTest() {
             setCancelling(false)
         }
     }
-
-    useEffect(() => () => { if (typeof cleanupRef.current === 'function') cleanupRef.current() }, [])
 
     function reset() {
         if (typeof cleanupRef.current === 'function') cleanupRef.current()
@@ -440,7 +464,7 @@ export default function SpeedTest() {
                                 <button className="st-btn st-btn-testing" disabled>
                                     <Loader2 size={16} className="st-spin" />{cancelling ? 'Cancelling…' : phaseText(phase)}
                                 </button>
-                                <button className="st-btn-icon" onClick={() => { setCancelling(true); bridge.stopSpeedTest?.() }} disabled={cancelling} title="Cancel test" style={{ color: 'var(--color-danger)' }}>
+                                <button className="st-btn-icon" onClick={() => { setCancelling(true); updateOperation('speed-test', { status: 'cancelling', label: 'Cancelling speed test' }); bridge.stopSpeedTest?.() }} disabled={cancelling} title="Cancel test" style={{ color: 'var(--color-danger)' }}>
                                     <XCircle size={14} />
                                 </button>
                             </>

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import WanProbe from './WanProbe'
 import bridge from '../../lib/electronBridge'
+import { resetPersistentSessionsForTests } from '../../lib/persistentSession.js'
+import { resetOperationsForTests } from '../../lib/operationRegistry.js'
 
 vi.mock('framer-motion', () => {
     function MotionDiv(props) {
@@ -186,6 +188,8 @@ function setupWanProbeMocks({
 describe('WanProbe scan flow', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        resetPersistentSessionsForTests()
+        resetOperationsForTests()
     })
 
     it('sends identical deep port scope to every selected probe', async () => {

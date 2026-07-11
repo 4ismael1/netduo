@@ -1,10 +1,12 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import {
     LayoutDashboard, Radar, Stethoscope, Gauge,
-    Activity, Globe, Wrench, History, Settings, ShieldAlert, ShieldCheck, Loader2
+    Activity, Globe, Wrench, History, Settings, ShieldAlert, ShieldCheck,
+    Route, Radio, Search, ChartNoAxesColumnIncreasing, Check, AlertTriangle
 } from 'lucide-react'
 import NetDuoAppIcon from '../Brand/NetDuoAppIcon'
 import { useScannerSession } from '../../lib/scannerSession.js'
+import { useOperations } from '../../lib/operationRegistry.js'
 import './Sidebar.css'
 
 const NAV = [
@@ -24,7 +26,40 @@ const BOTTOM = [
     { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
-function NavBtn({ path, icon: Icon, label, busy = false }) {
+const OPERATION_ICONS = {
+    scan: Radar,
+    check: ShieldCheck,
+    wan: Globe,
+    speed: Gauge,
+    monitor: Activity,
+    route: Route,
+    ping: Radio,
+    ports: Search,
+    benchmark: ChartNoAxesColumnIncreasing,
+}
+
+function OperationIndicator({ operation }) {
+    if (!operation) return null
+    const IndicatorIcon = operation.status === 'done'
+        ? Check
+        : operation.status === 'error'
+            ? AlertTriangle
+            : (OPERATION_ICONS[operation.kind] || Activity)
+    const label = operation.label || 'Operation in progress'
+    return (
+        <span
+            className={`nav-operation nav-operation-${operation.kind || 'generic'} is-${operation.status || 'running'}`}
+            role="status"
+            aria-label={label}
+            title={label}
+        >
+            <IndicatorIcon size={11} strokeWidth={2.2} />
+            {operation.count > 1 && <span className="nav-operation-count">{operation.count}</span>}
+        </span>
+    )
+}
+
+function NavBtn({ path, icon: Icon, label, operation = null }) {
     return (
         <NavLink
             to={path}
@@ -33,9 +68,12 @@ function NavBtn({ path, icon: Icon, label, busy = false }) {
         >
             <span className="nav-icon-wrap">
                 <Icon size={19} strokeWidth={1.8} />
-                {busy && <Loader2 size={11} className="nav-scan-spinner" aria-label="LAN scan in progress" />}
+                <OperationIndicator operation={operation} />
             </span>
             <span className="nav-label">{label}</span>
+            {operation?.kind === 'monitor' && operation.status === 'running' && (
+                <span className="nav-live-label">LIVE</span>
+            )}
         </NavLink>
     )
 }
@@ -43,7 +81,19 @@ function NavBtn({ path, icon: Icon, label, busy = false }) {
 export default function Sidebar({ expanded }) {
     const location = useLocation()
     const { scanning } = useScannerSession()
-    const showScannerBusy = scanning && location.pathname !== '/scanner'
+    const operations = useOperations()
+
+    const operationForPath = path => {
+        if (location.pathname === path) return null
+        const matches = Object.values(operations).filter(operation => operation.path === path)
+        if (path === '/scanner' && scanning) {
+            matches.push({ kind: 'scan', status: 'running', label: 'LAN scan in progress' })
+        }
+        if (!matches.length) return null
+        const active = matches.filter(operation => operation.status === 'running' || operation.status === 'cancelling')
+        const selected = active.at(-1) || matches.at(-1)
+        return { ...selected, count: active.length > 1 ? active.length : undefined }
+    }
 
     return (
         <nav className={`sidebar-rail ${expanded ? 'expanded' : ''}`}>
@@ -58,7 +108,7 @@ export default function Sidebar({ expanded }) {
 
             <div className="rail-nav">
                 <div className="nav-section-label">Navigation</div>
-                {NAV.map(n => <NavBtn key={n.path} {...n} busy={n.path === '/scanner' && showScannerBusy} />)}
+                {NAV.map(n => <NavBtn key={n.path} {...n} operation={operationForPath(n.path)} />)}
             </div>
 
             <div className="rail-bottom">

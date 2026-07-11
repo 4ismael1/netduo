@@ -10,6 +10,8 @@ import {
   abortScannerSession,
   getScannerSessionSnapshot,
 } from './lib/scannerSession.js'
+import { getSessionRef, getSessionSnapshot, setSessionValue } from './lib/persistentSession.js'
+import { endOperation, getOperationSnapshot } from './lib/operationRegistry.js'
 // Dashboard is the first route on app open and is always needed, so we
 // import it eagerly to eliminate the visible skeleton flicker on cold
 // start. With lazy(), there were two competing skeletons: the Suspense
@@ -72,7 +74,7 @@ function RoutedPage({ Page, fallback = <RouteFallback /> }) {
   )
 }
 
-function ScannerNetworkGuard() {
+function OperationNetworkGuard() {
   const net = useNetworkStatus()
   const previousNetworkRef = useRef(undefined)
 
@@ -94,6 +96,38 @@ function ScannerNetworkGuard() {
     const wasScanning = getScannerSessionSnapshot().scanning
     const cancelledScanId = abortScannerSession({ clearDevices: true })
     if (wasScanning) bridge.lanScanCancel?.(cancelledScanId)
+
+    const lanSession = getSessionSnapshot('lan-check')
+    if (lanSession.running) {
+      const lanRunRef = getSessionRef('lan-check', 'scanRun', 0)
+      const activeScanId = lanRunRef.current
+      lanRunRef.current += 1
+      bridge.lanScanCancel?.(activeScanId)
+      bridge.lanSecurityScanCancel?.(activeScanId)
+      setSessionValue('lan-check', 'running', false)
+      setSessionValue('lan-check', 'stage', 'setup')
+      setSessionValue('lan-check', 'inputError', 'The network changed, so the previous LAN check was stopped. Start a new check for the current network.')
+      endOperation('lan-check', 'error', { label: 'LAN check stopped because the network changed' })
+    }
+
+    const speedSession = getSessionSnapshot('speed-test')
+    if (!['idle', 'done', 'error', undefined].includes(speedSession.phase)) {
+      getSessionRef('speed-test', 'networkChanged', false).current = true
+      bridge.stopSpeedTest?.()
+      setSessionValue('speed-test', 'phase', 'error')
+      setSessionValue('speed-test', 'cancelling', false)
+      setSessionValue('speed-test', 'error', 'The connection changed during the test. Run it again on the current network.')
+      endOperation('speed-test', 'error', { label: 'Speed test stopped because the network changed' })
+    }
+
+    const wanOperation = getOperationSnapshot()['wan-check']
+    if (wanOperation?.status === 'running' && wanOperation.targetMode !== 'custom') {
+      getSessionRef('wan-check', 'runCancel', { cancelled: false }).current.cancelled = true
+      setSessionValue('wan-check', 'scanState', 'done')
+      setSessionValue('wan-check', 'view', 'report')
+      setSessionValue('wan-check', 'scanError', 'The network changed during the automatic WAN check. Partial results are shown; start a new check for the current connection.')
+      endOperation('wan-check', 'error', { label: 'WAN check stopped because the network changed' })
+    }
   }, [net.gateway, net.loading, net.localIP, net.networkContext?.cidr])
 
   return null
@@ -176,7 +210,7 @@ export default function App() {
   return (
     <HashRouter>
       <NetworkStatusProvider>
-      <ScannerNetworkGuard />
+      <OperationNetworkGuard />
       <div className="app-layout">
         <div className="sidebar-region">
           <Sidebar expanded={sidebarExpanded} />

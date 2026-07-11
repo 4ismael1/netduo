@@ -27,9 +27,9 @@ describe('Scanner progressive configuration UI', () => {
     it('keeps an active scan outside the route and signals it only when Scanner is not open', () => {
         expect(source).toContain('useScannerSession()')
         expect(source).toContain('beginScannerSession({')
-        expect(appSource).toContain('<ScannerNetworkGuard />')
-        expect(sidebarSource).toContain("const showScannerBusy = scanning && location.pathname !== '/scanner'")
-        expect(sidebarSource).toContain('aria-label="LAN scan in progress"')
+        expect(appSource).toContain('<OperationNetworkGuard />')
+        expect(sidebarSource).toContain("if (location.pathname === path) return null")
+        expect(sidebarSource).toContain("matches.push({ kind: 'scan', status: 'running', label: 'LAN scan in progress' })")
     })
 
     it('uses neutral presence while a re-scan verifies the last completed result', () => {

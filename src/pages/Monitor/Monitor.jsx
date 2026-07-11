@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Activity, Play, Square, Plus, Trash2, Signal, Wifi, Globe, Server, Cloud, Network, Shield } from 'lucide-react'
 import {
     LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -8,6 +8,8 @@ import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { normalizeTargetInput, isValidTarget } from '../../lib/validation'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation } from '../../lib/operationRegistry.js'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './Monitor.css'
 
@@ -46,29 +48,24 @@ function MonitorTooltip({ active, payload, label }) {
 
 export default function Monitor() {
     const net = useNetworkStatus()
-    const [hosts, setHosts] = useState(['1.1.1.1', '8.8.8.8'])
+    const [hosts, setHosts] = useSessionState('monitor', 'hosts', ['1.1.1.1', '8.8.8.8'])
     const [newHost, setNewHost] = useState('')
-    const [data, setData] = useState([])
-    const [running, setRunning] = useState(false)
-    const [stats, setStats] = useState({})
+    const [data, setData] = useSessionState('monitor', 'data', [])
+    const [running, setRunning] = useSessionState('monitor', 'running', false)
+    const [stats, setStats] = useSessionState('monitor', 'stats', {})
     const [interval, setIntervalMs] = useState(2000)
     const [inputError, setInputError] = useState(null)
     const [alertThreshold, setAlertThreshold] = useState(200)
     const [notificationsEnabled, setNotificationsEnabled] = useState(true)
-    const intervalRef = useRef(null)
-    const runningRef = useRef(false)
-    const hostsRef = useRef(hosts)
-    const alertedHostsRef = useRef(new Set())
-    const breachStreakRef = useRef(new Map())
-    const sessionStartRef = useRef(null)
+    const intervalRef = getSessionRef('monitor', 'intervalTimer', null)
+    const runningRef = getSessionRef('monitor', 'runningRef', false)
+    const hostsRef = getSessionRef('monitor', 'hostsRef', hosts)
+    const alertedHostsRef = getSessionRef('monitor', 'alertedHosts', new Set())
+    const breachStreakRef = getSessionRef('monitor', 'breachStreak', new Map())
+    const sessionStartRef = getSessionRef('monitor', 'sessionStart', null)
 
     // Keep ref in sync so the interval callback always sees current hosts
-    useEffect(() => { hostsRef.current = hosts }, [hosts])
-    useEffect(() => () => {
-        runningRef.current = false
-        clearTimeout(intervalRef.current)
-    }, [])
-
+    useEffect(() => { hostsRef.current = hosts }, [hosts, hostsRef])
     useEffect(() => {
         let mounted = true
 
@@ -110,7 +107,7 @@ export default function Monitor() {
             mounted = false
             if (typeof offConfigChanged === 'function') offConfigChanged()
         }
-    }, [])
+    }, [alertedHostsRef, setHosts])
 
     function sendMonitorNotification(host, message) {
         if (!notificationsEnabled || typeof Notification === 'undefined') return
@@ -143,6 +140,11 @@ export default function Monitor() {
         alertedHostsRef.current.clear()
         breachStreakRef.current.clear()
         sessionStartRef.current = new Date().toISOString()
+        beginOperation('monitor', {
+            path: '/monitor',
+            kind: 'monitor',
+            label: `Live monitoring ${hostsRef.current.length} target${hostsRef.current.length === 1 ? '' : 's'}`,
+        })
         const tick = async () => {
             try {
                 const currentHosts = [...hostsRef.current]
@@ -195,6 +197,7 @@ export default function Monitor() {
         alertedHostsRef.current.clear()
         breachStreakRef.current.clear()
         setRunning(false)
+        endOperation('monitor', 'done', { label: 'Live monitoring stopped' })
     }
 
     function addHost() {

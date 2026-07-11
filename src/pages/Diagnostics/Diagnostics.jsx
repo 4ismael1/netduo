@@ -4,6 +4,8 @@ import {
     CheckCircle, XCircle, Loader2, TerminalSquare, Rss, AlertCircle, RadioReceiver, ArrowRight
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
+import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
+import { beginOperation, endOperation, updateOperation, useOperations } from '../../lib/operationRegistry.js'
 import { isValidHostname, isValidPortRange, isValidTarget, normalizeTargetInput, parseInteger } from '../../lib/validation'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './Diagnostics.css'
@@ -28,16 +30,17 @@ function DiagPanel({ title, icon: Icon, description, children }) {
 
 // ─── Traceroute Panel ─────────────────────────────────────────────────────
 function TraceroutePanel() {
-    const [host, setHost] = useState('google.com')
-    const [hops, setHops] = useState([])
-    const [running, setRunning] = useState(false)
-    const [done, setDone] = useState(false)
-    const [error, setError] = useState(null)
+    const [host, setHost] = useSessionState('diagnostics-traceroute', 'host', 'google.com')
+    const [hops, setHops] = useSessionState('diagnostics-traceroute', 'hops', [])
+    const [running, setRunning] = useSessionState('diagnostics-traceroute', 'running', false)
+    const [done, setDone] = useSessionState('diagnostics-traceroute', 'done', false)
+    const [error, setError] = useSessionState('diagnostics-traceroute', 'error', null)
 
     function start() {
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 8.8.8.8 or google.com)'); return }
         setError(null); setHops([]); setDone(false); setRunning(true)
+        beginOperation('diagnostics-traceroute', { path: '/diagnostics', kind: 'route', label: `Tracing route to ${h}` })
         bridge.startTraceroute(
             h,
             hop => setHops(prev => {
@@ -46,7 +49,7 @@ function TraceroutePanel() {
                 if (idx >= 0) updated[idx] = hop; else updated.push(hop)
                 return updated.sort((a, b) => a.hop - b.hop)
             }),
-            () => { setRunning(false); setDone(true) }
+            () => { setRunning(false); setDone(true); endOperation('diagnostics-traceroute', 'done', { label: `Traceroute to ${h} completed` }) }
         )
     }
 
@@ -54,9 +57,8 @@ function TraceroutePanel() {
         bridge.offTraceroute()
         setRunning(false)
         setDone(true)
+        endOperation('diagnostics-traceroute', 'cancelled', { label: 'Traceroute stopped' })
     }
-
-    useEffect(() => () => { bridge.offTraceroute() }, [])
 
     function latencyColor(avg) {
         if (!avg) return 'var(--text-muted)'
@@ -142,34 +144,35 @@ function TraceroutePanel() {
 
 // ─── Live Ping Panel ──────────────────────────────────────────────────────
 function PingPanel() {
-    const [host, setHost] = useState('1.1.1.1')
-    const [count, setCount] = useState(15)
-    const [replies, setReplies] = useState([])
-    const [running, setRunning] = useState(false)
-    const [stats, setStats] = useState(null)
-    const [error, setError] = useState(null)
+    const [host, setHost] = useSessionState('diagnostics-ping', 'host', '1.1.1.1')
+    const [count, setCount] = useSessionState('diagnostics-ping', 'count', 15)
+    const [replies, setReplies] = useSessionState('diagnostics-ping', 'replies', [])
+    const [running, setRunning] = useSessionState('diagnostics-ping', 'running', false)
+    const [stats, setStats] = useSessionState('diagnostics-ping', 'stats', null)
+    const [error, setError] = useSessionState('diagnostics-ping', 'error', null)
     const replyRef = useRef(null)
 
     useEffect(() => {
         if (replyRef.current) replyRef.current.scrollTop = replyRef.current.scrollHeight
     }, [replies])
 
-    useEffect(() => () => { bridge.offPingLive() }, [])
-
     function stop() {
         bridge.offPingLive()
         setRunning(false)
+        endOperation('diagnostics-ping', 'cancelled', { label: 'Live ping stopped' })
     }
 
     function start() {
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 1.1.1.1 or google.com)'); return }
         setError(null); setReplies([]); setStats(null); setRunning(true)
+        beginOperation('diagnostics-ping', { path: '/diagnostics', kind: 'ping', label: `Pinging ${h}` })
         bridge.startPingLive(
             h, count,
             reply => setReplies(prev => [...prev, reply]),
             ({ seqNum }) => {
                 setRunning(false)
+                endOperation('diagnostics-ping', 'done', { label: `Ping to ${h} completed` })
                 setReplies(prev => {
                     const times = prev.filter(r => r.time != null).map(r => r.time)
                     if (times.length) {
@@ -359,12 +362,13 @@ function DnsPanel() {
 
 // ─── Port Scanner Panel ───────────────────────────────────────────────────
 function PortScanPanel() {
-    const [host, setHost] = useState('192.168.1.1')
-    const [startP, setStartP] = useState(1)
-    const [endP, setEndP] = useState(1024)
-    const [results, setResults] = useState([])
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState(null)
+    const [host, setHost] = useSessionState('diagnostics-ports', 'host', '192.168.1.1')
+    const [startP, setStartP] = useSessionState('diagnostics-ports', 'startP', 1)
+    const [endP, setEndP] = useSessionState('diagnostics-ports', 'endP', 1024)
+    const [results, setResults] = useSessionState('diagnostics-ports', 'results', [])
+    const [loading, setLoading] = useSessionState('diagnostics-ports', 'loading', false)
+    const [error, setError] = useSessionState('diagnostics-ports', 'error', null)
+    const scanControlRef = getSessionRef('diagnostics-ports', 'scanControl', { id: 0, cancelled: false })
 
     const COMMON = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 993, 3306, 3389, 5432, 8080]
 
@@ -375,9 +379,27 @@ function PortScanPanel() {
         if (!isValidTarget(h)) { setError('Enter a valid IP or host (e.g. 192.168.1.1)'); return }
         if (!isValidPortRange(start, end)) { setError('Port range must be 1-65535 and start <= end'); return }
         setError(null); setResults([]); setLoading(true)
-        const r = await bridge.scanPorts(h, start, end)
-        setResults(r)
+        const control = { id: scanControlRef.current.id + 1, cancelled: false }
+        scanControlRef.current = control
+        beginOperation('diagnostics-ports', { path: '/diagnostics', kind: 'ports', label: `Scanning ports ${start}-${end} on ${h}` })
+        try {
+            const r = await bridge.scanPorts(h, start, end)
+            if (scanControlRef.current !== control || control.cancelled) return
+            setResults(r)
+            setLoading(false)
+            endOperation('diagnostics-ports', 'done', { label: `Port scan on ${h} completed` })
+        } catch (scanError) {
+            setError(scanError?.message || 'Port scan failed')
+            setLoading(false)
+            endOperation('diagnostics-ports', 'error', { label: `Port scan on ${h} failed` })
+        }
+    }
+
+    function stopScan() {
+        scanControlRef.current.cancelled = true
+        bridge.stopPortScan?.()
         setLoading(false)
+        endOperation('diagnostics-ports', 'cancelled', { label: 'Port scan stopped' })
     }
 
     return (
@@ -393,7 +415,7 @@ function PortScanPanel() {
                     <input className="v3-input mono" type="number" value={endP} onChange={e => setEndP(+e.target.value)} style={{ width: 80, paddingLeft: 12 }} min={1} max={65535} />
                 </div>
                 {loading ? (
-                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => bridge.stopPortScan?.()}>
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => { updateOperation('diagnostics-ports', { status: 'cancelling', label: 'Stopping port scan' }); stopScan() }}>
                         <XCircle size={16} /> Stop Scan
                     </button>
                 ) : (
@@ -443,21 +465,18 @@ function PortScanPanel() {
 
 // ─── MTR (My Traceroute) ─────────────────────────────────────────────────
 function MtrPanel() {
-    const [host, setHost] = useState('8.8.8.8')
-    const [hops, setHops] = useState([])
-    const [session, setSession] = useState(null)
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState(null)
-
-    useEffect(() => {
-        return () => { if (session) bridge.stopMtr(session) }
-    }, [session])
+    const [host, setHost] = useSessionState('diagnostics-mtr', 'host', '8.8.8.8')
+    const [hops, setHops] = useSessionState('diagnostics-mtr', 'hops', [])
+    const [session, setSession] = useSessionState('diagnostics-mtr', 'session', null)
+    const [loading, setLoading] = useSessionState('diagnostics-mtr', 'loading', false)
+    const [error, setError] = useSessionState('diagnostics-mtr', 'error', null)
 
     function start() {
-        if (session) { bridge.stopMtr(session); setSession(null); return }
+        if (session) { bridge.stopMtr(session); setSession(null); endOperation('diagnostics-mtr', 'done', { label: 'Hop monitor stopped' }); return }
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 8.8.8.8)'); return }
         setError(null); setHops([]); setLoading(true)
+        beginOperation('diagnostics-mtr', { path: '/diagnostics', kind: 'route', label: `Monitoring route to ${h}` })
         bridge.startMtr(
             h, 1000,
             initialHops => { setHops(initialHops); setLoading(false) },
@@ -618,8 +637,15 @@ const SECTIONS = [
 ]
 
 export default function Diagnostics() {
-    const [active, setActive] = useState('traceroute')
+    const [active, setActive] = useSessionState('diagnostics', 'active', 'traceroute')
     const ActivePanel = SECTIONS.find(s => s.id === active)?.Panel
+    const operations = useOperations()
+    const operationIds = {
+        traceroute: 'diagnostics-traceroute',
+        ping: 'diagnostics-ping',
+        mtr: 'diagnostics-mtr',
+        ports: 'diagnostics-ports',
+    }
 
     return (
         <div className="v3-page-layout page-enter">
@@ -629,16 +655,22 @@ export default function Diagnostics() {
             </div>
 
             <div className="pill-tabs">
-                {SECTIONS.map(({ id, label, Icon }) => (
+                {SECTIONS.map(({ id, label, Icon }) => {
+                    const operation = operations[operationIds[id]]
+                    const isRunning = operation?.status === 'running' || operation?.status === 'cancelling'
+                    return (
                     <button
                         key={id}
-                        className={`pill-tab ${active === id ? 'active' : ''}`}
+                        className={`pill-tab ${active === id ? 'active' : ''}${isRunning ? ` has-operation operation-${operation.kind}` : ''}`}
                         onClick={() => setActive(id)}
+                        title={isRunning ? operation.label : undefined}
                     >
                         <Icon size={16} />
                         <span>{label}</span>
+                        {isRunning && <span className="diag-tab-operation-dot" aria-label={operation.label} />}
                     </button>
-                ))}
+                    )
+                })}
             </div>
 
             {ActivePanel && <ActivePanel key={active} />}

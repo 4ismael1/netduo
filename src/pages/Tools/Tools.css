@@ -172,3 +172,25 @@
     .http-timing-grid { grid-template-columns: repeat(2, 1fr); }
     .port-quick-row { gap: 4px; }
 }
+.tool-tab-operation-bars {
+    height: 10px;
+    display: inline-flex;
+    align-items: end;
+    gap: 1px;
+}
+
+.tool-tab-operation-bars i {
+    width: 2px;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--color-accent);
+    animation: tool-tab-bars 750ms ease-in-out infinite alternate;
+}
+.tool-tab-operation-bars i:nth-child(2) { height: 65%; animation-delay: -250ms; }
+.tool-tab-operation-bars i:nth-child(3) { height: 40%; animation-delay: -500ms; }
+
+@keyframes tool-tab-bars { to { transform: scaleY(.4); opacity: .6; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .tool-tab-operation-bars i { animation: none; }
+}
