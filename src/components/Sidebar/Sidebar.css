@@ -189,19 +189,121 @@
     box-shadow: 0 0 0 1px var(--border-light);
 }
 
-.nav-operation-scan,
-.nav-operation-route,
-.nav-operation-ports { animation: nav-operation-spin 1150ms linear infinite; }
-.nav-operation-check,
-.nav-operation-wan,
-.nav-operation-ping { animation: nav-operation-pulse 1250ms ease-in-out infinite; }
-.nav-operation-speed { animation: nav-operation-speed 900ms ease-in-out infinite alternate; }
-.nav-operation-monitor { color: var(--color-success); animation: nav-operation-live 900ms ease-in-out infinite; }
-.nav-operation-benchmark { animation: nav-operation-bars 900ms ease-in-out infinite alternate; }
+.nav-operation > svg { position: relative; z-index: 2; }
+.nav-operation::before,
+.nav-operation::after {
+    content: '';
+    position: absolute;
+    pointer-events: none;
+}
+
+/* Scanner keeps the original rotating radar requested for LAN discovery. */
+.nav-operation-scan { animation: nav-operation-spin 1150ms linear infinite; }
+
+/* LAN Check: a progress arc travels around a stationary check shield. */
+.nav-operation-check::after {
+    inset: 1px;
+    border: 1.5px solid transparent;
+    border-top-color: currentColor;
+    border-right-color: currentColor;
+    border-radius: 50%;
+    animation: nav-operation-check 1250ms linear infinite;
+}
+
+/* WAN: a small endpoint circles the globe instead of moving the icon. */
+.nav-operation-wan::after {
+    width: 3px;
+    height: 3px;
+    left: 5.5px;
+    top: 5.5px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 4px currentColor;
+    animation: nav-operation-orbit 1450ms linear infinite;
+}
+
+/* Speed Test: a tiny gauge needle sweeps through the dial. */
+.nav-operation-speed::after {
+    width: 5px;
+    height: 1.5px;
+    left: 7px;
+    top: 8px;
+    border-radius: 2px;
+    background: currentColor;
+    transform-origin: 0 50%;
+    animation: nav-operation-needle 1050ms cubic-bezier(.45, 0, .2, 1) infinite alternate;
+}
+
+/* Monitor: a green scan line crosses the stationary waveform. */
+.nav-operation-monitor { color: var(--color-success); }
+.nav-operation-monitor::after {
+    width: 2px;
+    height: 10px;
+    left: 2px;
+    top: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    box-shadow: 0 0 5px currentColor;
+    opacity: .85;
+    animation: nav-operation-monitor-scan 1200ms ease-in-out infinite;
+}
+
+/* Traceroute/MTR: a packet follows a small multi-hop path. */
+.nav-operation-route::after {
+    width: 3px;
+    height: 3px;
+    left: 2px;
+    top: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 4px currentColor;
+    animation: nav-operation-route 1300ms ease-in-out infinite;
+}
+
+/* Ping: one radio ring expands from the target. */
+.nav-operation-ping::after {
+    width: 4px;
+    height: 4px;
+    left: 5px;
+    top: 5px;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    animation: nav-operation-ping 1250ms ease-out infinite;
+}
+
+/* Port scanning: three endpoints illuminate in sequence. */
+.nav-operation-ports::after {
+    width: 2.5px;
+    height: 2.5px;
+    left: 2px;
+    top: 9px;
+    border-radius: 1px;
+    background: currentColor;
+    animation: nav-operation-ports 900ms steps(3, end) infinite;
+}
+
+/* Benchmark: a highlight reads the bars from left to right. */
+.nav-operation-benchmark::after {
+    width: 2px;
+    height: 10px;
+    left: 2px;
+    top: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    opacity: .7;
+    animation: nav-operation-benchmark 1100ms ease-in-out infinite;
+}
+
 .nav-operation.is-done { color: var(--color-success); animation: nav-operation-finish 350ms ease-out; }
 .nav-operation.is-error { color: var(--color-danger); animation: none; }
 .nav-operation.is-cancelled { color: var(--text-muted); animation: none; }
 .nav-operation.is-cancelling { color: var(--color-warning); animation-duration: 1600ms; }
+.nav-operation.is-done::before,
+.nav-operation.is-done::after,
+.nav-operation.is-error::before,
+.nav-operation.is-error::after,
+.nav-operation.is-cancelled::before,
+.nav-operation.is-cancelled::after { display: none; }
 
 .nav-operation-count {
     position: absolute;
@@ -222,17 +324,38 @@
 @keyframes nav-operation-spin {
     to { transform: rotate(360deg); }
 }
-@keyframes nav-operation-pulse {
-    50% { transform: scale(1.18); opacity: 0.65; }
+@keyframes nav-operation-check {
+    to { transform: rotate(360deg); }
 }
-@keyframes nav-operation-speed {
-    to { transform: rotate(22deg) scale(1.08); }
+@keyframes nav-operation-orbit {
+    from { transform: rotate(0deg) translateX(7px) rotate(0deg); }
+    to { transform: rotate(360deg) translateX(7px) rotate(-360deg); }
 }
-@keyframes nav-operation-live {
-    50% { transform: scaleY(0.72); opacity: 0.7; }
+@keyframes nav-operation-needle {
+    from { transform: rotate(205deg); }
+    to { transform: rotate(335deg); }
 }
-@keyframes nav-operation-bars {
-    to { transform: scaleY(0.7); opacity: 0.65; }
+@keyframes nav-operation-monitor-scan {
+    0%, 100% { transform: translateX(0); opacity: .3; }
+    50% { transform: translateX(8px); opacity: 1; }
+}
+@keyframes nav-operation-route {
+    0% { transform: translate(0, 2px); opacity: .25; }
+    45% { transform: translate(4px, -3px); opacity: 1; }
+    100% { transform: translate(8px, 1px); opacity: .25; }
+}
+@keyframes nav-operation-ping {
+    from { transform: scale(.45); opacity: 1; }
+    to { transform: scale(2.8); opacity: 0; }
+}
+@keyframes nav-operation-ports {
+    0% { opacity: 1; transform: translateX(0); }
+    33% { opacity: .75; transform: translateX(4px); }
+    66%, 100% { opacity: .45; transform: translateX(8px); }
+}
+@keyframes nav-operation-benchmark {
+    0%, 100% { transform: translateX(0); opacity: .25; }
+    50% { transform: translateX(8px); opacity: .9; }
 }
 @keyframes nav-operation-finish {
     from { transform: scale(0.55); opacity: 0; }
@@ -240,6 +363,8 @@
 
 @media (prefers-reduced-motion: reduce) {
     .nav-operation { animation: none !important; }
+    .nav-operation::before,
+    .nav-operation::after { animation: none !important; }
 }
 
 /* ── Tooltip (only when collapsed) ── */

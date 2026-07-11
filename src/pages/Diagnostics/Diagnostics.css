@@ -163,11 +163,7 @@
 [data-theme="nothing"] .ping-stats-row > div { background: #0a0a0a; border-radius: 4px; }
 .pill-tab.has-operation > svg {
     color: var(--color-accent);
-    animation: diag-tab-pulse 1100ms ease-in-out infinite;
 }
-
-.pill-tab.operation-route > svg,
-.pill-tab.operation-ports > svg { animation-name: diag-tab-turn; }
 
 .diag-tab-operation-dot {
     width: 6px;
@@ -176,11 +172,32 @@
     border-radius: 50%;
     background: var(--color-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+    animation: diag-tab-signal 1100ms ease-out infinite;
 }
 
-@keyframes diag-tab-pulse { 50% { transform: scale(1.15); opacity: .65; } }
-@keyframes diag-tab-turn { to { transform: rotate(360deg); } }
+.pill-tab.operation-route .diag-tab-operation-dot {
+    animation-name: diag-tab-route;
+}
+.pill-tab.operation-ports .diag-tab-operation-dot {
+    animation-name: diag-tab-ports;
+    animation-timing-function: steps(3, end);
+}
+
+@keyframes diag-tab-signal {
+    from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 55%, transparent); opacity: 1; }
+    to { box-shadow: 0 0 0 5px transparent; opacity: .35; }
+}
+@keyframes diag-tab-route {
+    0% { transform: translateX(-3px); opacity: .3; }
+    50% { transform: translateX(0); opacity: 1; }
+    100% { transform: translateX(3px); opacity: .3; }
+}
+@keyframes diag-tab-ports {
+    0% { box-shadow: -4px 0 0 color-mix(in srgb, var(--color-accent) 25%, transparent); }
+    50% { box-shadow: 0 0 0 var(--color-accent); }
+    100% { box-shadow: 4px 0 0 color-mix(in srgb, var(--color-accent) 25%, transparent); }
+}
 
 @media (prefers-reduced-motion: reduce) {
-    .pill-tab.has-operation > svg { animation: none; }
+    .diag-tab-operation-dot { animation: none !important; }
 }
