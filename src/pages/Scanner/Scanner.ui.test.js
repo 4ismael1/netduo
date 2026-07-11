@@ -4,6 +4,8 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'pages', 'Scanner', 'Scanner.jsx'), 'utf8')
+const sidebarSource = fs.readFileSync(path.join(process.cwd(), 'src', 'components', 'Sidebar', 'Sidebar.jsx'), 'utf8')
+const appSource = fs.readFileSync(path.join(process.cwd(), 'src', 'App.jsx'), 'utf8')
 
 describe('Scanner progressive configuration UI', () => {
     it('starts with the recommended automatic configuration', () => {
@@ -20,5 +22,21 @@ describe('Scanner progressive configuration UI', () => {
         expect(source).toContain('aria-controls="scanner-advanced-options"')
         expect(source).toContain('{advancedOpen && (')
         expect(source).toContain('You normally do not need to change these settings.')
+    })
+
+    it('keeps an active scan outside the route and signals it only when Scanner is not open', () => {
+        expect(source).toContain('useScannerSession()')
+        expect(source).toContain('beginScannerSession({')
+        expect(appSource).toContain('<ScannerNetworkGuard />')
+        expect(sidebarSource).toContain("const showScannerBusy = scanning && location.pathname !== '/scanner'")
+        expect(sidebarSource).toContain('aria-label="LAN scan in progress"')
+    })
+
+    it('uses neutral presence while a re-scan verifies the last completed result', () => {
+        expect(source).toContain('buildScanPresenceInput(devices, runDevices')
+        expect(source).toContain('setScannerRunDevices([...foundRaw])')
+        expect(source).toContain("d.presence === 'checking'")
+        expect(source).toContain('Verifying')
+        expect(source).toContain('Not checked')
     })
 })

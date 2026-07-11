@@ -11,7 +11,7 @@
   <a href="https://apps.microsoft.com/detail/9PP5SB94FD03">
     <img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-Download-0078D4?logo=microsoft&logoColor=white" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-1.4.0-3b82f6" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.1-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
@@ -74,7 +74,7 @@ Main value:
 - TCP/UDP transport modes with profile-based execution.
 - **PDF / CSV export** across 6 modules (LAN Scanner, LAN Check, WAN Probe, Speed Test, Monitor, Traceroute, DNS).
 - **Safe Scan mode** - gentler ICMP profile for legacy switches and sensitive infrastructure.
-- Adaptive speed test (M-Lab NDT7, Cloudflare, Hetzner, OVH) with historical trends.
+- Adaptive speed test (M-Lab NDT7 and Cloudflare) with historical trends.
 - Built-in protocol utilities (SSL, WHOIS, MTR-like hop monitoring, WoL, ARP, DNS benchmark, subnet calc).
 - **Backend cancellation**: LAN discovery, LAN service scans, speed tests, probes, and traces can be stopped from the UI; active scan sockets/processes are closed.
 - **DB self-healing** - corrupt SQLite files are quarantined and recreated automatically on startup.
@@ -225,7 +225,7 @@ Operational recommendation:
 
 NetDuo has no backend and collects no personal data. There is no telemetry, no analytics, and no tracking. All test history and settings live locally in SQLite inside the Windows user-data directory.
 
-External requests are only made to public services you explicitly use (speed-test servers, DNS resolvers, WHOIS, MAC vendor lookup, public IP/geolocation).
+External requests are limited to documented diagnostic services and features you enable or run (public IP/geolocation, MAC vendor lookup, speed-test servers, DNS resolvers, and WHOIS).
 
 Full policy: [4ismael1.github.io/netduo/privacy](https://4ismael1.github.io/netduo/privacy)
 

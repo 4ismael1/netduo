@@ -165,9 +165,31 @@
     background: var(--color-cached);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-cached) 22%, transparent);
 }
+.dev-presence-dot-checking {
+    background: var(--color-accent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 45%, transparent);
+    animation: dev-dot-pulse 1.2s ease-out infinite;
+}
+.dev-presence-dot-not-checked {
+    background: var(--gray-400, #94a3b8);
+    opacity: 0.75;
+}
 .dev-presence-dot-offline {
     background: var(--gray-400, #94a3b8);
     opacity: 0.7;
+}
+
+.spill-checking {
+    color: var(--color-accent);
+    border-color: color-mix(in srgb, var(--color-accent) 28%, var(--border-light));
+}
+
+.scan-checking-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: var(--color-accent-ghost);
+    color: var(--color-accent);
 }
 
 @keyframes dev-dot-pulse {

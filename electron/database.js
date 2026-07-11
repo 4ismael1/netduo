@@ -20,6 +20,7 @@ const DEFAULT_PUBLIC_CONFIG_KEYS = [
     'accentColor',
     'theme',
     'pollInterval',
+    'publicIpVisible',
     'notifications',
     'notifyNewDevices',
     'macVendorLookupOnline',

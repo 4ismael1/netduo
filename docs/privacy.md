@@ -6,7 +6,7 @@ permalink: /privacy/
 
 # NetDuo Privacy Policy
 
-**Last updated:** April 2026
+**Last updated:** July 2026
 **Applies to:** NetDuo desktop application (Windows), all versions.
 
 NetDuo is a local network diagnostics and monitoring tool. This policy explains exactly what data the app processes, where it goes, and what we do — and do not — collect about you.
@@ -41,13 +41,13 @@ A small startup log (`netduo-startup.log`) is also written to the user-data dire
 
 ## 3. Connection identity and optional outbound requests
 
-NetDuo automatically performs a stateless HTTPS lookup to show the public IP used by the connection. Detailed geolocation and online MAC-vendor lookup remain disabled by default and require explicit opt-in in Settings.
+NetDuo automatically performs stateless HTTPS lookups for the public IP used by the connection and, by default, its approximate geolocation. The public IP is masked in the Dashboard until you choose to reveal it. Detailed geolocation and online MAC-vendor lookup can both be disabled in Settings.
 
 | Service | Host | Activation | What is sent | What is received |
 |---|---|---|---|---|
 | Public IP lookup | `api.ipify.org`, with `icanhazip.com` as fallback | Automatic | Standard HTTPS GET (no payload) | Your public IP address |
-| IP geolocation | `ip-api.com` | Optional setting | Your public IP as a URL path parameter | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
-| MAC vendor lookup | `api.macvendors.com` | Optional setting | First three bytes of the MAC address (OUI prefix) when the local table has no match | Vendor name |
+| IP geolocation | `ip-api.com` | Automatic when enabled (default on) | Your public IP as a URL path parameter | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
+| MAC vendor lookup | `api.macvendors.com` | Automatic when enabled (default on) | First three bytes of the MAC address (OUI prefix) when the local table has no match | Vendor name |
 
 These are standard, stateless HTTP requests. We send no identifiers, no cookies, no headers beyond a `User-Agent: NetDuo/1.x`. These services are operated by independent third parties and are governed by their own privacy policies.
 
@@ -61,7 +61,7 @@ Most network features only contact external services **when you explicitly use t
 
 | Feature | Contacts | Triggered by |
 |---|---|---|
-| Speed Test | `locate.measurementlab.net` + M-Lab NDT7 server, `speed.cloudflare.com`, `speed.hetzner.de`, `proof.ovh.net` (whichever server you pick) | Clicking **Start Test** |
+| Speed Test | `locate.measurementlab.net` + M-Lab NDT7 server, or `speed.cloudflare.com` (whichever server you pick) | Clicking **Start Test** |
 | DNS Benchmark | Cloudflare `1.1.1.1`, Google `8.8.8.8`, Quad9 `9.9.9.9`, OpenDNS `208.67.222.222` | Clicking **Run Benchmark** |
 | DNS Resolution | Your configured DNS servers | Entering a domain in the Diagnostics tab |
 | Traceroute / Ping / MTR / Port Checker / Port Scanner | The host or IP you enter | Clicking Start |

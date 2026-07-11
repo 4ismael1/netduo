@@ -149,6 +149,30 @@
 }
 .nav-btn.active .nav-label { font-weight: 600; }
 
+.nav-icon-wrap {
+    width: 19px;
+    height: 19px;
+    min-width: 19px;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-scan-spinner {
+    position: absolute;
+    right: -7px;
+    bottom: -6px;
+    color: var(--color-accent);
+    background: var(--bg-surface);
+    border-radius: 50%;
+    animation: nav-scan-spin 800ms linear infinite;
+}
+
+@keyframes nav-scan-spin {
+    to { transform: rotate(360deg); }
+}
+
 /* ── Tooltip (only when collapsed) ── */
 .sidebar-rail:not(.expanded) .nav-btn::after {
     content: attr(data-tip);

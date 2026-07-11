@@ -1,6 +1,6 @@
 {
   "name": "netduo",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Network diagnostics, LAN discovery and connection monitoring for Windows.",
   "private": true,
   "author": "Ismael Paulino",

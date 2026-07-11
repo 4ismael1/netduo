@@ -10,6 +10,8 @@ import { useNavigate } from 'react-router-dom'
 import bridge from '../../lib/electronBridge'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import { canProbeGateway } from '../../lib/gatewayProbe'
+import { DEFAULT_POLL_INTERVAL_SECONDS, normalizePollIntervalMs } from '../../lib/polling.js'
+import { persistPublicIpVisible, readPublicIpVisible } from '../../lib/publicIpPrivacy.js'
 import DashboardSkeleton from './DashboardSkeleton.jsx'
 import './Dashboard.css'
 
@@ -81,20 +83,22 @@ export default function Dashboard() {
     const [signalPts, setSignalPts] = useState(() => [..._signalHistory])
     const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
-    const [showPublicIP, setShowPublicIP] = useState(true)
+    const [showPublicIP, setShowPublicIP] = useState(readPublicIpVisible)
     const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
     const stateRef = useRef({})
     const [ready, setReady] = useState(!net.loading)
-    const [pollMs, setPollMs] = useState(3000)
+    const [pollMs, setPollMs] = useState(DEFAULT_POLL_INTERVAL_SECONDS * 1000)
     const [latencyThr, setLatencyThr] = useState(150)
 
     // Load poll interval & latency threshold from config
     useEffect(() => {
-        bridge.configGetPublic(['pollInterval', 'latencyThreshold']).then(cfg => {
+        bridge.configGetPublic(['pollInterval', 'latencyThreshold', 'publicIpVisible']).then(cfg => {
             if (!cfg) return
-            if (cfg.pollInterval) {
-                const ms = Number(cfg.pollInterval) * 1000
-                if (ms >= 1000) setPollMs(ms)
+            setPollMs(normalizePollIntervalMs(cfg.pollInterval))
+            if (cfg.publicIpVisible !== undefined) {
+                const visible = cfg.publicIpVisible === true
+                setShowPublicIP(visible)
+                persistPublicIpVisible(visible)
             }
             if (cfg.latencyThreshold) {
                 const v = Number(cfg.latencyThreshold)
@@ -104,8 +108,12 @@ export default function Dashboard() {
 
         const off = bridge.onConfigChanged?.(({ key, value, deleted }) => {
             if (key === 'pollInterval') {
-                const ms = deleted ? 3000 : Number(value) * 1000
-                if (ms >= 1000) setPollMs(ms)
+                setPollMs(deleted ? DEFAULT_POLL_INTERVAL_SECONDS * 1000 : normalizePollIntervalMs(value))
+            }
+            if (key === 'publicIpVisible') {
+                const visible = !deleted && value === true
+                setShowPublicIP(visible)
+                persistPublicIpVisible(visible)
             }
             if (key === 'latencyThreshold') {
                 const v = deleted ? 150 : Number(value)
@@ -459,7 +467,15 @@ export default function Dashboard() {
                                 <button
                                     type="button"
                                     className="ip-eye-btn"
-                                    onClick={(e) => { e.stopPropagation(); setShowPublicIP(p => !p) }}
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        setShowPublicIP(current => {
+                                            const visible = !current
+                                            persistPublicIpVisible(visible)
+                                            bridge.configSet('publicIpVisible', visible).catch(() => { /* noop */ })
+                                            return visible
+                                        })
+                                    }}
                                     title={showPublicIP ? 'Hide IP' : 'Show IP'}
                                     aria-label={showPublicIP ? 'Hide public IP' : 'Show public IP'}
                                 >
@@ -489,7 +505,6 @@ export default function Dashboard() {
                             return (
                                 <div
                                     className="stat-tile-sub"
-                                    style={!showPublicIP ? { visibility: 'hidden' } : undefined}
                                     title={fullDisplay}
                                 >
                                     {display || '\u00A0'}

@@ -44,4 +44,14 @@ describe('LAN scan report template', () => {
         expect(row[csv.headers.indexOf('New')]).toBe('yes')
         expect(row[csv.headers.indexOf('Neighbor state')]).toBe('stale')
     })
+
+    it('keeps devices outside a partial scan explicitly not checked', () => {
+        const device = { ...cachedDevice, presence: 'not-checked', isNew: false }
+        const html = buildHTML({ devices: [device] })
+        const csv = buildCSVData({ devices: [device] })
+        const row = csv.extract(device, 0)
+
+        expect(html).toContain('Not checked')
+        expect(row[csv.headers.indexOf('Status')]).toBe('not-checked')
+    })
 })

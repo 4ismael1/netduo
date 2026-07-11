@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import bridge from './electronBridge'
 import { logBridgeWarning } from './devLog.js'
+import { DEFAULT_POLL_INTERVAL_SECONDS, normalizePollIntervalMs } from './polling.js'
 
 /**
  * useNetworkStatus — centralized Context-based hook that tracks the live
@@ -20,14 +21,8 @@ const WIFI_NAME_RE = /(wi-?fi|wlan|wireless|802\.11)/i
 const ETHERNET_NAME_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|intel\(r\).*ethernet|gigabit)/i
 const VPN_NAME_RE = /(vpn|openvpn|wireguard|wg\d+|wintun|nordlynx|tailscale|zerotier|hamachi|ppp|utun\d*|tun\d*|tap\d*|ikev2|l2tp|sstp|pptp)/i
 const VIRTUAL_NAME_RE = /(virtual|vmware|vethernet|hyper-v|loopback|bluetooth|hamachi|zerotier|tailscale|wireguard|wintun|tun|tap)/i
-const DEFAULT_FAST_POLL_MS = 5000
+const DEFAULT_FAST_POLL_MS = DEFAULT_POLL_INTERVAL_SECONDS * 1000
 const DEFAULT_SLOW_POLL_MS = 60000
-
-function normalizePollIntervalMs(rawValue) {
-    const seconds = Number.parseInt(String(rawValue ?? ''), 10)
-    if (!Number.isInteger(seconds)) return DEFAULT_FAST_POLL_MS
-    return Math.max(1, Math.min(seconds, 60)) * 1000
-}
 
 function inferLinkType(iface = {}) {
     const name = String(iface?.name || '')
@@ -86,8 +81,8 @@ export function NetworkStatusProvider({ children }) {
     const publicIPRef = useRef(null)
     const vpnStatusRef = useRef(null)
     const networkContextRef = useRef(null)
-    const onlineNetworkInfoRef = useRef(false)
-    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(false)
+    const onlineNetworkInfoRef = useRef(true)
+    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(true)
 
     useEffect(() => {
         wifiRef.current = wifi
@@ -239,7 +234,7 @@ export function NetworkStatusProvider({ children }) {
         bridge.configGetPublic(['pollInterval', 'onlineNetworkInfo']).then(cfg => {
             if (!mountedRef.current) return
             setFastPollMs(normalizePollIntervalMs(cfg?.pollInterval))
-            const enabled = cfg?.onlineNetworkInfo === true
+            const enabled = cfg?.onlineNetworkInfo !== false
             onlineNetworkInfoRef.current = enabled
             setOnlineNetworkInfo(enabled)
             if (enabled) fetchAll({ skipWifi: true, skipGeo: false })
@@ -266,7 +261,7 @@ export function NetworkStatusProvider({ children }) {
                 setFastPollMs(deleted ? DEFAULT_FAST_POLL_MS : normalizePollIntervalMs(value))
             }
             if (key === 'onlineNetworkInfo') {
-                const enabled = !deleted && value === true
+                const enabled = deleted || value === true
                 onlineNetworkInfoRef.current = enabled
                 setOnlineNetworkInfo(enabled)
                 if (enabled) fetchAll({ skipWifi: true, skipGeo: false })

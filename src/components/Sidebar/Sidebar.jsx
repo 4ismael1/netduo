@@ -1,9 +1,10 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import {
     LayoutDashboard, Radar, Stethoscope, Gauge,
-    Activity, Globe, Wrench, History, Settings, ShieldAlert, ShieldCheck
+    Activity, Globe, Wrench, History, Settings, ShieldAlert, ShieldCheck, Loader2
 } from 'lucide-react'
 import NetDuoAppIcon from '../Brand/NetDuoAppIcon'
+import { useScannerSession } from '../../lib/scannerSession.js'
 import './Sidebar.css'
 
 const NAV = [
@@ -23,20 +24,27 @@ const BOTTOM = [
     { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
-function NavBtn({ path, icon: Icon, label }) {
+function NavBtn({ path, icon: Icon, label, busy = false }) {
     return (
         <NavLink
             to={path}
             className={({ isActive }) => `nav-btn${isActive ? ' active' : ''}`}
             data-tip={label}
         >
-            <Icon size={19} strokeWidth={1.8} />
+            <span className="nav-icon-wrap">
+                <Icon size={19} strokeWidth={1.8} />
+                {busy && <Loader2 size={11} className="nav-scan-spinner" aria-label="LAN scan in progress" />}
+            </span>
             <span className="nav-label">{label}</span>
         </NavLink>
     )
 }
 
 export default function Sidebar({ expanded }) {
+    const location = useLocation()
+    const { scanning } = useScannerSession()
+    const showScannerBusy = scanning && location.pathname !== '/scanner'
+
     return (
         <nav className={`sidebar-rail ${expanded ? 'expanded' : ''}`}>
             <div className="rail-top">
@@ -50,7 +58,7 @@ export default function Sidebar({ expanded }) {
 
             <div className="rail-nav">
                 <div className="nav-section-label">Navigation</div>
-                {NAV.map(n => <NavBtn key={n.path} {...n} />)}
+                {NAV.map(n => <NavBtn key={n.path} {...n} busy={n.path === '/scanner' && showScannerBusy} />)}
             </div>
 
             <div className="rail-bottom">

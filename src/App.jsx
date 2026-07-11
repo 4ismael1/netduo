@@ -1,11 +1,15 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import Sidebar from './components/Sidebar/Sidebar'
 import TopBar from './components/TopBar/TopBar'
 import bridge from './lib/electronBridge'
 import { logBridgeWarning } from './lib/devLog.js'
-import { NetworkStatusProvider } from './lib/useNetworkStatus.jsx'
+import useNetworkStatus, { NetworkStatusProvider } from './lib/useNetworkStatus.jsx'
+import {
+  abortScannerSession,
+  getScannerSessionSnapshot,
+} from './lib/scannerSession.js'
 // Dashboard is the first route on app open and is always needed, so we
 // import it eagerly to eliminate the visible skeleton flicker on cold
 // start. With lazy(), there were two competing skeletons: the Suspense
@@ -66,6 +70,33 @@ function RoutedPage({ Page, fallback = <RouteFallback /> }) {
       </Suspense>
     </ErrorBoundary>
   )
+}
+
+function ScannerNetworkGuard() {
+  const net = useNetworkStatus()
+  const previousNetworkRef = useRef(undefined)
+
+  useEffect(() => {
+    if (net.loading) return
+    const networkKey = [
+      net.networkContext?.cidr || '',
+      net.gateway || '',
+      net.localIP || '',
+    ].join('|')
+
+    if (previousNetworkRef.current === undefined) {
+      previousNetworkRef.current = networkKey
+      return
+    }
+    if (previousNetworkRef.current === networkKey) return
+    previousNetworkRef.current = networkKey
+
+    const wasScanning = getScannerSessionSnapshot().scanning
+    const cancelledScanId = abortScannerSession({ clearDevices: true })
+    if (wasScanning) bridge.lanScanCancel?.(cancelledScanId)
+  }, [net.gateway, net.loading, net.localIP, net.networkContext?.cidr])
+
+  return null
 }
 
 export default function App() {
@@ -145,6 +176,7 @@ export default function App() {
   return (
     <HashRouter>
       <NetworkStatusProvider>
+      <ScannerNetworkGuard />
       <div className="app-layout">
         <div className="sidebar-region">
           <Sidebar expanded={sidebarExpanded} />

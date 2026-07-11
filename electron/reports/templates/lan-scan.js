@@ -50,7 +50,8 @@ function countByType(devices) {
  *
  * The renderer ships the merged inventory shape (see mergeScanWithInventory
  * in src/lib/deviceInventory.js) so each row carries an explicit
- * `presence` field: 'online' | 'cached' | 'offline' | 'new'. When that field is
+ * `presence` field: 'online' | 'cached' | 'offline' | 'new' | 'checking' |
+ * 'not-checked'. When that field is
  * present we honour it first — it captures the persisted Offline /
  * freshly-discovered New state that raw scan flags can't express. Older
  * payloads (or seenOnly rows produced by partial scans without the
@@ -59,6 +60,8 @@ function countByType(devices) {
 function deviceBadge(d) {
     if (d.presence === 'new')     return '<span class="badge info">New</span>'
     if (d.presence === 'cached')  return '<span class="badge warn">Cached</span>'
+    if (d.presence === 'checking') return '<span class="badge info">Verifying</span>'
+    if (d.presence === 'not-checked') return '<span class="badge muted">Not checked</span>'
     if (d.presence === 'offline') return '<span class="badge muted">Offline</span>'
     if (d.presence === 'online')  return '<span class="badge ok">Online</span>'
     if (d.isGateway) return '<span class="badge info">Gateway</span>'
@@ -177,6 +180,8 @@ function buildHTML(payload) {
 function csvStatus(d) {
     if (d.presence === 'new') return 'new'
     if (d.presence === 'cached') return 'cached'
+    if (d.presence === 'checking') return 'verifying'
+    if (d.presence === 'not-checked') return 'not-checked'
     if (d.presence === 'offline') return 'offline'
     if (d.presence === 'online') return 'online'
     if (d.alive) return 'online'

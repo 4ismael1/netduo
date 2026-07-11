@@ -1984,10 +1984,10 @@ async function resolveVendor(mac, skipOnline = false) {
     if (derivedVendor) return { vendor: derivedVendor, vendorSource: 'oui-derived' }
     if (!mac || skipOnline) return { vendor: null, vendorSource: 'unknown' }
 
-    // User opt-out: "Consultas online de fabricante" in Settings. The
-    // This is explicit opt-in: null / undefined stays offline.
+    // User opt-out: online lookup is enabled when the setting has never
+    // been changed, while an explicit false keeps scans fully offline.
     const onlineAllowed = database.configGet('macVendorLookupOnline')
-    if (onlineAllowed !== true) return { vendor: null, vendorSource: 'unknown' }
+    if (onlineAllowed === false) return { vendor: null, vendorSource: 'unknown' }
 
     const onlineVendor = await withTimeout(lookupVendorOnline(mac), 2800, null)
     if (onlineVendor) return { vendor: onlineVendor, vendorSource: 'macvendors' }
@@ -3356,26 +3356,6 @@ const SPEED_SERVERS = [
         uploadUrl: 'https://speed.cloudflare.com/__up',
         pingUrl: 'https://speed.cloudflare.com/__down?bytes=1',
         variableSize: true,
-    },
-    {
-        id: 'hetzner',
-        name: 'Hetzner DL + Cloudflare UL',
-        location: 'Nuremberg download / nearest Cloudflare upload',
-        sponsor: 'Hetzner Online GmbH + Cloudflare, Inc.',
-        getDownloadUrl: () => 'https://speed.hetzner.de/100MB.bin',
-        uploadUrl: 'https://speed.cloudflare.com/__up',
-        pingUrl: 'https://speed.hetzner.de/100MB.bin',
-        variableSize: false,
-    },
-    {
-        id: 'ovh',
-        name: 'OVH DL + Cloudflare UL',
-        location: 'Gravelines download / nearest Cloudflare upload',
-        sponsor: 'OVH SAS + Cloudflare, Inc.',
-        getDownloadUrl: () => 'https://proof.ovh.net/files/100Mb.dat',
-        uploadUrl: 'https://speed.cloudflare.com/__up',
-        pingUrl: 'https://proof.ovh.net/files/1Mb.dat',
-        variableSize: false,
     },
 ]
 

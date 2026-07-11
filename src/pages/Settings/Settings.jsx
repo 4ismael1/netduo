@@ -2,6 +2,7 @@
 import { Settings as SettingsIcon, Palette, Bell, Globe, Info, Moon, Sun, Github, ExternalLink, CircleDot, Shield, Trash2, CheckCircle2, FileText } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
+import { DEFAULT_POLL_INTERVAL_SECONDS, POLL_INTERVAL_OPTIONS_SECONDS } from '../../lib/polling.js'
 import './Settings.css'
 
 const ACCENTS = [
@@ -81,11 +82,11 @@ function persistSetting(key, value) {
 export default function Settings() {
     const [accent, setAccent] = useState(DEFAULT_ACCENT)
     const [theme, setTheme] = useState('light')
-    const [interval, setInterval] = useState('2')
+    const [interval, setInterval] = useState(String(DEFAULT_POLL_INTERVAL_SECONDS))
     const [notifs, setNotifs] = useState(true)
     const [notifyNewDevices, setNotifyNewDevices] = useState(true)
-    const [macVendorOnline, setMacVendorOnline] = useState(false)
-    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(false)
+    const [macVendorOnline, setMacVendorOnline] = useState(true)
+    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(true)
     const [latencyThr, setLatencyThr] = useState('200')
     const [appVersion, setAppVersion] = useState('—')
     const [clearStatus, setClearStatus] = useState(null) // 'confirm' | 'ok' | 'error' | null
@@ -205,16 +206,16 @@ export default function Settings() {
                 </div>
             </div>
 
-            {/* Monitor Settings */}
+            {/* Live diagnostics and alert settings */}
             <div className="v3-card" style={{ marginBottom: 24, maxWidth: 800 }}>
                 <div className="v3-card-header">
-                    <span className="v3-card-title"><Bell size={16} style={{ display: 'inline', marginRight: 5, color: 'var(--color-accent)' }} />Monitor & Alerts</span>
+                    <span className="v3-card-title"><Bell size={16} style={{ display: 'inline', marginRight: 5, color: 'var(--color-accent)' }} />Live diagnostics & alerts</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 24 }}>
                     <div className="input-group">
-                        <label className="v3-label-sm">Polling Interval (seconds)</label>
+                        <label className="v3-label-sm">Live latency polling interval</label>
                         <select className="v3-input" value={interval} onChange={e => { setInterval(e.target.value); persistSetting('pollInterval', e.target.value) }}>
-                            {['1', '2', '5', '10', '30'].map(v => <option key={v} value={v}>{v}s</option>)}
+                            {POLL_INTERVAL_OPTIONS_SECONDS.map(v => <option key={v} value={String(v)}>{v}s</option>)}
                         </select>
                     </div>
                     <div className="input-group">
@@ -236,7 +237,7 @@ export default function Settings() {
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
                         <div>
                             <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>IP geolocation details</div>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Optional country, city and ISP lookup. Your public IP itself is always detected for connection diagnostics.</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Enabled by default. Looks up country, city and ISP from your public IP; disable it here at any time.</div>
                         </div>
                     </label>
                     <label className="toggle-label">
@@ -252,7 +253,7 @@ export default function Settings() {
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
                         <div>
                             <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Online vendor lookup (MAC API)</div>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Explicit opt-in: sends only the manufacturer prefix (OUI), not the full MAC address, when the local table misses. Leave disabled for fully offline scans.</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Enabled by default. Sends only the manufacturer prefix (OUI), never the full MAC address, when the local table has no match. Disable for fully offline scans.</div>
                         </div>
                     </label>
                 </div>

@@ -29,7 +29,7 @@ function mockPingResult(host) {
 
 const API = window.electronAPI
 const CONFIG_CHANGE_EVENT = 'netduo:config-changed'
-const DEFAULT_PUBLIC_CONFIG_KEYS = ['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold', 'onlineNetworkInfo', 'lancheck.settings']
+const DEFAULT_PUBLIC_CONFIG_KEYS = ['accentColor', 'theme', 'pollInterval', 'publicIpVisible', 'notifications', 'latencyThreshold', 'onlineNetworkInfo', 'lancheck.settings']
 const SENSITIVE_CONFIG_KEYS = new Set(['wanProbeKey', 'wanProbePool'])
 const WAN_PROBE_CONFIG_KEYS = [
     'wanProbePool',
@@ -475,8 +475,6 @@ const bridge = {
             : Promise.resolve([
                 { id: 'mlab', name: 'M-Lab NDT7', location: 'Auto - nearest server', sponsor: 'Measurement Lab (Google)' },
                 { id: 'cloudflare', name: 'Cloudflare', location: 'Global CDN (nearest edge)', sponsor: 'Cloudflare, Inc.' },
-                { id: 'hetzner', name: 'Hetzner', location: 'Europe - Nuremberg, Germany', sponsor: 'Hetzner Online GmbH' },
-                { id: 'ovh', name: 'OVH', location: 'Europe - Gravelines, France', sponsor: 'OVH SAS' },
             ]),
     speedTestFull: (serverId) =>
         API ? API.speedTestFull(serverId)

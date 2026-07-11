@@ -21,7 +21,7 @@ function sliceBetween(startNeedle, endNeedle) {
 describe('Scanner race-condition guards', () => {
     it('checks scanRunRef after each post-sweep persistence await before setting state', () => {
         const persistenceBlock = sliceBetween('await bridge.deviceSnapshotAdd', '} catch { /* tracking is best-effort */ }')
-        const setStateCalls = ['setNewDeviceKeys', 'setInventory']
+        const setStateCalls = ['setScannerNewDeviceKeys', 'setInventory']
 
         for (const call of setStateCalls) {
             const callIndex = persistenceBlock.indexOf(call)
@@ -39,11 +39,23 @@ describe('Scanner race-condition guards', () => {
 
     it('uses the captured scan options for every LAN scan batch', () => {
         const scanBlock = sliceBetween('async function startScan', 'function stopScan')
-        expect(scanBlock).toMatch(/const scanId = scanRunRef\.current \+ 1/)
+        expect(scanBlock).toContain('const scanId = beginScannerSession({')
+        expect(scanBlock).toContain('safeMode,')
+        expect(scanBlock).toContain('discoveryMode,')
         expect(scanBlock).toContain('const scanGatewayIp = validated.gatewayIp || net.gateway || null')
         expect(scanBlock).toContain('bridge.lanScan(segment.baseIP, s, e, {')
         expect(scanBlock).toContain('scanId,')
         expect(scanBlock).toContain('isLastBatch,')
         expect(scanBlock.indexOf('bridge.lanScan')).toBeGreaterThan(scanBlock.indexOf('const scanId'))
+    })
+
+    it('rejects stale network identity results before updating Scanner state', () => {
+        const scanBlock = sliceBetween('async function startScan', 'function stopScan')
+        const resolveIndex = scanBlock.indexOf('await resolveNetworkId')
+        const guardIndex = scanBlock.indexOf('if (scanRunRef.current !== scanId) return', resolveIndex)
+        const setIndex = scanBlock.indexOf('setNetworkId(scanNetworkId)', resolveIndex)
+        expect(resolveIndex).toBeGreaterThan(-1)
+        expect(guardIndex).toBeGreaterThan(resolveIndex)
+        expect(setIndex).toBeGreaterThan(guardIndex)
     })
 })

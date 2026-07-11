@@ -191,6 +191,18 @@ describe('mergeScanWithInventory - seenOnly devices are cached', () => {
         expect(merged[0].neighborState).toBe('reachable')
     })
 
+    it('preserves neutral re-scan states without claiming devices are offline', () => {
+        const checking = mergeScanWithInventory([
+            { ip: '192.168.1.22', mac: 'aa:bb:cc:dd:ee:22', alive: false, presenceHint: 'checking', lastSeen: 1500 },
+        ], [])
+        expect(checking[0]).toMatchObject({ presence: 'checking', alive: false, lastSeen: 1500 })
+
+        const outside = mergeScanWithInventory([
+            { ip: '192.168.1.22', mac: 'aa:bb:cc:dd:ee:22', alive: false, presenceHint: 'not-checked', lastSeen: 1500 },
+        ], [])
+        expect(outside[0]).toMatchObject({ presence: 'not-checked', alive: false, lastSeen: 1500 })
+    })
+
     it('lets active discovery override a stale cached hint', () => {
         const scan = [{
             ip: '192.168.1.44', mac: 'aa:bb:cc:dd:ee:44',

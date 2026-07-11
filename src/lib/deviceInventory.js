@@ -63,7 +63,7 @@ function isEmptyMac(mac) {
  * @returns {Array<object>} merged devices where each entry has:
  *   - every field from the scanned device (when online)
  *   - inventory-only fields (nickname, typeOverride, notes, firstSeen)
- *   - `presence`: 'online' | 'cached' | 'offline' | 'new'
+ *   - `presence`: 'online' | 'cached' | 'offline' | 'new' | 'checking' | 'not-checked'
  *   - `deviceKey`: stable identifier
  *   - `lastSeen`: epoch ms of most recent observation
  *   - `firstSeen`: epoch ms of first observation (if in inventory)
@@ -130,6 +130,8 @@ export function mergeScanWithInventory(scanDevices, inventoryItems, newKeySet = 
 }
 
 function presenceForScanDevice(device, isNew) {
+    if (device?.presenceHint === 'checking') return 'checking'
+    if (device?.presenceHint === 'not-checked') return 'not-checked'
     if (device?.alive === true) return isNew ? 'new' : 'online'
     if (device?.presenceHint === 'cached') return 'cached'
     if (device?.seenOnly && device?.alive !== true) return 'cached'
@@ -205,7 +207,9 @@ function buildEntry(scanDevice, inventory, presence, isNew = false, gatewayIp = 
 
         // lifetime bookkeeping
         firstSeen: inv.firstSeen || null,
-        lastSeen: presence === 'offline' ? (inv.lastSeen || null) : Date.now(),
+        lastSeen: ['offline', 'checking', 'not-checked'].includes(presence)
+            ? (base.lastSeen || inv.lastSeen || null)
+            : Date.now(),
 
         presence,
         isNew: isNew || presence === 'new',

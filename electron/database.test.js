@@ -218,6 +218,7 @@ describe('electron/database', () => {
     it('returns only public config keys by default', () => {
         database.configSet('theme', 'dark')
         database.configSet('pollInterval', '5')
+        database.configSet('publicIpVisible', false)
         database.configSet('wanProbeKey', 'secret-token')
         database.configSet('wanProbePool', [{ url: 'https://probe.example', apiKey: 'secret-token' }])
 
@@ -225,6 +226,7 @@ describe('electron/database', () => {
 
         expect(publicConfig.theme).toBe('dark')
         expect(publicConfig.pollInterval).toBe('5')
+        expect(publicConfig.publicIpVisible).toBe(false)
         expect(publicConfig.wanProbeKey).toBeUndefined()
         expect(publicConfig.wanProbePool).toBeUndefined()
     })

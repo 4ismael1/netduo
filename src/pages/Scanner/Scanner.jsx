@@ -16,6 +16,18 @@ import { mergeScanWithInventory, primaryLabel, isHideableWhenOffline, stableKey,
 import { buildContextScanSegments } from '../../lib/ipv4Scope'
 import { assessDeviceEvidence } from '../../lib/deviceEvidence'
 import { resolveVendorKey, resolveHostnameHint, cleanVendorName } from '../../lib/vendorClassify'
+import {
+    abortScannerSession,
+    beginScannerSession,
+    finishScannerSession,
+    scannerRunRef,
+    setScannerDevices,
+    setScannerNewDeviceKeys,
+    setScannerProgress,
+    setScannerRunDevices,
+    useScannerSession,
+} from '../../lib/scannerSession.js'
+import { buildCompletedPresenceInput, buildScanPresenceInput } from '../../lib/scannerPresence.js'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import DeviceMetaEditor from '../../components/DeviceMetaEditor/DeviceMetaEditor'
 import './Scanner.css'
@@ -414,12 +426,16 @@ function presenceLabel(device) {
     if (device.presence === 'new') return 'New'
     if (device.presence === 'online') return 'Online'
     if (device.presence === 'cached') return 'Cached'
+    if (device.presence === 'checking') return 'Verifying'
+    if (device.presence === 'not-checked') return 'Not checked'
     if (device.presence === 'offline') return 'Offline'
     return device.alive ? 'Online' : 'Unknown'
 }
 
 function discoveryEvidenceLabel(device) {
     if (!device) return '-'
+    if (device.presence === 'checking') return 'Verification in progress'
+    if (device.presence === 'not-checked') return 'Outside the current scan range'
     const parts = []
     const active = sourceLabel(device.activeSource)
     if (active) parts.push(`${active} responder`)
@@ -574,9 +590,7 @@ async function notifyNewDevicesIfAllowed(newKeys, foundDevices) {
 
 export default function Scanner() {
     const net = useNetworkStatus()
-    const [scanning, setScanning] = useState(false)
-    const [devices, setDevices] = useState([])
-    const [progress, setProgress] = useState(0)
+    const { scanning, devices, runDevices, progress, newDeviceKeys, scanMeta, completedMeta } = useScannerSession()
     const [baseIP, setBaseIP] = useState(() => extractSubnet(net.gateway) || extractSubnet(net.localIP) || '192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
@@ -598,7 +612,6 @@ export default function Scanner() {
     // smoothing layer — never authoritative.
     const [inventory, setInventory] = useState(() => readSessionInventory())
     const [networkId, setNetworkId] = useState(() => readSessionNetworkId())
-    const [newDeviceKeys, setNewDeviceKeys] = useState(new Set())
     const [showOffline, setShowOffline] = useState(true)
     const [newOnly, setNewOnly] = useState(false)
     // Column sort state. `key === null` means "default order" (IP asc
@@ -611,7 +624,7 @@ export default function Scanner() {
     const [sort, setSort] = useState({ key: null, dir: 'asc' })
     const detailScrollRef = useRef(null)
     const prevDetailLoadingRef = useRef(false)
-    const scanRunRef = useRef(0)
+    const scanRunRef = scannerRunRef
     const detailRunRef = useRef(0)
     // Tracks the LAST auto-detected subnet so we can distinguish
     // "user typed a custom subnet" from "the network changed under us".
@@ -655,13 +668,9 @@ export default function Scanner() {
         }
         if (previousSelectedScopeRef.current === selectedNetworkContext.cidr) return
         previousSelectedScopeRef.current = selectedNetworkContext.cidr
-        bridge.lanScanCancel?.(scanRunRef.current)
-        scanRunRef.current += 1
-        setScanning(false)
-        setProgress(0)
-        setDevices([])
+        const cancelledScanId = abortScannerSession({ clearDevices: true })
+        bridge.lanScanCancel?.(cancelledScanId)
         setInventory([])
-        setNewDeviceKeys(new Set())
         setSelected(null)
         setDetailData(null)
     }, [scopeMode, selectedNetworkContext?.cidr])
@@ -774,11 +783,9 @@ export default function Scanner() {
         // pipeline checks `scanRunRef.current !== scanId` and bails
         // when it doesn't match, so the in-flight IPC promises resolve
         // into a no-op instead of mutating state.
-        scanRunRef.current += 1
-        setScanning(false)
-        setProgress(0)
-        setDevices([])
-        setNewDeviceKeys(new Set())
+        const cancelledScanId = abortScannerSession({ clearDevices: true })
+        bridge.lanScanCancel?.(cancelledScanId)
+        setScannerNewDeviceKeys(new Set())
         setSelected(null)
         setDetailData(null)
         setDetailLoading(false)
@@ -991,7 +998,7 @@ export default function Scanner() {
             const byIp = new Map(updates.map(row => [row.ip, row]))
 
             if (scanRunRef.current !== scanId) return
-            setDevices(prev => prev.map(device => {
+            setScannerDevices(prev => prev.map(device => {
                 const update = byIp.get(device.ip)
                 if (!update) return device
                 return enrichForView({
@@ -1052,8 +1059,6 @@ export default function Scanner() {
     async function startScan() {
         const validated = validateInputs()
         if (!validated) return
-        const scanId = scanRunRef.current + 1
-        scanRunRef.current = scanId
         const scanScopeKey = validated.scopeKey
         const scanGatewayIp = validated.gatewayIp || net.gateway || null
         const scanSegments = validated.segments
@@ -1064,7 +1069,13 @@ export default function Scanner() {
         // newKeys set arrives only after deviceInventoryMerge returns
         // at the end of the scan — until then, every device should
         // carry its plain 'online' presence, not 'new'.
-        setScanning(true); setDevices([]); setProgress(0); setSelected(null); setDetailData(null); setNewOnly(false); setNewDeviceKeys(new Set())
+        const scanId = beginScannerSession({
+            scopeLabel: validated.cidr || `${scanScopeKey}.0/24`,
+            safeMode,
+            discoveryMode,
+            segments: scanSegments,
+        })
+        setSelected(null); setDetailData(null); setNewOnly(false)
 
         // We still want to know whether this is the user's first-ever scan
         // of this subnet — if so, we skip "new device" notifications to avoid
@@ -1096,10 +1107,10 @@ export default function Scanner() {
                 if (scanRunRef.current !== scanId) return
                 if (results) {
                     const enriched = results.map(r => enrichForView(r))
-                    foundRaw.push(...enriched); setDevices([...foundRaw])
+                    foundRaw.push(...enriched); setScannerRunDevices([...foundRaw])
                 }
                 completedTargets += e - s + 1
-                setProgress(Math.round((completedTargets / total) * 100))
+                setScannerProgress(Math.round((completedTargets / total) * 100))
             }
         }
         if (scanRunRef.current !== scanId) return
@@ -1108,7 +1119,7 @@ export default function Scanner() {
         // (alive && !mac → ghost). No post-processing needed here.
         const found = foundRaw
 
-        setScanning(false)
+        finishScannerSession(scanId)
         bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: validated.cidr || `${scanScopeKey}.0/24`, results: { found: found.length } })
 
         // Derive a stable network identity. Prefer the scanned gateway
@@ -1117,6 +1128,7 @@ export default function Scanner() {
         // this prevents two different `192.168.1.x` networks from
         // sharing the same `ip:192.168.1` fallback identity.
         const scanNetworkId = await resolveNetworkId(found, scanScopeKey, scanGatewayIp)
+        if (scanRunRef.current !== scanId) return
         setNetworkId(scanNetworkId)
         // Remember this mapping so next mount loads the right inventory
         // immediately instead of falling back to `ip:<subnet>` (which can
@@ -1154,7 +1166,7 @@ export default function Scanner() {
             if (scanRunRef.current !== scanId) return
 
             const newKeys = Array.isArray(mergeResult?.newKeys) ? mergeResult.newKeys : []
-            setNewDeviceKeys(new Set(newKeys))
+            setScannerNewDeviceKeys(new Set(newKeys))
 
             // Compute the gateway's scoped device_key from the live scan
             // so the purge can exempt it even when its MAC is also used by
@@ -1203,9 +1215,8 @@ export default function Scanner() {
     }
 
     function stopScan() {
-        bridge.lanScanCancel?.(scanRunRef.current)
-        scanRunRef.current += 1
-        setScanning(false)
+        const cancelledScanId = abortScannerSession()
+        bridge.lanScanCancel?.(cancelledScanId)
     }
     async function openDetail(device) {
         // Each invocation bumps the run counter — pending diagnostics from
@@ -1286,9 +1297,12 @@ export default function Scanner() {
     const mergedDevices = useMemo(() => {
         const activeScopeKey = scopeMode === 'auto' ? selectedNetworkContext?.cidr : baseIP
         const scanOnlySubnet = inventory.filter(i => !activeScopeKey || i.baseIP === activeScopeKey)
-        const base = mergeScanWithInventory(devices, scanOnlySubnet, newDeviceKeys, { gatewayIp: net.gateway || null })
+        const presenceInput = scanning
+            ? buildScanPresenceInput(devices, runDevices, scanOnlySubnet, scanMeta?.segments)
+            : buildCompletedPresenceInput(devices, scanOnlySubnet, completedMeta?.segments)
+        const base = mergeScanWithInventory(presenceInput, scanOnlySubnet, newDeviceKeys, { gatewayIp: net.gateway || null })
         return base.map(d => enrichForView(d))
-    }, [devices, inventory, newDeviceKeys, baseIP, net.gateway, selectedNetworkContext?.cidr, scopeMode])
+    }, [devices, runDevices, scanning, scanMeta?.segments, completedMeta?.segments, inventory, newDeviceKeys, baseIP, net.gateway, selectedNetworkContext?.cidr, scopeMode])
 
     const visibleDevices = useMemo(() => {
         let pool = mergedDevices
@@ -1368,6 +1382,8 @@ export default function Scanner() {
     })
     const onlineCount = mergedDevices.filter(d => d.presence === 'online' || d.presence === 'new').length
     const cachedCount = mergedDevices.filter(d => d.presence === 'cached').length
+    const checkingCount = mergedDevices.filter(d => d.presence === 'checking').length
+    const notCheckedCount = mergedDevices.filter(d => d.presence === 'not-checked').length
     const offlineCount = mergedDevices.filter(d => d.presence === 'offline').length
     const newCount = mergedDevices.filter(d => d.isNew || d.presence === 'new').length
 
@@ -1387,7 +1403,7 @@ export default function Scanner() {
                     </div>
                     <div>
                         <div className="scan-status">
-                            {scanning ? <><Loader2 size={14} className="spin-icon" /> Scanning {scopeMode === 'auto' ? (selectedNetworkContext?.cidr || `${baseIP}.*`) : `${baseIP}.*`}{safeMode && <span className="safe-mode-tag"> · safe mode</span>}</>
+                            {scanning ? <><Loader2 size={14} className="spin-icon" /> Scanning {scanMeta?.scopeLabel || (scopeMode === 'auto' ? (selectedNetworkContext?.cidr || `${baseIP}.*`) : `${baseIP}.*`)}{scanMeta?.safeMode && <span className="safe-mode-tag"> · safe mode</span>}</>
                                 : devices.length ? <span style={{color:'var(--color-success)'}}>{devices.length} device{devices.length!==1?'s':''} found</span>
                                 : 'Ready to scan'}
                         </div>
@@ -1496,7 +1512,9 @@ export default function Scanner() {
                 <div className="scan-pills">
                     <span className="spill total"><Signal size={13}/>{mergedDevices.length} Known</span>
                     <span className="spill" style={{color:'var(--color-success)'}}><Clock size={13}/>{onlineCount} Online</span>
+                    {checkingCount > 0 && <span className="spill spill-checking"><Loader2 size={13} className="spin-icon" />{checkingCount} Verifying</span>}
                     {cachedCount > 0 && <span className="spill spill-cached">{cachedCount} Cached</span>}
+                    {notCheckedCount > 0 && <span className="spill" style={{color:'var(--text-muted)'}}>{notCheckedCount} Not checked</span>}
                     {offlineCount > 0 && <span className="spill" style={{color:'var(--text-muted)'}}>{offlineCount} Offline</span>}
                     {newCount > 0 && (
                         <button
@@ -1612,6 +1630,8 @@ export default function Scanner() {
                                 : 'var(--color-danger)'
                             const latencyLabel = d.presence === 'offline'
                                 ? 'offline'
+                                : d.presence === 'checking' ? 'checking'
+                                : d.presence === 'not-checked' ? 'not checked'
                                 : d.presence === 'cached' ? 'cached'
                                 : d.time != null ? `${d.time}ms` : d.seenOnly ? 'seen' : '—'
                             return (
@@ -1627,12 +1647,14 @@ export default function Scanner() {
                                                 {subName && subName !== primaryName && <span className="dev-subname"> · {subName}</span>}
                                                 {(d.isNew || d.presence === 'new') && <span className="gw-tag" style={{background:'color-mix(in srgb, var(--color-success) 15%, transparent)',color:'var(--color-success)'}}>NEW</span>}
                                                 {d.presence === 'cached' && <span className="gw-tag" style={{background:'rgba(184,148,106,0.16)',color:'#8a6a40'}} title="Seen in ARP/neighbor cache, but did not actively reply">CACHED</span>}
+                                                {d.presence === 'checking' && <span className="gw-tag scan-checking-tag"><Loader2 size={10} className="spin-icon" />VERIFYING</span>}
+                                                {d.presence === 'not-checked' && <span className="gw-tag" style={{background:'var(--gray-100)',color:'var(--text-muted)'}}>NOT CHECKED</span>}
                                                 {d.presence === 'offline' && <span className="gw-tag" style={{background:'var(--gray-100)',color:'var(--text-muted)'}}>OFFLINE</span>}
                                                 {d.isGateway && <span className="gw-tag">GW</span>}
                                                 {d.isLocal && <span className="gw-tag" style={{background:'rgba(59,130,246,0.1)',color:'#3b82f6'}}>YOU</span>}
                                                 {d.isRandomized && !d.isLocal && !d.isGateway && <span className="gw-tag" style={{background:'rgba(139,92,246,0.1)',color:'#8b5cf6'}}>RND</span>}
                                                 {d.seenOnly && !d.isLocal && d.presence !== 'offline' && d.presence !== 'cached' && <span className="gw-tag" style={{background:'rgba(148,163,184,0.15)',color:'#64748b'}}>ARP</span>}
-                                                <span className="src-badge" title={`Detection confidence: ${d.evidenceConfidence}%`}>{d.evidenceLabel}</span>
+                                                {!['checking', 'not-checked'].includes(d.presence) && <span className="src-badge" title={`Detection confidence: ${d.evidenceConfidence}%`}>{d.evidenceLabel}</span>}
                                                 {d.nameSource && d.nameSource !== 'unknown' && SRC_COLORS[d.nameSource] && (
                                                     <span className="src-badge" style={{background: SRC_COLORS[d.nameSource].bg, color: SRC_COLORS[d.nameSource].fg}}>
                                                         {SRC_COLORS[d.nameSource].label}
@@ -1684,7 +1706,15 @@ export default function Scanner() {
                                   vendor side-by-side, so we don't force it.
                                 */}
                                 <DF l="IP Address" v={selected.ip} m copy/>
-                                <DF l="Ping" v={selected.time!=null?`${selected.time} ms`:selected.presence === 'cached'?'No active reply (cached)':selected.seenOnly?'No reply (ARP seen)':'—'} m/>
+                                <DF l="Ping" v={selected.time!=null
+                                    ? `${selected.time} ms`
+                                    : selected.presence === 'checking'
+                                        ? 'Verification in progress'
+                                        : selected.presence === 'not-checked'
+                                            ? 'Outside current scan range'
+                                            : selected.presence === 'cached'
+                                                ? 'No active reply (cached)'
+                                                : selected.seenOnly ? 'No reply (ARP seen)' : '—'} m/>
                                 <DF l="Type" v={selected.deviceType}/>
                                 <DF l="Status" v={presenceLabel(selected)}/>
                                 <DF l="MAC Address" v={selected.mac && !selected.macEmpty ? selected.mac : (selected.isLocal ? 'N/A (local)' : 'Not available')} full m copy/>

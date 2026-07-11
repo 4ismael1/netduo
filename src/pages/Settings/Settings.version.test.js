@@ -13,7 +13,7 @@ describe('application version display', () => {
         const bridge = read('src/lib/electronBridge.js')
         const settings = read('src/pages/Settings/Settings.jsx')
 
-        expect(pkg.version).toBe('1.4.0')
+        expect(pkg.version).toBe('1.4.1')
         expect(main).toContain("ipcMain.handle('get-app-version', () => app.getVersion())")
         expect(preload).toContain("getAppVersion: () => ipcRenderer.invoke('get-app-version')")
         expect(bridge).toContain('getAppVersion: () => API?.getAppVersion')
