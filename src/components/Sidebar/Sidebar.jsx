@@ -2,9 +2,10 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
     LayoutDashboard, Radar, Stethoscope, Gauge,
     Activity, Globe, Wrench, History, Settings, ShieldAlert, ShieldCheck,
-    Route, Radio, Search, ChartNoAxesColumnIncreasing, Check, AlertTriangle
+    Check, AlertTriangle, X
 } from 'lucide-react'
 import NetDuoAppIcon from '../Brand/NetDuoAppIcon'
+import OperationGlyph from './OperationGlyph'
 import { useScannerSession } from '../../lib/scannerSession.js'
 import { useOperations } from '../../lib/operationRegistry.js'
 import './Sidebar.css'
@@ -26,26 +27,16 @@ const BOTTOM = [
     { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
-const OPERATION_ICONS = {
-    scan: Radar,
-    check: ShieldCheck,
-    wan: Globe,
-    speed: Gauge,
-    monitor: Activity,
-    route: Route,
-    ping: Radio,
-    ports: Search,
-    benchmark: ChartNoAxesColumnIncreasing,
-}
-
 function OperationIndicator({ operation }) {
     if (!operation) return null
-    const IndicatorIcon = operation.status === 'done'
-        ? Check
-        : operation.status === 'error'
-            ? AlertTriangle
-            : (OPERATION_ICONS[operation.kind] || Activity)
     const label = operation.label || 'Operation in progress'
+    const statusGlyph = operation.status === 'done'
+        ? <Check size={12} strokeWidth={2.4} aria-hidden="true" />
+        : operation.status === 'error'
+            ? <AlertTriangle size={12} strokeWidth={2.2} aria-hidden="true" />
+            : operation.status === 'cancelled'
+                ? <X size={12} strokeWidth={2.2} aria-hidden="true" />
+                : <OperationGlyph kind={operation.kind} />
     return (
         <span
             className={`nav-operation nav-operation-${operation.kind || 'generic'} is-${operation.status || 'running'}`}
@@ -53,7 +44,7 @@ function OperationIndicator({ operation }) {
             aria-label={label}
             title={label}
         >
-            <IndicatorIcon size={11} strokeWidth={2.2} />
+            {statusGlyph}
             {operation.count > 1 && <span className="nav-operation-count">{operation.count}</span>}
         </span>
     )
