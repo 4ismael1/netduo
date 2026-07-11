@@ -87,11 +87,11 @@ export default function App() {
         document.documentElement.style.setProperty('--text-accent', cfg.accentColor)
         document.documentElement.style.setProperty('--border-focus', cfg.accentColor)
       }
-      if (cfg.theme) {
-        document.documentElement.setAttribute('data-theme', cfg.theme)
-        document.documentElement.style.colorScheme = cfg.theme === 'light' ? 'light' : 'dark'
-        persistThemePreference(cfg.theme)
-      }
+      const activeTheme = ['light', 'dark', 'nothing'].includes(cfg.theme) ? cfg.theme : 'light'
+      document.documentElement.setAttribute('data-theme', activeTheme)
+      document.documentElement.style.colorScheme = activeTheme === 'light' ? 'light' : 'dark'
+      persistThemePreference(activeTheme)
+      if (cfg.theme !== activeTheme) bridge.configSet('theme', activeTheme).catch(() => {})
     }).catch(error => {
       logBridgeWarning('app:config-bootstrap', error)
       return null

@@ -33,25 +33,25 @@ To provide its features, NetDuo stores the following information in a local SQLi
 | App settings (theme, poll interval, notification prefs) | So your preferences persist | Until you change them |
 | WAN Probe credentials (if you configure any) | So you don't retype them each session | Encrypted at rest via Electron's `safeStorage` |
 
-This data never leaves your device. Uninstalling NetDuo removes it.
+This data never leaves your device. The app provides controls to clear scanner and history data. Depending on Windows installer settings, uninstalling may leave the user-data directory in place until you remove it manually.
 
 A small startup log (`netduo-startup.log`) is also written to the user-data directory for local debugging of launch errors. It contains no personal data.
 
 ---
 
-## 3. Automatic outbound requests
+## 3. Connection identity and optional outbound requests
 
-When NetDuo is running, it periodically makes the following external requests **by default**, to populate the dashboard:
+NetDuo automatically performs a stateless HTTPS lookup to show the public IP used by the connection. Detailed geolocation and online MAC-vendor lookup remain disabled by default and require explicit opt-in in Settings.
 
-| Service | Host | What is sent | What is received |
-|---|---|---|---|
-| Public IP lookup | `api.ipify.org` | Standard HTTPS GET (no payload) | Your public IP address |
-| IP geolocation | `ip-api.com` | Your public IP as a URL path parameter | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
-| MAC vendor lookup | `api.macvendors.com` | MAC address prefix (OUI) of devices found on your local network, while a LAN scan runs | Vendor name |
+| Service | Host | Activation | What is sent | What is received |
+|---|---|---|---|---|
+| Public IP lookup | `api.ipify.org`, with `icanhazip.com` as fallback | Automatic | Standard HTTPS GET (no payload) | Your public IP address |
+| IP geolocation | `ip-api.com` | Optional setting | Your public IP as a URL path parameter | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
+| MAC vendor lookup | `api.macvendors.com` | Optional setting | First three bytes of the MAC address (OUI prefix) when the local table has no match | Vendor name |
 
 These are standard, stateless HTTP requests. We send no identifiers, no cookies, no headers beyond a `User-Agent: NetDuo/1.x`. These services are operated by independent third parties and are governed by their own privacy policies.
 
-If you do not want NetDuo to make these calls, do not open the Dashboard or LAN Scanner, or block outbound traffic to those hosts in your firewall.
+You can disable geolocation and online vendor lookup at any time. The public-IP request remains part of the Dashboard connection diagnostics; NetDuo does not attach an account identifier, telemetry payload, or analytics token to it.
 
 ---
 

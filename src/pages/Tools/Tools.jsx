@@ -459,8 +459,8 @@ function DnsBenchmark() {
             for (const domain of BENCH_DOMAINS) {
                 const start = performance.now()
                 try {
-                    await bridge.dnsLookup(domain, 'A')
-                    times.push(Math.round(performance.now() - start))
+                    const response = await bridge.dnsLookupServer(domain, 'A', server.ip)
+                    times.push(response?.success ? (response.time ?? Math.round(performance.now() - start)) : null)
                 } catch {
                     times.push(null)
                 }

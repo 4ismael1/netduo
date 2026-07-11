@@ -22,6 +22,7 @@ const http = require('http')
 const WsClient = require('ws')
 const database = require('./database')
 const reports = require('./reports')
+const { buildWindowsNetworkContextScript, normalizeContexts, contextsFromOsInterfaces } = require('./networkContext')
 
 // Use Electron packaging state instead of NODE_ENV.
 // In installed builds NODE_ENV is often undefined, and relying on it can
@@ -539,21 +540,18 @@ function createWindow() {
     //   - the --bg-app values per theme in design-system.css
     const VALID_THEMES = new Set(['light', 'dark', 'nothing'])
     const savedTheme = database.configGet('theme')
-    // Order of preference: explicit user choice → OS dark-mode hint
-    // → light. Without the OS check we'd open in light by default
-    // and the renderer's `prefers-color-scheme: dark` query in the
-    // boot script would flip to dark, producing a flash for users
-    // who never set a theme but use dark mode at the system level.
+    // An explicit user choice wins. A fresh install always starts in
+    // Light so the native window, boot paint and Settings selector agree.
     const bootTheme = VALID_THEMES.has(savedTheme)
         ? savedTheme
-        : (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+        : 'light'
     const themeBg = bootTheme === 'nothing' ? '#000000'
         : bootTheme === 'dark' ? '#050507'
         : '#f1f5f9'
 
     const win = new BrowserWindow({
         width: 1280, height: 800,
-        minWidth: 1280, minHeight: 800,
+        minWidth: 900, minHeight: 650,
         frame: false,
         titleBarStyle: 'hidden',
         show: false,
@@ -570,7 +568,7 @@ function createWindow() {
     })
 
     mainWin = win
-    appendStartupLog(`createWindow() bootTheme=${bootTheme} dev=${isDev ? 'yes' : 'no'}`)
+    appendStartupLog(`createWindow() bootTheme=${bootTheme} systemDark=${nativeTheme.shouldUseDarkColors ? 'yes' : 'no'} dev=${isDev ? 'yes' : 'no'}`)
 
     win.webContents.on('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
         if (!isMainFrame) return
@@ -930,6 +928,37 @@ ipcMain.handle('get-network-interfaces', async () => {
     return result
 })
 
+ipcMain.handle('get-network-context', async () => {
+    if (process.platform === 'win32') {
+        const script = buildWindowsNetworkContextScript()
+
+        try {
+            const output = await new Promise((resolve, reject) => {
+                execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+                    timeout: 8000,
+                    windowsHide: true,
+                    encoding: 'utf8',
+                    maxBuffer: 1024 * 1024,
+                }, (error, stdout) => error ? reject(error) : resolve(stdout || ''))
+            })
+            const parsed = parseJsonSafe(output.trim(), [])
+            const contexts = normalizeContexts(parsed, 'windows-default-route')
+            if (contexts.length) {
+                const fallback = contextsFromOsInterfaces()
+                const seen = new Set(contexts.map(item => item.address))
+                const interfaces = [...contexts, ...fallback.filter(item => !seen.has(item.address))]
+                return { active: contexts[0], interfaces }
+            }
+        } catch (error) {
+            appendStartupLog(`network-context windows route failed: ${error?.message || error || 'unknown error'}`)
+            /* fall through to portable interface data */
+        }
+    }
+
+    const contexts = contextsFromOsInterfaces()
+    return { active: contexts[0] || null, interfaces: contexts }
+})
+
 ipcMain.handle('get-vpn-status', async () => getVpnStatus())
 
 ipcMain.handle('get-system-info', () => ({
@@ -943,24 +972,63 @@ ipcMain.handle('get-system-info', () => ({
     freemem: os.freemem(),
 }))
 
-ipcMain.handle('get-public-ip', () => new Promise(resolve => {
-    https.get('https://api.ipify.org?format=json', res => {
-        let d = ''
-        res.on('data', c => { d += c })
-        res.on('end', () => { try { resolve(JSON.parse(d).ip) } catch { resolve('Unknown') } })
-    }).on('error', () => resolve('Unavailable'))
-}))
+ipcMain.handle('get-app-version', () => app.getVersion())
+
+function requestPublicIp(url, parseBody) {
+    return new Promise(resolve => {
+        let settled = false
+        const finish = value => {
+            if (settled) return
+            settled = true
+            resolve(net.isIP(String(value || '').trim()) ? String(value).trim() : null)
+        }
+        const req = https.get(url, { headers: { 'User-Agent': `NetDuo/${app.getVersion()}` } }, res => {
+            let body = ''
+            res.on('data', chunk => { if (body.length < 2048) body += chunk })
+            res.on('end', () => {
+                try { finish(parseBody(body)) } catch { finish(null) }
+            })
+        })
+        req.on('error', () => finish(null))
+        req.setTimeout(4000, () => { req.destroy(); finish(null) })
+    })
+}
+
+let publicIpProviderLogged = false
+
+ipcMain.handle('get-public-ip', async () => {
+    const providers = [
+        ['https://api.ipify.org?format=json', body => JSON.parse(body).ip],
+        ['https://icanhazip.com', body => body.trim()],
+    ]
+    for (const [url, parser] of providers) {
+        const ip = await requestPublicIp(url, parser)
+        if (ip) {
+            if (!publicIpProviderLogged) {
+                publicIpProviderLogged = true
+                appendStartupLog(`public-ip resolved provider=${new URL(url).hostname} family=IPv${net.isIP(ip)}`)
+            }
+            return ip
+        }
+    }
+    return 'Unavailable'
+})
 
 ipcMain.handle('get-ip-geo', (_, ip) => new Promise(resolve => {
+    if (!validators.isIPv4(String(ip || '').trim())) return resolve({})
     // `countryCode` is the ISO 3166-1 alpha-2 (2 letters: US, DR, ES, MX,
     // …). The Dashboard prefers it over the full country name in tight
     // tile space so long names like "Dominican Republic" or "United Arab
     // Emirates" never collide with the truncation ellipsis.
-    http.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,city,isp,org,lat,lon,timezone,as`, res => {
+    let settled = false
+    const finish = value => { if (!settled) { settled = true; resolve(value) } }
+    const req = http.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,city,isp,org,lat,lon,timezone,as`, res => {
         let d = ''
-        res.on('data', c => { d += c })
-        res.on('end', () => { try { resolve(JSON.parse(d)) } catch { resolve({}) } })
-    }).on('error', () => resolve({}))
+        res.on('data', c => { if (d.length < 16 * 1024) d += c })
+        res.on('end', () => { try { finish(JSON.parse(d)) } catch { finish({}) } })
+    })
+    req.on('error', () => finish({}))
+    req.setTimeout(4000, () => { req.destroy(); finish({}) })
 }))
 
 // ── WiFi Info (Windows) ───────────────────────────────
@@ -1104,6 +1172,29 @@ ipcMain.handle('dns-lookup', (_, rawHostname, type) => new Promise(resolve => {
     }
 }))
 
+ipcMain.handle('dns-lookup-server', (_, rawHostname, rawType, rawServer) => new Promise(resolve => {
+    const hostname = sanitizeHost(rawHostname)
+    const type = String(rawType || 'A').toUpperCase()
+    const server = String(rawServer || '').trim()
+    if (!hostname || !validators.isIPv4(server) || !['A', 'AAAA'].includes(type)) {
+        return resolve({ type, server, addresses: [], error: 'Invalid DNS benchmark input', time: 0 })
+    }
+
+    const resolver = new dns.Resolver()
+    resolver.setServers([server])
+    const start = Date.now()
+    const done = (error, rows) => resolve({
+        type,
+        server,
+        addresses: error ? [] : (rows || []).map(String),
+        error: error?.message || null,
+        time: Date.now() - start,
+        success: !error && Array.isArray(rows) && rows.length > 0,
+    })
+    if (type === 'AAAA') resolver.resolve6(hostname, done)
+    else resolver.resolve4(hostname, done)
+}))
+
 // ── TCP Port Check ────────────────────────────────────
 ipcMain.handle('check-port', (_, host, port, timeout = 3000) => new Promise(resolve => {
     const start = Date.now()
@@ -1117,6 +1208,35 @@ ipcMain.handle('check-port', (_, host, port, timeout = 3000) => new Promise(reso
 
 const LAN_HTTP_PORTS = new Set([80, 81, 88, 8000, 8080, 8081, 8888, 9000, 9090, 10000])
 const LAN_HTTPS_PORTS = new Set([443, 444, 8443, 9443, 10443, 5001, 7001, 7443])
+const lanSecuritySessions = new Map()
+
+function lanSecuritySessionKey(event, scanId) {
+    return `${event?.sender?.id ?? 'renderer'}:${String(scanId || 'default').slice(0, 80)}`
+}
+
+function getLanSecuritySession(event, scanId) {
+    const key = lanSecuritySessionKey(event, scanId)
+    let controller = lanSecuritySessions.get(key)
+    if (!controller) {
+        controller = { key, cancelled: false, sockets: new Set(), activeCalls: 0 }
+        lanSecuritySessions.set(key, controller)
+    }
+    controller.activeCalls += 1
+    return controller
+}
+
+function cancelLanSecuritySession(event, scanId) {
+    const key = lanSecuritySessionKey(event, scanId)
+    const controller = lanSecuritySessions.get(key)
+    if (!controller) return false
+    controller.cancelled = true
+    for (const socket of controller.sockets) {
+        try { socket.destroy?.() } catch { /* noop */ }
+        try { socket.close?.() } catch { /* noop */ }
+    }
+    controller.sockets.clear()
+    return true
+}
 
 function normalizePortList(rawPorts, maxLength = 4096) {
     const source = Array.isArray(rawPorts) ? rawPorts : []
@@ -1143,15 +1263,18 @@ function normalizeTcpStateFromError(error) {
     return 'closed'
 }
 
-function tcpProbeOnce(host, port, timeoutMs) {
+function tcpProbeOnce(host, port, timeoutMs, controller = null) {
     return new Promise(resolve => {
         const started = Date.now()
         const socket = new net.Socket()
+        if (controller?.cancelled) return resolve({ state: 'cancelled', rtt: 0, error: 'cancelled' })
+        controller?.sockets?.add(socket)
         let settled = false
 
         const done = (state, error = null) => {
             if (settled) return
             settled = true
+            controller?.sockets?.delete(socket)
             try { socket.destroy() } catch { /* noop */ }
             resolve({
                 state,
@@ -1169,11 +1292,12 @@ function tcpProbeOnce(host, port, timeoutMs) {
     })
 }
 
-async function tcpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
+async function tcpProbeWithAttempts(host, port, timeoutMs, attempts = 1, controller = null) {
     const maxAttempts = Math.max(1, Math.min(3, attempts))
     const rows = []
     for (let index = 0; index < maxAttempts; index += 1) {
-        const row = await tcpProbeOnce(host, port, timeoutMs)
+        if (controller?.cancelled) break
+        const row = await tcpProbeOnce(host, port, timeoutMs, controller)
         rows.push(row)
         if (row.state === 'open') break
     }
@@ -1384,15 +1508,18 @@ function getUdpProbePayload(port) {
     return Buffer.from([0x00])
 }
 
-function udpProbeOnce(host, port, timeoutMs) {
+function udpProbeOnce(host, port, timeoutMs, controller = null) {
     return new Promise(resolve => {
         const socket = dgram.createSocket('udp4')
+        if (controller?.cancelled) return resolve({ state: 'cancelled', rtt: 0, error: 'cancelled', responseSize: 0 })
+        controller?.sockets?.add(socket)
         const started = Date.now()
         let settled = false
 
         const done = (state, error = null, responseSize = 0) => {
             if (settled) return
             settled = true
+            controller?.sockets?.delete(socket)
             try { socket.close() } catch { /* noop */ }
             resolve({
                 state,
@@ -1423,11 +1550,12 @@ function udpProbeOnce(host, port, timeoutMs) {
     })
 }
 
-async function udpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
+async function udpProbeWithAttempts(host, port, timeoutMs, attempts = 1, controller = null) {
     const maxAttempts = Math.max(1, Math.min(3, attempts))
     const rows = []
     for (let index = 0; index < maxAttempts; index += 1) {
-        const row = await udpProbeOnce(host, port, timeoutMs)
+        if (controller?.cancelled) break
+        const row = await udpProbeOnce(host, port, timeoutMs, controller)
         rows.push(row)
         if (row.state === 'open') break
     }
@@ -1461,7 +1589,7 @@ async function udpProbeWithAttempts(host, port, timeoutMs, attempts = 1) {
     }
 }
 
-async function scanLanSecurityHost(host, options) {
+async function scanLanSecurityHost(host, options, controller = null) {
     const entries = []
     const tcpPorts = normalizePortList(options?.tcpPorts, 4096)
     const udpPorts = normalizePortList(options?.udpPorts, 2048)
@@ -1474,7 +1602,7 @@ async function scanLanSecurityHost(host, options) {
 
     if (tcpPorts.length) {
         const tcpRows = await parallelMap(tcpPorts, async port => {
-            const probe = await tcpProbeWithAttempts(host, port, timeoutMs, tcpAttempts)
+            const probe = await tcpProbeWithAttempts(host, port, timeoutMs, tcpAttempts, controller)
             const row = {
                 protocol: 'tcp',
                 port,
@@ -1485,7 +1613,7 @@ async function scanLanSecurityHost(host, options) {
                 detail: null,
                 error: probe.error || null,
             }
-            if (probe.state === 'open' && includeServiceProbe) {
+            if (!controller?.cancelled && probe.state === 'open' && includeServiceProbe) {
                 const fp = await withTimeout(fingerprintTcpService(host, port, timeoutMs), timeoutMs + 600, null)
                 if (fp?.service) row.service = fp.service
                 if (fp?.detail) row.detail = fp.detail
@@ -1497,7 +1625,7 @@ async function scanLanSecurityHost(host, options) {
 
     if (udpPorts.length) {
         const udpRows = await parallelMap(udpPorts, async port => {
-            const probe = await udpProbeWithAttempts(host, port, timeoutMs, udpAttempts)
+            const probe = await udpProbeWithAttempts(host, port, timeoutMs, udpAttempts, controller)
             return {
                 protocol: 'udp',
                 port,
@@ -1519,8 +1647,13 @@ async function scanLanSecurityHost(host, options) {
     return entries
 }
 
-ipcMain.handle('lan-security-scan', async (_, payload = {}) => {
+ipcMain.on('lan-security-scan-cancel', (event, scanId) => {
+    cancelLanSecuritySession(event, scanId)
+})
+
+ipcMain.handle('lan-security-scan', async (event, payload = {}) => {
     const started = Date.now()
+    const controller = getLanSecuritySession(event, payload?.scanId)
     const rawTargets = Array.isArray(payload?.targets) ? payload.targets : []
     const targets = rawTargets
         .map(item => sanitizeHost(item?.ip ?? item))
@@ -1528,6 +1661,8 @@ ipcMain.handle('lan-security-scan', async (_, payload = {}) => {
         .map(ip => ({ ip }))
 
     if (!targets.length) {
+        controller.activeCalls -= 1
+        if (controller.activeCalls <= 0) lanSecuritySessions.delete(controller.key)
         return {
             ok: true,
             checkedAt: new Date().toISOString(),
@@ -1548,16 +1683,23 @@ ipcMain.handle('lan-security-scan', async (_, payload = {}) => {
         udpConcurrency: payload?.udpConcurrency,
     }
 
-    const results = await parallelMap(targets, async target => {
-        const entries = await scanLanSecurityHost(target.ip, options)
-        return { ip: target.ip, entries }
-    }, hostConcurrency)
+    try {
+        const results = await parallelMap(targets, async target => {
+            if (controller.cancelled) return { ip: target.ip, entries: [] }
+            const entries = await scanLanSecurityHost(target.ip, options, controller)
+            return { ip: target.ip, entries }
+        }, hostConcurrency)
 
-    return {
-        ok: true,
-        checkedAt: new Date().toISOString(),
-        durationMs: Math.max(0, Date.now() - started),
-        results,
+        return {
+            ok: true,
+            checkedAt: new Date().toISOString(),
+            durationMs: Math.max(0, Date.now() - started),
+            results,
+            cancelled: controller.cancelled,
+        }
+    } finally {
+        controller.activeCalls -= 1
+        if (controller.activeCalls <= 0) lanSecuritySessions.delete(controller.key)
     }
 })
 
@@ -1793,7 +1935,7 @@ function lookupVendorOnline(mac) {
 
     const p = new Promise((resolve) => {
         const req = https.get(
-            `https://api.macvendors.com/${encodeURIComponent(norm)}`,
+            `https://api.macvendors.com/${encodeURIComponent(prefix)}`,
             { headers: { 'User-Agent': 'NetDuo/1.0' } },
             (res) => {
                 let body = ''
@@ -1843,9 +1985,9 @@ async function resolveVendor(mac, skipOnline = false) {
     if (!mac || skipOnline) return { vendor: null, vendorSource: 'unknown' }
 
     // User opt-out: "Consultas online de fabricante" in Settings. The
-    // flag is stored as a boolean; null / undefined = opted in (default).
+    // This is explicit opt-in: null / undefined stays offline.
     const onlineAllowed = database.configGet('macVendorLookupOnline')
-    if (onlineAllowed === false) return { vendor: null, vendorSource: 'unknown' }
+    if (onlineAllowed !== true) return { vendor: null, vendorSource: 'unknown' }
 
     const onlineVendor = await withTimeout(lookupVendorOnline(mac), 2800, null)
     if (onlineVendor) return { vendor: onlineVendor, vendorSource: 'macvendors' }
@@ -2237,10 +2379,44 @@ function normalizeGatewayHint(value, baseIP) {
     const ip = String(value || '').trim()
     if (!validators.isIPv4(ip) || !ip.startsWith(`${baseIP}.`)) return null
     const last = parseInt(ip.split('.').pop(), 10)
-    // Keep the hint narrow: common default gateways only. This prevents a
-    // renderer bug from turning an arbitrary client into a ghost-filter
-    // exemption while still disambiguating real .254 clients on .1 networks.
-    return last === 1 || last === 254 ? ip : null
+    // The renderer gets this value from the OS default route. Gateways are
+    // commonly .1/.254 but RFC1918 networks may use any usable address.
+    return last >= 0 && last <= 255 ? ip : null
+}
+const lanScanSessions = new Map()
+const LAN_SCAN_SESSION_TTL_MS = 10 * 60 * 1000
+
+function lanScanSessionKey(event, scanId) {
+    const senderId = event?.sender?.id ?? 'renderer'
+    return `${senderId}:${String(scanId || 'default').slice(0, 80)}`
+}
+
+function getLanScanSession(event, scanId) {
+    const key = lanScanSessionKey(event, scanId)
+    let session = lanScanSessions.get(key)
+    if (!session) {
+        session = { key, cancelled: false, children: new Set(), gatewayMac: null, touchedAt: Date.now() }
+        lanScanSessions.set(key, session)
+    }
+    session.touchedAt = Date.now()
+    for (const [otherKey, other] of lanScanSessions) {
+        if (Date.now() - other.touchedAt > LAN_SCAN_SESSION_TTL_MS) {
+            for (const child of other.children) try { child.kill() } catch { /* noop */ }
+            lanScanSessions.delete(otherKey)
+        }
+    }
+    return session
+}
+
+function cancelLanScanSession(event, scanId) {
+    const key = lanScanSessionKey(event, scanId)
+    const session = lanScanSessions.get(key)
+    if (!session) return false
+    session.cancelled = true
+    for (const child of session.children) try { child.kill() } catch { /* noop */ }
+    session.children.clear()
+    lanScanSessions.delete(key)
+    return true
 }
 
 function httpGetText(urlStr, timeoutMs = 2200, redirects = 2) {
@@ -2588,15 +2764,18 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-function pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, activeSource = 'icmp') {
+function pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, activeSource = 'icmp', scanSession = null) {
     const args = isWin
         ? ['-4', '-n', '1', '-w', String(timeoutWin), ip]
         : ['-c', '1', '-W', String(timeoutUnix), ip]
 
     return new Promise(resolve => {
-        execFile('ping', args,
+        if (scanSession?.cancelled) return resolve({ ip, alive: false, cancelled: true })
+        const child = execFile('ping', args,
             { timeout: Math.max(2500, timeoutWin + 1000), windowsHide: true, encoding: 'utf8' },
             (err, stdout) => {
+                scanSession?.children?.delete(child)
+                if (scanSession?.cancelled) return resolve({ ip, alive: false, cancelled: true })
                 const m = stdout && stdout.match(PING_TIME_RE)
                 if (isPingReply(stdout)) {
                     return resolve({ ip, alive: true, time: m ? parseFloat(m[1]) : null, mac: null, activeSource })
@@ -2604,17 +2783,19 @@ function pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, activeSource = 'icmp')
                 resolve({ ip, alive: false })
             }
         )
+        scanSession?.children?.add(child)
     })
 }
 
-async function retryNeighborPing(ip, isWin, timeoutWin, timeoutUnix) {
-    const first = await pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry')
+async function retryNeighborPing(ip, isWin, timeoutWin, timeoutUnix, scanSession = null) {
+    const first = await pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry', scanSession)
     if (first.alive) return first
+    if (scanSession?.cancelled) return first
 
     // Give Wi-Fi power-save clients a short wake window, but only for the
     // small neighbor-cache candidate set instead of every silent IP.
     await sleep(650)
-    return pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry')
+    return pingHostOnce(ip, isWin, timeoutWin, timeoutUnix, 'icmp-retry', scanSession)
 }
 
 async function collectNeighborMap(baseIP, rangeStart, rangeEnd) {
@@ -2714,7 +2895,11 @@ function getLocalMAC() {
     return { ip: null, mac: null }
 }
 
-ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {}) => {
+ipcMain.on('lan-scan-cancel', (event, scanId) => {
+    cancelLanScanSession(event, scanId)
+})
+
+ipcMain.handle('lan-scan', async (event, baseIP, rangeStart, rangeEnd, options = {}) => {
     // SECURITY: revalidate every value received from the renderer before
     // it ever reaches a shell. Even though preload narrows the API, an
     // XSS inside our own content would hand the renderer a bypass; these
@@ -2726,8 +2911,16 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
 
     let results = []
     const isWin = process.platform === 'win32'
-    const local = getLocalMAC()
+    const fallbackLocal = getLocalMAC()
+    const requestedLocalIp = String(options?.localIp || '').trim()
+    const requestedLocalMac = String(options?.localMac || '').trim().toLowerCase()
+    const local = {
+        ip: validators.isIPv4(requestedLocalIp) ? requestedLocalIp : fallbackLocal.ip,
+        mac: /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(requestedLocalMac) ? requestedLocalMac : fallbackLocal.mac,
+    }
     const localHostname = os.hostname()
+    const scanSession = getLanScanSession(event, options?.scanId)
+    if (scanSession.cancelled) return []
 
     // Safe Scan mode: gentler profile for sensitive / legacy networks.
     // - Lower ping concurrency (4 vs 32)
@@ -2735,15 +2928,21 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     // - Skip UDP/TCP neighbor-cache preheat
     // - Skip SSDP/mDNS multicast discovery
     const safeMode = options && options.safeMode === true
-    const gatewayIp = normalizeGatewayHint(options?.gatewayIp, baseIP)
+    const discoveryMode = ['quick', 'balanced', 'deep', 'passive'].includes(options?.discoveryMode)
+        ? options.discoveryMode
+        : 'balanced'
+    const passiveMode = discoveryMode === 'passive'
+    const rawGatewayIp = String(options?.gatewayIp || '').trim()
+    const gatewayIp = validators.isIPv4(rawGatewayIp) ? rawGatewayIp : null
+    const gatewayIpInCurrentBlock = normalizeGatewayHint(gatewayIp, baseIP)
     const PING_CONCURRENCY = safeMode ? 4 : 32
     const PING_TIMEOUT_WIN = safeMode ? 2000 : 1100
     const PING_TIMEOUT_UNIX = safeMode ? 2 : 1  // seconds for -W on Unix
 
     // Clamp range (post-validation defence: even valid ints beyond 1-254
     // would produce invalid IPs, so we clamp here before composing).
-    rangeStart = Math.max(1, Math.min(254, Number(rangeStart) || 1))
-    rangeEnd = Math.max(rangeStart, Math.min(254, Number(rangeEnd) || 254))
+    rangeStart = Math.max(0, Math.min(255, Number(rangeStart)))
+    rangeEnd = Math.max(rangeStart, Math.min(255, Number(rangeEnd)))
 
     // Phase 1: Ping sweep (batches sized by mode)
     const targets = []
@@ -2753,16 +2952,20 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         // any unexpected interaction with `baseIP` content.
         if (validators.isIPv4(ip)) targets.push(ip)
     }
-    for (let i = 0; i < targets.length; i += PING_CONCURRENCY) {
-        const batch = targets.slice(i, i + PING_CONCURRENCY)
-        const res = await Promise.all(batch.map(ip => pingHostOnce(
-            ip,
-            isWin,
-            PING_TIMEOUT_WIN,
-            PING_TIMEOUT_UNIX,
-            'icmp',
-        )))
-        results.push(...res.filter(r => r.alive))
+    if (!passiveMode) {
+        for (let i = 0; i < targets.length; i += PING_CONCURRENCY) {
+            const batch = targets.slice(i, i + PING_CONCURRENCY)
+            const res = await Promise.all(batch.map(ip => pingHostOnce(
+                ip,
+                isWin,
+                PING_TIMEOUT_WIN,
+                PING_TIMEOUT_UNIX,
+                'icmp',
+                scanSession,
+            )))
+            if (scanSession.cancelled) return []
+            results.push(...res.filter(r => r.alive))
+        }
     }
 
     const byIp = new Map(results.map(r => [r.ip, r]))
@@ -2770,7 +2973,7 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
 
     // Phase 2: Warm neighbor cache on silent hosts with quick TCP touches.
     // Skipped in Safe Scan mode — Safe Scan stays strictly low-traffic.
-    if (!safeMode) {
+    if (!safeMode && (discoveryMode === 'balanced' || discoveryMode === 'deep')) {
         const silentTargets = targets.filter(ip => !byIp.has(ip))
         await preheatNeighborCache(silentTargets)
 
@@ -2780,13 +2983,14 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         // This is intentionally much cheaper than the old all-host 3s retry:
         // current renderer batches are <=30 IPs, so this adds at most one
         // lightweight ping wave per batch.
-        if (silentTargets.length) {
+        if (discoveryMode === 'deep' && silentTargets.length) {
             const wakeRes = await parallelMap(silentTargets, ip => pingHostOnce(
                 ip,
                 isWin,
                 Math.max(PING_TIMEOUT_WIN, 1400),
                 PING_TIMEOUT_UNIX,
                 'icmp-wake',
+                scanSession,
             ), PING_CONCURRENCY)
             for (const r of wakeRes.filter(r => r.alive)) byIp.set(r.ip, r)
         }
@@ -2800,11 +3004,22 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
         neighborMap = await collectNeighborMap(baseIP, rangeStart, rangeEnd)
     } catch { /* neighbor collection failed */ }
 
+    if (gatewayIpInCurrentBlock) {
+        const gatewayOctet = parseInt(gatewayIp.split('.').pop(), 10)
+        if (Number.isInteger(gatewayOctet)) {
+            try {
+                const gatewayNeighbors = await collectNeighborMap(baseIP, gatewayOctet, gatewayOctet)
+                const gatewayNeighbor = gatewayNeighbors[gatewayIp]
+                if (gatewayNeighbor?.mac) scanSession.gatewayMac = gatewayNeighbor.mac
+            } catch { /* best effort */ }
+        }
+    }
+
     const retryTargets = Object.entries(neighborMap)
         .filter(([ip, neighbor]) => !byIp.has(ip) && shouldRetryNeighbor(neighbor))
         .map(([ip]) => ip)
 
-    if (retryTargets.length) {
+    if (!passiveMode && retryTargets.length) {
         const RETRY_CONCURRENCY = safeMode ? 6 : 12
         const RETRY_TIMEOUT_WIN = safeMode ? 1600 : 900
         const RETRY_TIMEOUT_UNIX = safeMode ? 2 : 1
@@ -2815,6 +3030,7 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
                 isWin,
                 RETRY_TIMEOUT_WIN,
                 RETRY_TIMEOUT_UNIX,
+                scanSession,
             )))
             for (const r of res.filter(r => r.alive)) byIp.set(r.ip, r)
         }
@@ -2850,7 +3066,7 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
 
     // Phase 4: Discovery intel via multicast (SSDP + mDNS).
     // Skipped in Safe Scan mode — multicast can be noisy on legacy switches.
-    const [ssdpByIp, mdnsByIp] = safeMode
+    const [ssdpByIp, mdnsByIp] = (safeMode || passiveMode || discoveryMode === 'quick')
         ? [{}, {}]
         : await Promise.all([
             withTimeout(collectSsdpInfoCached(baseIP, rangeStart, rangeEnd), 4300, {}),
@@ -2888,7 +3104,10 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     for (const ip of Object.keys(mdnsByIp || {})) addActiveDiscoveryHit(ip, 'mdns')
 
     results = Array.from(byIp.values())
-    if (results.length === 0) return results
+    if (results.length === 0) {
+        if (options?.isLastBatch === true) lanScanSessions.delete(scanSession.key)
+        return results
+    }
 
     // Phase 5: Parallel name resolution + vendor lookup (concurrency = 8)
     await parallelMap(results, async (r) => {
@@ -2953,14 +3172,18 @@ ipcMain.handle('lan-scan', async (_, baseIP, rangeStart, rangeEnd, options = {})
     // Proxy-ARP ghost filter. See electron/scanner/ghostFilter.js for
     // the deterministic Rule A + Rule B specification. Keeping it as a
     // pure module makes the logic unit-testable without touching Electron.
-    results = filterGhosts(results)
-
-    results.sort((a, b) => {
-        const av = parseInt((a.ip || '').split('.').pop(), 10)
-        const bv = parseInt((b.ip || '').split('.').pop(), 10)
-        return (isNaN(av) ? 999 : av) - (isNaN(bv) ? 999 : bv)
+    results = filterGhosts(results, {
+        gatewayIp,
+        gatewayMac: scanSession.gatewayMac,
+        layer2Expected: options?.layer2Expected !== false,
     })
 
+    results.sort((a, b) => {
+        const toNumber = ip => String(ip || '').split('.').reduce((acc, part) => ((acc * 256) + (Number(part) || 0)) >>> 0, 0)
+        return toNumber(a.ip) - toNumber(b.ip)
+    })
+
+    if (options?.isLastBatch === true) lanScanSessions.delete(scanSession.key)
     return results
 })
 
@@ -3136,9 +3359,9 @@ const SPEED_SERVERS = [
     },
     {
         id: 'hetzner',
-        name: 'Hetzner',
-        location: 'Europe - Nuremberg, Germany',
-        sponsor: 'Hetzner Online GmbH',
+        name: 'Hetzner DL + Cloudflare UL',
+        location: 'Nuremberg download / nearest Cloudflare upload',
+        sponsor: 'Hetzner Online GmbH + Cloudflare, Inc.',
         getDownloadUrl: () => 'https://speed.hetzner.de/100MB.bin',
         uploadUrl: 'https://speed.cloudflare.com/__up',
         pingUrl: 'https://speed.hetzner.de/100MB.bin',
@@ -3146,9 +3369,9 @@ const SPEED_SERVERS = [
     },
     {
         id: 'ovh',
-        name: 'OVH',
-        location: 'Europe - Gravelines, France',
-        sponsor: 'OVH SAS',
+        name: 'OVH DL + Cloudflare UL',
+        location: 'Gravelines download / nearest Cloudflare upload',
+        sponsor: 'OVH SAS + Cloudflare, Inc.',
         getDownloadUrl: () => 'https://proof.ovh.net/files/100Mb.dat',
         uploadUrl: 'https://speed.cloudflare.com/__up',
         pingUrl: 'https://proof.ovh.net/files/1Mb.dat',

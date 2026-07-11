@@ -9,20 +9,65 @@ const MODULE_META = {
     'Speed Test': { color: 'var(--color-success)', Icon: Gauge },
     Monitor: { color: 'var(--color-warning)', Icon: Activity },
     'LAN Scanner': { color: 'var(--color-danger)', Icon: Radar },
+    'LAN Check': { color: 'var(--color-warning)', Icon: Radar },
+    'WAN Check': { color: 'var(--color-info)', Icon: Network },
     Tools: { color: '#EF4444', Icon: Wrench },
     'Network Info': { color: '#8B5CF6', Icon: Network },
 }
 
 const PER_PAGE = 10
 
+function normalizeSpecializedHistory({ general, speed, lan, wan }) {
+    const rows = [...(general || []).map(item => ({ ...item, id: `general-${item.id}` }))]
+    for (const item of speed || []) {
+        rows.push({
+            id: `speed-${item.id}`,
+            timestamp: item.timestamp,
+            module: 'Speed Test',
+            type: 'Saved Result',
+            detail: `↓${item.download ?? '-'} ↑${item.upload ?? '-'} Mbps · ${item.latency ?? '-'} ms`,
+        })
+    }
+    for (const item of lan || []) {
+        rows.push({
+            id: `lan-${item.id}`,
+            timestamp: item.timestamp,
+            module: 'LAN Check',
+            type: String(item.profile || 'standard').toUpperCase(),
+            detail: `${item.scope || '-'} · risk ${item.risk_score ?? item.report?.summary?.riskScore ?? 0}`,
+        })
+    }
+    for (const item of wan || []) {
+        rows.push({
+            id: `wan-${item.id}`,
+            timestamp: item.timestamp,
+            module: 'WAN Check',
+            type: String(item.mode || item.report?.mode || 'scan').toUpperCase(),
+            detail: `${item.target || item.report?.target || '-'} · risk ${item.risk_score ?? item.report?.summary?.riskScore ?? 0}`,
+        })
+    }
+    return rows.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+}
+
+async function loadUnifiedHistory() {
+    const [general, speed, lan, wan] = await Promise.all([
+        bridge.historyGet().catch(() => []),
+        bridge.speedHistoryGet?.().catch(() => []) || [],
+        bridge.lanCheckHistoryGet?.().catch(() => []) || [],
+        bridge.wanProbeHistoryGet?.().catch(() => []) || [],
+    ])
+    return normalizeSpecializedHistory({ general, speed, lan, wan })
+}
+
 export default function History() {
     const [history, setHistory] = useState([])
     const [filter, setFilter] = useState('All')
     const [loading, setLoading] = useState(true)
     const [page, setPage] = useState(0)
+    const [clearConfirm, setClearConfirm] = useState(false)
 
     useEffect(() => {
-        bridge.historyGet().then(h => {
+        loadUnifiedHistory().then(h => {
             setHistory(h || [])
             setLoading(false)
         }).catch(error => {
@@ -45,9 +90,20 @@ export default function History() {
     }
 
     async function clearAll() {
+        if (!clearConfirm) {
+            setClearConfirm(true)
+            setTimeout(() => setClearConfirm(false), 4000)
+            return
+        }
         try {
-            const h = await bridge.historyClear()
-            setHistory(h || [])
+            await Promise.all([
+                bridge.historyClear(),
+                bridge.speedHistoryClear?.(),
+                bridge.lanCheckHistoryClear?.(),
+                bridge.wanProbeHistoryClear?.(),
+            ])
+            setHistory([])
+            setClearConfirm(false)
         } catch (error) {
             logBridgeWarning('history:clear', error)
             setHistory([])
@@ -56,7 +112,7 @@ export default function History() {
     async function refresh() {
         setLoading(true)
         try {
-            const h = await bridge.historyGet()
+            const h = await loadUnifiedHistory()
             setHistory(h || [])
         } catch (error) {
             logBridgeWarning('history:refresh', error)
@@ -98,7 +154,7 @@ export default function History() {
                     </div>
                     <div style={{ display: 'flex', gap: 10 }}>
                         <button className="v3-btn v3-btn-secondary" onClick={refresh}><RefreshCw size={14} />Refresh</button>
-                        <button className="v3-btn" style={{ background: 'rgba(239, 68, 68, 0.1)', color: 'var(--color-danger)', border: '1px solid rgba(239, 68, 68, 0.3)' }} onClick={clearAll} disabled={!history.length}><Trash2 size={14} />Clear</button>
+                        <button className="v3-btn" style={{ background: clearConfirm ? 'var(--color-danger)' : 'rgba(239, 68, 68, 0.1)', color: clearConfirm ? '#fff' : 'var(--color-danger)', border: '1px solid rgba(239, 68, 68, 0.3)' }} onClick={clearAll} disabled={!history.length}><Trash2 size={14} />{clearConfirm ? 'Confirm clear all' : 'Clear all'}</button>
                     </div>
                 </div>
 

@@ -1,6 +1,7 @@
 {
   "name": "netduo",
-  "version": "1.3.2",
+  "version": "1.4.0",
+  "description": "Network diagnostics, LAN discovery and connection monitoring for Windows.",
   "private": true,
   "author": "Ismael Paulino",
   "license": "AGPL-3.0-only",
@@ -9,6 +10,8 @@
     "dev": "concurrently \"vite --port 5173\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
     "electron:build": "vite build && electron-builder",
+    "appx:assets": "node scripts/generate-appx-assets.js",
+    "appx:build": "npm run appx:assets && vite build && electron-builder --win appx --x64",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -24,9 +27,9 @@
     "lucide-react": "^0.575.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.13.1",
+    "react-router-dom": "^7.18.1",
     "recharts": "^3.7.0",
-    "ws": "^8.19.0"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -35,18 +38,18 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "@vitest/coverage-v8": "^4.0.18",
-    "concurrently": "^9.2.1",
-    "electron": "^40.6.1",
-    "electron-builder": "^26.8.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "concurrently": "^9.2.3",
+    "electron": "^40.10.6",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
     "sharp": "^0.34.5",
-    "vite": "^7.3.1",
-    "vitest": "^4.0.18",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10",
     "wait-on": "^9.0.4"
   },
   "build": {
@@ -78,6 +81,8 @@
       "applicationId": "NetDuo",
       "displayName": "NetDuo",
       "backgroundColor": "#7DC2EE",
+      "minVersion": "10.0.17763.0",
+      "maxVersionTested": "10.0.26100.0",
       "showNameOnTiles": false,
       "languages": [
         "en-US",
@@ -86,6 +91,6 @@
     }
   },
   "overrides": {
-    "tar": "7.5.10"
+    "tar": "7.5.19"
   }
 }

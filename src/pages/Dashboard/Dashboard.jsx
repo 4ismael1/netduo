@@ -9,6 +9,7 @@ import { AreaChart, Area, ResponsiveContainer, Tooltip, YAxis, ReferenceLine } f
 import { useNavigate } from 'react-router-dom'
 import bridge from '../../lib/electronBridge'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
+import { canProbeGateway } from '../../lib/gatewayProbe'
 import DashboardSkeleton from './DashboardSkeleton.jsx'
 import './Dashboard.css'
 
@@ -24,6 +25,7 @@ const healthConfig = {
     good:    { Icon: CheckCircle2,  label: 'Excellent',   sub: 'Low latency - stable connection',   pill: 'Connected' },
     warning: { Icon: AlertTriangle, label: 'Degraded',    sub: 'Elevated latency detected',        pill: 'Degraded' },
     bad:     { Icon: XCircle,       label: 'Poor',        sub: 'High latency or packet loss',      pill: 'Offline' },
+    unknown: { Icon: AlertTriangle, label: 'Unverified',  sub: 'External probes did not reply; ICMP may be blocked', pill: 'Check' },
     loading: { Icon: Loader2,       label: 'Connecting...', sub: 'Gathering network data',          pill: 'Loading' },
 }
 
@@ -79,7 +81,7 @@ export default function Dashboard() {
     const [signalPts, setSignalPts] = useState(() => [..._signalHistory])
     const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
-    const [showPublicIP, setShowPublicIP] = useState(false)
+    const [showPublicIP, setShowPublicIP] = useState(true)
     const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
     const stateRef = useRef({})
     const [ready, setReady] = useState(!net.loading)
@@ -118,7 +120,7 @@ export default function Dashboard() {
         if (!net.loading && !ready) setReady(true)
     }, [net.loading, ready])
 
-    const shouldProbeGateway = Boolean(net.connected && net.gateway && !net.isVpn)
+    const shouldProbeGateway = canProbeGateway(net)
 
     // Keep stateRef in sync for caching on unmount
     useEffect(() => {
@@ -177,12 +179,12 @@ export default function Dashboard() {
     /** Single round of pings; seeds 5 initial points on first call so charts render instantly. */
     const doPingRound = useCallback(async () => {
         const results = {}
-        for (const host of HOSTS) {
+        await Promise.all(HOSTS.map(async host => {
             try {
                 const r = await bridge.pingSingle(host)
                 results[host] = r?.time ?? null
             } catch { results[host] = null }
-        }
+        }))
         // Also ping gateway when no VPN tunnel is active
         if (shouldProbeGateway) {
             try {
@@ -215,25 +217,31 @@ export default function Dashboard() {
         })
 
         const vals = Object.values(results).filter(v => v !== null)
-        if (!vals.length) setHealth('bad')
+        if (!vals.length) setHealth(net.connected ? 'unknown' : 'bad')
         else {
             const avg = vals.reduce((a, b) => a + b, 0) / vals.length
             const warnAt = latencyThr * 0.4    // e.g. 200 * 0.4 = 80ms
             setHealth(avg < warnAt ? 'good' : avg < latencyThr ? 'warning' : 'bad')
         }
-    }, [net.gateway, net.isVpn, shouldProbeGateway, latencyThr])
+    }, [net.connected, net.gateway, net.isVpn, shouldProbeGateway, latencyThr])
 
     const startPingLoop = useCallback(() => {
-        if (_pingInterval) clearInterval(_pingInterval)
-        _pingInterval = setInterval(doPingRound, pollMs)
+        if (_pingInterval) clearTimeout(_pingInterval)
+        let stopped = false
+        const tick = async () => {
+            await doPingRound()
+            if (!stopped) _pingInterval = setTimeout(tick, pollMs)
+        }
+        tick()
+        return () => { stopped = true }
     }, [doPingRound, pollMs])
 
     useEffect(() => {
-        doPingRound()          // fire immediately so charts populate on load
-        startPingLoop()
+        const stopLoop = startPingLoop()
         return () => {
+            stopLoop?.()
             _pingCache = stateRef.current
-            clearInterval(_pingInterval)
+            clearTimeout(_pingInterval)
             _pingInterval = null
         }
     }, [doPingRound, startPingLoop])

@@ -9,8 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Network
     getNetworkInterfaces: () => ipcRenderer.invoke('get-network-interfaces'),
+    getNetworkContext: () => ipcRenderer.invoke('get-network-context'),
     getVpnStatus: () => ipcRenderer.invoke('get-vpn-status'),
     getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     getPublicIP: () => ipcRenderer.invoke('get-public-ip'),
     getIPGeo: (ip) => ipcRenderer.invoke('get-ip-geo', ip),
     getWifiInfo: () => ipcRenderer.invoke('get-wifi-info'),
@@ -21,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pingHost: (host, count) => ipcRenderer.invoke('ping-host', host, count),
     pingSingle: (host) => ipcRenderer.invoke('ping-single', host),
     dnsLookup: (hostname, type) => ipcRenderer.invoke('dns-lookup', hostname, type),
+    dnsLookupServer: (hostname, type, server) => ipcRenderer.invoke('dns-lookup-server', hostname, type, server),
     checkPort: (host, port, timeout) => ipcRenderer.invoke('check-port', host, port, timeout),
 
     // Streaming — traceroute
@@ -60,9 +63,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     stopPortScan: () => ipcRenderer.send('stop-port-scan'),
     httpTest: (url, method, headers) => ipcRenderer.invoke('http-test', url, method, headers),
     lanScan: (base, start, end, options) => ipcRenderer.invoke('lan-scan', base, start, end, options),
+    lanScanCancel: (scanId) => ipcRenderer.send('lan-scan-cancel', scanId),
     lanScanEnrich: (payload) => ipcRenderer.invoke('lan-scan-enrich', payload),
     lanUpnpScan: (base, start, end) => ipcRenderer.invoke('lan-upnp-scan', base, start, end),
     lanSecurityScan: (payload) => ipcRenderer.invoke('lan-security-scan', payload),
+    lanSecurityScanCancel: (scanId) => ipcRenderer.send('lan-security-scan-cancel', scanId),
     sslCheck: (host, port) => ipcRenderer.invoke('ssl-check', host, port),
     whois: (query) => ipcRenderer.invoke('whois', query),
     wakeOnLan: (mac, broadcast, port) => ipcRenderer.invoke('wake-on-lan', mac, broadcast, port),

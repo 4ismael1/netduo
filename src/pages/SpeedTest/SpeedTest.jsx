@@ -80,7 +80,15 @@ function useSmooth(target, lerp = 0.15) {
 /* ══════════════════════════════════
    SPEEDTEST — MAIN
    ══════════════════════════════════ */
-const MAX_SPEED = 300 // Gauge scale max
+function gaugeMaxFor(...values) {
+    const peak = Math.max(0, ...values.map(Number).filter(Number.isFinite))
+    if (peak <= 100) return 100
+    if (peak <= 300) return 300
+    if (peak <= 1000) return 1000
+    if (peak <= 2500) return 2500
+    if (peak <= 5000) return 5000
+    return Math.ceil(peak / 1000) * 1000
+}
 
 export default function SpeedTest() {
     const [phase, setPhase] = useState('idle')
@@ -593,7 +601,8 @@ function StatCard({ icon, label, val, live, unit, color, active, small }) {
    ══════════════════════════════════ */
 function Speedometer({ value, phase, isDl, isUl, isDone, running, avgSpeed }) {
     const smooth = useSmooth(value, 0.13)
-    const pct = Math.min(1, Math.max(0, smooth / MAX_SPEED))
+    const gaugeMax = gaugeMaxFor(smooth, value, avgSpeed)
+    const pct = Math.min(1, Math.max(0, smooth / gaugeMax))
 
     // Semicircle: 180° from left (-180°) to right (0°)
     // In our coordinate system: needle at -90° is center (pointing up)
@@ -680,7 +689,7 @@ function Speedometer({ value, phase, isDl, isUl, isDone, running, avgSpeed }) {
 
                 {/* Scale labels */}
                 {scaleMarks.map(m => {
-                    const f = Math.min(1, m / MAX_SPEED)
+                    const f = Math.min(1, m / gaugeMax)
                     const a = Math.PI * (1 - f)
                     const lx = CX + (R + 13) * Math.cos(a)
                     const ly = CY - (R + 13) * Math.sin(a)

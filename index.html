@@ -34,7 +34,7 @@
             ? bootTheme
             : validThemes.indexOf(cached) >= 0
             ? cached
-            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : 'light'
           var bg = theme === 'nothing' ? '#000000' : theme === 'dark' ? '#050507' : '#f1f5f9'
           document.documentElement.setAttribute('data-theme', theme)
           document.documentElement.style.backgroundColor = bg

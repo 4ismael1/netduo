@@ -31,6 +31,9 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
+import useNetworkStatus from '../../lib/useNetworkStatus'
+import { evaluateLanAssessment } from '../../lib/lanRisk'
+import { buildContextScanSegments } from '../../lib/ipv4Scope'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './LanCheck.css'
 
@@ -126,8 +129,9 @@ function resolveProfileUdpPorts(profileId, extendedSweep) {
     return uniqueSortedPorts([...base, ...HARDENING_EXTRA_UDP_PORTS])
 }
 function byIpAsc(a, b) {
-    const av = Number.parseInt(String(a.ip || '').split('.').pop() || '0', 10)
-    const bv = Number.parseInt(String(b.ip || '').split('.').pop() || '0', 10)
+    const toNumber = ip => String(ip || '').split('.').reduce((acc, part) => ((acc * 256) + (Number(part) || 0)) >>> 0, 0)
+    const av = toNumber(a.ip)
+    const bv = toNumber(b.ip)
     return av - bv
 }
 function formatDuration(ms) {
@@ -213,7 +217,11 @@ function isInconclusiveRow(row) {
     const state = String(row?.state || '').toLowerCase()
     return state === 'filtered' || state === 'open|filtered'
 }
-function chooseGateway(devices) {
+function chooseGateway(devices, gatewayIp = null) {
+    if (gatewayIp) {
+        const exact = devices.find(device => device.ip === gatewayIp)
+        if (exact) return exact
+    }
     const gateways = devices.filter(d => d.isGateway)
     return gateways.find(d => d.ip.endsWith('.1')) || gateways.find(d => d.ip.endsWith('.254')) || gateways[0] || null
 }
@@ -237,12 +245,13 @@ async function runWithConcurrency(tasks, limit, onEach) {
 function finding(id, severity, title, evidence, recommendation, category) {
     return { id, severity, title, evidence, recommendation, category }
 }
-function scoreFromFindings(findings, confirmedOpenCount, inconclusiveCount) {
-    const weights = { critical: 24, high: 14, medium: 8, low: 3, info: 1 }
-    const base = findings.reduce((acc, item) => acc + (weights[item.severity] || 0), 0)
-    const confirmedBoost = Math.min(26, Math.round((confirmedOpenCount || 0) * 0.65))
-    const inconclusiveBoost = Math.min(6, Math.round((inconclusiveCount || 0) * 0.18))
-    return clamp(Math.round(base + confirmedBoost + inconclusiveBoost), 0, 100)
+function isActiveScanCandidate(device) {
+    if (!device || device.isLocal) return false
+    if (device.isGateway || device.alive || device.discoveryOnly) return true
+    return ['reachable', 'delay', 'probe', 'permanent'].includes(String(device.neighborState || '').toLowerCase())
+}
+function isIpInSegments(ip, segments) {
+    return (segments || []).some(segment => isIpInScope(ip, segment.baseIP, segment.start, segment.end))
 }
 function normalizeHistoryRows(rows) {
     if (!Array.isArray(rows)) return []
@@ -356,13 +365,17 @@ function PaginatedDeviceList({ devices }) {
 }
 
 export default function LanCheck() {
+    const net = useNetworkStatus()
     const [profile, setProfile] = useState('standard')
     const [enableDiscovery, setEnableDiscovery] = useState(true)
     const [extendedSweep, setExtendedSweep] = useState(true)
     const [safeMode, setSafeMode] = useState(false)
+    const [scanAllHosts, setScanAllHosts] = useState(true)
     const [baseIP, setBaseIP] = useState('192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
+    const [scopeMode, setScopeMode] = useState('auto')
+    const [selectedInterfaceAddress, setSelectedInterfaceAddress] = useState('')
     const [inputError, setInputError] = useState('')
 
     const [stage, setStage] = useState('setup')
@@ -380,6 +393,11 @@ export default function LanCheck() {
     const [historyLoading, setHistoryLoading] = useState(false)
     const [historyQuery, setHistoryQuery] = useState('')
     const autoBaseResolvedRef = useRef(false)
+    const scanRunRef = useRef(0)
+    const selectedNetworkContext = useMemo(() => {
+        const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
+        return contexts.find(item => item.address === selectedInterfaceAddress) || net.networkContext || null
+    }, [net.networkContexts, net.networkContext, selectedInterfaceAddress])
 
     const preset = PROFILE_PRESETS[profile]
     const selectedPorts = useMemo(
@@ -411,9 +429,12 @@ export default function LanCheck() {
             if (PROFILE_PRESETS[saved.profile]) setProfile(saved.profile)
             if (typeof saved.enableDiscovery === 'boolean') setEnableDiscovery(saved.enableDiscovery)
             if (typeof saved.extendedSweep === 'boolean') setExtendedSweep(saved.extendedSweep)
+            if (typeof saved.scanAllHosts === 'boolean') setScanAllHosts(saved.scanAllHosts)
             if (typeof saved.baseIP === 'string' && !autoBaseResolvedRef.current) setBaseIP(saved.baseIP)
             if (Number.isInteger(saved.rangeStart)) setRangeStart(saved.rangeStart)
             if (Number.isInteger(saved.rangeEnd)) setRangeEnd(saved.rangeEnd)
+            if (saved.scopeMode === 'manual' || saved.scopeMode === 'auto') setScopeMode(saved.scopeMode)
+            if (typeof saved.selectedInterfaceAddress === 'string') setSelectedInterfaceAddress(saved.selectedInterfaceAddress)
         }).catch(error => {
             logBridgeWarning('lancheck:settings-bootstrap', error)
         })
@@ -689,10 +710,12 @@ export default function LanCheck() {
         }
 
         const exposedSurface = confirmedOpenPorts.length
-        if (exposedSurface >= 28) {
-            findings.push(finding('lan-broad-surface', 'medium', 'Broad LAN attack surface detected', `${exposedSurface} confirmed-open service entries were detected in this run.`, 'Reduce unnecessary exposed services and segment management/data planes by trust zone.', 'exposure'))
-        } else if (exposedSurface >= 18) {
-            findings.push(finding('lan-broad-surface-low', 'low', 'Elevated LAN service surface detected', `${exposedSurface} confirmed-open service entries were detected in this run.`, 'Review if all exposed services are required and limit unnecessary listeners.', 'exposure'))
+        const activelyObservedAssets = Math.max(1, devices.filter(isActiveScanCandidate).length)
+        const surfacePerAsset = exposedSurface / activelyObservedAssets
+        if (exposedSurface >= 8 && surfacePerAsset >= 3) {
+            findings.push(finding('lan-broad-surface', 'medium', 'Broad LAN service surface detected', `${exposedSurface} confirmed-open service entries were detected (${surfacePerAsset.toFixed(1)} per active asset).`, 'Reduce unnecessary exposed services and segment management/data planes by trust zone.', 'exposure'))
+        } else if (exposedSurface >= 5 && surfacePerAsset >= 1.5) {
+            findings.push(finding('lan-broad-surface-low', 'low', 'Elevated LAN service surface detected', `${exposedSurface} confirmed-open service entries were detected (${surfacePerAsset.toFixed(1)} per active asset).`, 'Review if all exposed services are required and limit unnecessary listeners.', 'exposure'))
         }
 
         const inconclusiveUdpRows = inconclusivePorts.filter(row => row.protocol === 'udp')
@@ -734,10 +757,10 @@ export default function LanCheck() {
         return findings
     }
 
-    async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit }) {
+    async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit, segments = null, gatewayIp = null }) {
         const map = new Map()
         const addHost = (ip, extra = {}) => {
-            if (!isIpInScope(ip, safeBase, start, end)) return
+            if (segments?.length ? !isIpInSegments(ip, segments) : !isIpInScope(ip, safeBase, start, end)) return
             if (!map.has(ip)) {
                 map.set(ip, {
                     ip,
@@ -758,12 +781,15 @@ export default function LanCheck() {
             }
         }
 
-        addHost(`${safeBase}.1`, { isGateway: true, displayName: 'Gateway' })
-        addHost(`${safeBase}.254`, { isGateway: true, displayName: 'Gateway' })
+        if (gatewayIp) addHost(gatewayIp, { isGateway: true, displayName: 'Gateway' })
+        else {
+            addHost(`${safeBase}.1`, { isGateway: true, displayName: 'Gateway candidate' })
+            addHost(`${safeBase}.254`, { isGateway: true, displayName: 'Gateway candidate' })
+        }
 
         try {
             const ifaces = await bridge.getNetworkInterfaces()
-            const localIpv4 = (ifaces || []).find(item => item?.family === 'IPv4' && !item?.internal && isIpInScope(item?.address, safeBase, start, end))
+            const localIpv4 = (ifaces || []).find(item => item?.family === 'IPv4' && !item?.internal && (segments?.length ? isIpInSegments(item?.address, segments) : isIpInScope(item?.address, safeBase, start, end)))
             if (localIpv4?.address) {
                 addHost(localIpv4.address, {
                     isLocal: true,
@@ -778,7 +804,7 @@ export default function LanCheck() {
         try {
             const arpRows = await bridge.getArpTable()
             for (const row of arpRows || []) {
-                if (!isIpInScope(row?.ip, safeBase, start, end)) continue
+                if (segments?.length ? !isIpInSegments(row?.ip, segments) : !isIpInScope(row?.ip, safeBase, start, end)) continue
                 addHost(row.ip, {
                     mac: row.mac || null,
                     displayName: row.ip,
@@ -811,7 +837,18 @@ export default function LanCheck() {
         // Validating here lets us bail early on bad input (showing the
         // error in the Setup view) without paying for an IPC round-trip
         // before the UI has a chance to update.
-        const validated = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
+        const validated = scopeMode === 'auto'
+            ? buildContextScanSegments(selectedNetworkContext)
+            : (() => {
+                const manual = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
+                return manual.ok ? {
+                    ...manual,
+                    scopeKey: `${manual.baseIP}.${manual.start}-${manual.end}`,
+                    hostCount: manual.end - manual.start + 1,
+                    gatewayIp: net.gateway || null,
+                    segments: [{ baseIP: manual.baseIP, start: manual.start, end: manual.end }],
+                } : manual
+            })()
         if (!validated.ok) {
             setInputError(validated.error)
             return
@@ -822,6 +859,8 @@ export default function LanCheck() {
         // which could hold the click for 200-500 ms while netsh / ip /
         // ifconfig spawned and resolved — the user perceived the button
         // as unresponsive ("tarda varios segs en reaccionar").
+        const scanId = scanRunRef.current + 1
+        scanRunRef.current = scanId
         setInputError('')
         setStage('scan')
         setRunning(true)
@@ -846,6 +885,7 @@ export default function LanCheck() {
         // the user.
         let effectiveBaseIP = baseIP
         try {
+            if (scopeMode === 'auto') throw new Error('auto-context-already-resolved')
             const ifaces = await bridge.getNetworkInterfaces()
             const autoBase = resolveAutoBaseFromInterfaces(ifaces)
             if (autoBase) {
@@ -858,9 +898,18 @@ export default function LanCheck() {
 
         // Re-validate with the (possibly updated) effective base. This
         // is cheap; it's the IPC call above that was slow.
-        const finalValidated = effectiveBaseIP === baseIP
+        const refreshedManual = scopeMode === 'manual' && effectiveBaseIP !== baseIP
+            ? validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
+            : null
+        const finalValidated = !refreshedManual
             ? validated
-            : validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
+            : (refreshedManual.ok ? {
+                ...refreshedManual,
+                scopeKey: `${refreshedManual.baseIP}.${refreshedManual.start}-${refreshedManual.end}`,
+                hostCount: refreshedManual.end - refreshedManual.start + 1,
+                gatewayIp: net.gateway || null,
+                segments: [{ baseIP: refreshedManual.baseIP, start: refreshedManual.start, end: refreshedManual.end }],
+            } : refreshedManual)
         if (!finalValidated.ok) {
             // Extremely rare: auto-base resolved to an invalid prefix.
             // Roll back the view + show the error.
@@ -872,36 +921,57 @@ export default function LanCheck() {
 
         const cfg = PROFILE_PRESETS[profile]
         const portsToScan = selectedPorts
-        const { baseIP: safeBase, start, end } = finalValidated
+        const scanSegments = finalValidated.segments
+        const safeBase = scanSegments[0].baseIP
+        const start = scanSegments[0].start
+        const end = scanSegments.at(-1).end
+        const scopeLabel = finalValidated.cidr || `${safeBase}.${start}-${scanSegments.at(-1).baseIP}.${end}`
         const scanStarted = Date.now()
 
         bridge.configSet('lancheck.settings', {
             profile,
             enableDiscovery,
             extendedSweep,
+            scanAllHosts,
             baseIP: safeBase,
             rangeStart: start,
             rangeEnd: end,
+            scopeMode,
+            selectedInterfaceAddress: selectedNetworkContext?.address || '',
         }).catch(error => {
             logBridgeWarning('lancheck:settings-persist', error)
         })
-        pushActivity(`LAN check initialized for ${safeBase}.${start}-${end}`, 'info')
+        pushActivity(`LAN check initialized for ${scopeLabel}`, 'info')
         if (safeMode) {
             pushActivity('Safe Scan mode active: lower concurrency, longer timeouts, multicast probes skipped', 'info')
         }
         try {
             let discoveredHosts = []
             if (enableDiscovery) {
-                const span = end - start + 1
-                for (let cursor = start; cursor <= end; cursor += cfg.batchSize) {
-                    const chunkStart = cursor
-                    const chunkEnd = Math.min(cursor + cfg.batchSize - 1, end)
-                    pushActivity(`Discovery sweep: ${safeBase}.${chunkStart}-${chunkEnd}`, 'info')
-                    const chunk = await bridge.lanScan(safeBase, chunkStart, chunkEnd, { safeMode })
-                    discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
-                    setDiscovered(discoveredHosts)
-                    const doneRatio = (chunkEnd - start + 1) / span
-                    setProgress(clamp(Math.round(doneRatio * 34), 1, 34))
+                const span = finalValidated.hostCount
+                let completedHosts = 0
+                for (let segmentIndex = 0; segmentIndex < scanSegments.length; segmentIndex += 1) {
+                    const segment = scanSegments[segmentIndex]
+                    for (let cursor = segment.start; cursor <= segment.end; cursor += cfg.batchSize) {
+                        const chunkStart = cursor
+                        const chunkEnd = Math.min(cursor + cfg.batchSize - 1, segment.end)
+                        const isLastBatch = segmentIndex === scanSegments.length - 1 && chunkEnd >= segment.end
+                        pushActivity(`Discovery sweep: ${segment.baseIP}.${chunkStart}-${chunkEnd}`, 'info')
+                        const chunk = await bridge.lanScan(segment.baseIP, chunkStart, chunkEnd, {
+                            safeMode,
+                            gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
+                            localIp: selectedNetworkContext?.address || net.localIP || null,
+                            localMac: selectedNetworkContext?.mac || null,
+                            scanId,
+                            isLastBatch,
+                            layer2Expected: scopeMode === 'auto',
+                        })
+                        if (scanRunRef.current !== scanId) return
+                        discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
+                        setDiscovered(discoveredHosts)
+                        completedHosts += chunkEnd - chunkStart + 1
+                        setProgress(clamp(Math.round((completedHosts / span) * 34), 1, 34))
+                    }
                 }
                 pushActivity(`Discovery completed: ${discoveredHosts.length} hosts detected`, 'ok')
                 setStepState(prev => ({ ...prev, discovery: 'done', upnp: 'running' }))
@@ -911,7 +981,9 @@ export default function LanCheck() {
                     safeBase,
                     start,
                     end,
-                    hostLimit: fallbackHostLimit,
+                    hostLimit: scanAllHosts ? 4096 : fallbackHostLimit,
+                    segments: scanSegments,
+                    gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
                 })
                 setDiscovered(discoveredHosts)
                 setProgress(20)
@@ -927,18 +999,35 @@ export default function LanCheck() {
             if (safeMode) {
                 pushActivity('UPnP/SSDP probe skipped (Safe Scan mode)', 'info')
             } else {
-                upnpIntel = await bridge.lanUpnpScan(safeBase, start, end).catch(() => ({ ok: false, summary: null, devices: [] }))
+                const upnpDevices = []
+                for (const segment of scanSegments) {
+                    const segmentIntel = await bridge.lanUpnpScan(segment.baseIP, segment.start, segment.end).catch(() => ({ ok: false, devices: [] }))
+                    for (const item of segmentIntel?.devices || []) {
+                        if (!upnpDevices.some(existing => existing.ip === item.ip && existing.location === item.location)) upnpDevices.push(item)
+                    }
+                }
+                upnpIntel = {
+                    ok: true,
+                    devices: upnpDevices,
+                    summary: {
+                        ssdpResponders: new Set(upnpDevices.map(item => item.ip)).size,
+                        igdCount: upnpDevices.filter(item => item.isIgd).length,
+                        rootDeviceCount: upnpDevices.filter(item => item.isRootDevice).length,
+                        gatewayIgdCount: upnpDevices.filter(item => item.isIgd && item.ip === (finalValidated.gatewayIp || selectedNetworkContext?.gateway)).length,
+                    },
+                }
+                if (scanRunRef.current !== scanId) return
                 const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
                 pushActivity(upnpResponders > 0 ? `UPnP/SSDP responders detected: ${upnpResponders}` : 'No UPnP/SSDP responders detected in selected scope', upnpResponders > 0 ? 'warn' : 'ok')
             }
             setProgress(50)
             setStepState(prev => ({ ...prev, upnp: safeMode ? 'skipped' : 'done', services: 'running' }))
 
-            const gateway = chooseGateway(discoveredHosts)
+            const gateway = chooseGateway(discoveredHosts, finalValidated.gatewayIp || selectedNetworkContext?.gateway)
             pushActivity(gateway ? `Gateway candidate: ${gateway.ip}` : 'Gateway not identified in discovered scope', gateway ? 'info' : 'warn')
 
-            const targetHosts = [...discoveredHosts]
-                .filter(d => !d.isLocal)
+            const eligibleHosts = [...discoveredHosts]
+                .filter(isActiveScanCandidate)
                 .sort((a, b) => {
                     if (a.isGateway && !b.isGateway) return -1
                     if (!a.isGateway && b.isGateway) return 1
@@ -946,7 +1035,8 @@ export default function LanCheck() {
                     if (!a.alive && b.alive) return 1
                     return byIpAsc(a, b)
                 })
-                .slice(0, enableDiscovery ? cfg.hostLimit : Math.max(cfg.hostLimit, Math.min(64, cfg.hostLimit * 2)))
+            const targetLimit = enableDiscovery ? cfg.hostLimit : Math.max(cfg.hostLimit, Math.min(64, cfg.hostLimit * 2))
+            const targetHosts = scanAllHosts ? eligibleHosts : eligibleHosts.slice(0, targetLimit)
 
             const udpPortsToScan = selectedUdpPorts
             pushActivity(
@@ -973,6 +1063,7 @@ export default function LanCheck() {
                 const safeUdpAttempts = safeMode ? 1 : (profile === 'deep' ? 2 : 1)
 
                 const scanTasks = targetHosts.map(host => async () => bridge.lanSecurityScan({
+                    scanId,
                     targets: [{ ip: host.ip }],
                     tcpPorts: portsToScan,
                     udpPorts: udpPortsToScan,
@@ -1000,6 +1091,7 @@ export default function LanCheck() {
                         setProgress(clamp(p, 50, 92))
                     }
                 )
+                if (scanRunRef.current !== scanId) return
 
                 for (let i = 0; i < hostResponses.length; i += 1) {
                     const response = hostResponses[i]
@@ -1072,14 +1164,32 @@ export default function LanCheck() {
             setProgress(94)
 
             const findings = buildFindings({ devices: discoveredHosts, gateway, openPorts: openPortRows, upnp: upnpIntel, profileId: profile })
-            const riskScore = scoreFromFindings(findings, confirmedRowsRun.length, inconclusiveRowsRun.length)
+            if (targetHosts.length < eligibleHosts.length) {
+                findings.push(finding(
+                    'lan-partial-coverage',
+                    'info',
+                    'Partial host coverage',
+                    `${targetHosts.length} of ${eligibleHosts.length} active candidates were fingerprinted (${discoveredHosts.length} total observations).`,
+                    'Run with "Analyze every active host" enabled or select a narrower scope before treating this report as representative of the whole LAN.',
+                    'coverage',
+                ))
+            }
+            const assessment = evaluateLanAssessment({
+                findings,
+                discoveredCount: eligibleHosts.length,
+                targetCount: targetHosts.length,
+                confirmedServiceCount: confirmedRowsRun.length,
+                inconclusiveCount: inconclusiveRowsRun.length,
+                checksPerHost: portsToScan.length + udpPortsToScan.length,
+            })
+            const riskScore = assessment.riskScore
             const riskBand = getRiskBand(riskScore)
             const finishedAt = Date.now()
 
             const reportPayload = {
                 profile,
                 generatedAt: new Date().toISOString(),
-                range: `${safeBase}.${start}-${end}`,
+                range: scopeLabel,
                 gateway,
                 devices: discoveredHosts,
                 upnp: upnpIntel,
@@ -1089,6 +1199,7 @@ export default function LanCheck() {
                     riskScore,
                     riskBand,
                     devicesTotal: discoveredHosts.length,
+                    activeCandidates: eligibleHosts.length,
                     targetsScanned: targetHosts.length,
                     portsPerHost: portsToScan.length,
                     udpPortsPerHost: udpPortsToScan.length,
@@ -1104,6 +1215,12 @@ export default function LanCheck() {
                     upnpResponders: upnpIntel?.summary?.ssdpResponders || 0,
                     discoveryEnabled: enableDiscovery,
                     extendedSweepEnabled: extendedSweep,
+                    scanAllHosts,
+                    coveragePercent: assessment.coveragePercent,
+                    uncertaintyPercent: assessment.uncertaintyPercent,
+                    confidencePercent: assessment.confidencePercent,
+                    surfacePerHost: assessment.surfacePerHost,
+                    partialCoverage: assessment.isPartialCoverage,
                     durationMs: Math.max(0, finishedAt - scanStarted),
                 },
             }
@@ -1117,6 +1234,7 @@ export default function LanCheck() {
             pushActivity(`Analysis completed: risk ${riskBand.label} (${riskScore}/100)`, riskScore >= 51 ? 'warn' : 'ok')
 
             const savedRows = await bridge.lanCheckHistoryAdd({ report: reportPayload }).catch(() => null)
+            if (scanRunRef.current !== scanId) return
             if (Array.isArray(savedRows)) {
                 setHistoryRows(normalizeHistoryRows(savedRows))
             } else {
@@ -1128,6 +1246,17 @@ export default function LanCheck() {
             setStage('setup')
             pushActivity(`Scan failed: ${error?.message || 'unexpected error'}`, 'error')
         }
+    }
+
+    function cancelLanSecurityScan() {
+        const activeScanId = scanRunRef.current
+        bridge.lanScanCancel?.(activeScanId)
+        bridge.lanSecurityScanCancel?.(activeScanId)
+        scanRunRef.current += 1
+        setRunning(false)
+        setInputError('')
+        setStage('setup')
+        setStepState({ discovery: 'idle', upnp: 'idle', services: 'idle', analysis: 'idle' })
     }
 
     const progressRingStyle = useMemo(() => ({
@@ -1196,7 +1325,7 @@ export default function LanCheck() {
                                     <button key={key} className={`lchk-profile ${profile === key ? 'active' : ''}`} onClick={() => setProfile(key)} disabled={running}>
                                         <div className="lchk-profile-head">{value.title}</div>
                                         <p>{value.description}</p>
-                                        <span>{resolveProfilePorts(key, extendedSweep).length} ports - up to {value.hostLimit} hosts</span>
+                                        <span>{resolveProfilePorts(key, extendedSweep).length} ports - {scanAllHosts ? 'all active hosts' : `up to ${value.hostLimit} hosts`}</span>
                                     </button>
                                 ))}
                             </div>
@@ -1204,11 +1333,30 @@ export default function LanCheck() {
                             <div className="lchk-range-row">
                                 <label className="lchk-label">Subnet Scope</label>
                                 <div className="lchk-range-inputs">
-                                    <input className="v3-input mono" value={baseIP} onChange={e => setBaseIP(e.target.value)} disabled={running} />
-                                    <span className="lchk-dot">.</span>
-                                    <input className="v3-input mono" type="number" min={1} max={254} value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} disabled={running} />
-                                    <span className="lchk-dot">-</span>
-                                    <input className="v3-input mono" type="number" min={1} max={254} value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} disabled={running} />
+                                    <select className="v3-input" value={scopeMode} onChange={e => setScopeMode(e.target.value)} disabled={running}>
+                                        <option value="auto">Detected CIDR</option>
+                                        <option value="manual">Manual /24</option>
+                                    </select>
+                                    {scopeMode === 'auto' ? (
+                                        <>
+                                            {(net.networkContexts?.length || 0) > 1 && (
+                                                <select className="v3-input" value={selectedNetworkContext?.address || ''} onChange={e => setSelectedInterfaceAddress(e.target.value)} disabled={running}>
+                                                    {net.networkContexts.map(item => (
+                                                        <option key={`${item.interfaceName}-${item.address}`} value={item.address}>{item.interfaceName || 'Interface'} · {item.cidr}</option>
+                                                    ))}
+                                                </select>
+                                            )}
+                                            <input className="v3-input mono" value={selectedNetworkContext?.cidr || 'Detecting...'} readOnly />
+                                        </>
+                                    ) : (
+                                        <>
+                                            <input className="v3-input mono" value={baseIP} onChange={e => setBaseIP(e.target.value)} disabled={running} />
+                                            <span className="lchk-dot">.</span>
+                                            <input className="v3-input mono" type="number" min={1} max={254} value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} disabled={running} />
+                                            <span className="lchk-dot">-</span>
+                                            <input className="v3-input mono" type="number" min={1} max={254} value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} disabled={running} />
+                                        </>
+                                    )}
                                 </div>
                             </div>
 
@@ -1230,6 +1378,18 @@ export default function LanCheck() {
                                     <div>
                                         <strong>Discovery sweep</strong>
                                         <span>Host inventory phase. Disable to skip subnet discovery and use focused targets (faster).</span>
+                                    </div>
+                                </label>
+                                <label className="lchk-option">
+                                    <input
+                                        type="checkbox"
+                                        checked={scanAllHosts}
+                                        onChange={event => setScanAllHosts(event.target.checked)}
+                                        disabled={running}
+                                    />
+                                    <div>
+                                        <strong>Analyze every active host</strong>
+                                        <span>Recommended for trustworthy coverage. Disable to apply the profile host limit and shorten runtime.</span>
                                     </div>
                                 </label>
                                 <label className="lchk-option">
@@ -1261,7 +1421,7 @@ export default function LanCheck() {
                             <div className="lchk-scope-meta">
                                 <span><Search size={13} /> TCP ports: {selectedPorts.length}</span>
                                 <span><Wifi size={13} /> UDP ports: {selectedUdpPorts.length}</span>
-                                <span><Router size={13} /> Max hosts inspected: {preset.hostLimit}</span>
+                                <span><Router size={13} /> Hosts inspected: {scanAllHosts ? 'all active' : `up to ${preset.hostLimit}`}</span>
                                 <span><Clock3 size={13} /> Concurrency: {preset.concurrency}</span>
                                 <span><Radar size={13} /> Discovery: {enableDiscovery ? 'enabled' : 'focused mode'}</span>
                             </div>
@@ -1283,9 +1443,9 @@ export default function LanCheck() {
                                 </div>
                                 <div className="lchk-plan-metrics">
                                     <div className="lchk-kpi"><span>Profile</span><strong>{preset.title}</strong></div>
-                                    <div className="lchk-kpi"><span>Scope</span><strong className="mono lchk-scope-value">{baseIP}.<wbr />{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>Scope</span><strong className="mono lchk-scope-value">{scopeMode === 'auto' ? (selectedNetworkContext?.cidr || 'Detecting') : <>{baseIP}.<wbr />{rangeStart}-{rangeEnd}</>}</strong></div>
                                     <div className="lchk-kpi"><span>Mode</span><strong>{enableDiscovery ? 'Full discovery' : 'Focused targets'}</strong></div>
-                                    <div className="lchk-kpi"><span>Coverage</span><strong>{selectedPorts.length + selectedUdpPorts.length} checks/host</strong></div>
+                                    <div className="lchk-kpi"><span>Probe density</span><strong>{selectedPorts.length + selectedUdpPorts.length} checks/host</strong></div>
                                     <div className="lchk-kpi"><span>History</span><strong>{historyRows.length} reports</strong></div>
                                 </div>
                                 <button className="v3-btn v3-btn-primary lchk-main-btn" onClick={startLanSecurityScan} disabled={running}>
@@ -1337,11 +1497,16 @@ export default function LanCheck() {
                                 <div className="lchk-live-kpi">
                                     <div className="lchk-kpi"><span>Discovered</span><strong>{discovered.length}</strong></div>
                                     <div className="lchk-kpi"><span>Profile</span><strong>{PROFILE_PRESETS[profile].title}</strong></div>
-                                    <div className="lchk-kpi"><span>Range</span><strong className="mono lchk-scope-value">{baseIP}.<wbr />{rangeStart}-{rangeEnd}</strong></div>
+                                    <div className="lchk-kpi"><span>Range</span><strong className="mono lchk-scope-value">{scopeMode === 'auto' ? (selectedNetworkContext?.cidr || 'Detecting') : <>{baseIP}.<wbr />{rangeStart}-{rangeEnd}</>}</strong></div>
                                     <div className="lchk-kpi"><span>TCP / host</span><strong>{selectedPorts.length}</strong></div>
                                     <div className="lchk-kpi"><span>UDP / host</span><strong>{selectedUdpPorts.length}</strong></div>
                                     <div className="lchk-kpi"><span>Discovery</span><strong>{enableDiscovery ? 'Enabled' : 'Focused'}</strong></div>
                                 </div>
+                                {running && (
+                                    <button type="button" className="v3-btn v3-btn-secondary" onClick={cancelLanSecurityScan}>
+                                        <XCircle size={14} /> Stop Scan
+                                    </button>
+                                )}
                             </div>
 
                             <div className="lchk-step-strip">
@@ -1435,7 +1600,11 @@ export default function LanCheck() {
                                         </span>
                                         <span className="lchk-report-glance-item">
                                             <Globe size={13} />
-                                            {report.summary.devicesTotal} discovered - {report.summary.targetsScanned} fingerprinted
+                                            {report.summary.devicesTotal} discovered - {report.summary.targetsScanned} fingerprinted - {report.summary.coveragePercent ?? 100}% coverage
+                                        </span>
+                                        <span className="lchk-report-glance-item">
+                                            <Fingerprint size={13} />
+                                            {report.summary.confidencePercent ?? 100}% confidence - {report.summary.uncertaintyPercent ?? 0}% uncertainty
                                         </span>
                                         <span className="lchk-report-glance-item">
                                             <Clock3 size={13} />

@@ -29,7 +29,7 @@ function mockPingResult(host) {
 
 const API = window.electronAPI
 const CONFIG_CHANGE_EVENT = 'netduo:config-changed'
-const DEFAULT_PUBLIC_CONFIG_KEYS = ['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold', 'lancheck.settings']
+const DEFAULT_PUBLIC_CONFIG_KEYS = ['accentColor', 'theme', 'pollInterval', 'notifications', 'latencyThreshold', 'onlineNetworkInfo', 'lancheck.settings']
 const SENSITIVE_CONFIG_KEYS = new Set(['wanProbeKey', 'wanProbePool'])
 const WAN_PROBE_CONFIG_KEYS = [
     'wanProbePool',
@@ -118,6 +118,18 @@ const bridge = {
 
     // Network info
     getNetworkInterfaces: () => API ? API.getNetworkInterfaces() : Promise.resolve(mockInterfaces()),
+    getNetworkContext: () => API?.getNetworkContext
+        ? API.getNetworkContext()
+        : Promise.resolve({
+            active: {
+                address: '192.168.1.105', prefixLength: 24, netmask: '255.255.255.0',
+                networkAddress: '192.168.1.0', broadcastAddress: '192.168.1.255',
+                firstHost: '192.168.1.1', lastHost: '192.168.1.254', hostCount: 254,
+                cidr: '192.168.1.0/24', gateway: '192.168.1.1', interfaceName: 'Ethernet',
+                mac: 'a4:83:e7:1c:22:fa', source: 'mock',
+            },
+            interfaces: [],
+        }),
     getVpnStatus: () => API?.getVpnStatus
         ? API.getVpnStatus()
         : Promise.resolve({
@@ -132,6 +144,7 @@ const bridge = {
         uptime: 86400 * 3 + 7200, cpus: 8, cpuModel: 'Intel Core i7-12700H',
         totalmem: 16 * 1e9, freemem: 6.2 * 1e9,
     }),
+    getAppVersion: () => API?.getAppVersion ? API.getAppVersion() : Promise.resolve('dev'),
     getPublicIP: () => API ? API.getPublicIP() : Promise.resolve('203.0.113.45'),
     getIPGeo: ip => API ? API.getIPGeo(ip) : Promise.resolve({
         country: 'United States', city: 'New York', isp: 'Comcast Cable',
@@ -149,6 +162,8 @@ const bridge = {
         { ip: '192.168.1.101', mac: 'bc:d0:74:33:11:d2', type: 'dynamic' },
         { ip: '192.168.1.200', mac: 'f4:f5:d8:ab:cd:ef', type: 'dynamic' },
     ]),
+    lanScanCancel: (scanId) => API?.lanScanCancel?.(scanId),
+    lanSecurityScanCancel: (scanId) => API?.lanSecurityScanCancel?.(scanId),
 
     // Network change events
     onNetworkChanged: (cb) => API?.onNetworkChanged?.(cb) || (() => {}),
@@ -162,6 +177,15 @@ const bridge = {
     pingSingle: host =>
         API ? API.pingSingle(host)
             : new Promise(r => setTimeout(() => r({ host, time: rndInt(14, 95), success: true }), 150 + Math.random() * 200)),
+    dnsLookupServer: (hostname, type, server) => API?.dnsLookupServer
+        ? API.dnsLookupServer(hostname, type, server)
+        : new Promise(resolve => setTimeout(() => resolve({
+            type,
+            server,
+            addresses: type === 'AAAA' ? ['2606:4700:4700::1111'] : ['203.0.113.10'],
+            time: rndInt(12, 75),
+            success: true,
+        }), rndInt(12, 75))),
 
     // Streaming â€” traceroute (Electron uses events, browser uses mock timer)
     startTraceroute: (host, onHop, onDone) => {

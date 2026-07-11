@@ -40,8 +40,10 @@ describe('Scanner race-condition guards', () => {
     it('uses the captured scan options for every LAN scan batch', () => {
         const scanBlock = sliceBetween('async function startScan', 'function stopScan')
         expect(scanBlock).toMatch(/const scanId = scanRunRef\.current \+ 1/)
-        expect(scanBlock).toContain('const scanGatewayIp = net.gateway || null')
-        expect(scanBlock).toContain('bridge.lanScan(safeBaseIP, s, e, { safeMode, gatewayIp: scanGatewayIp })')
+        expect(scanBlock).toContain('const scanGatewayIp = validated.gatewayIp || net.gateway || null')
+        expect(scanBlock).toContain('bridge.lanScan(segment.baseIP, s, e, {')
+        expect(scanBlock).toContain('scanId,')
+        expect(scanBlock).toContain('isLastBatch,')
         expect(scanBlock.indexOf('bridge.lanScan')).toBeGreaterThan(scanBlock.indexOf('const scanId'))
     })
 })

@@ -53,4 +53,10 @@ describe('IPC input validation before dangerous sinks', () => {
         expect(body).toContain('revealInFolder')
         expect(body).toMatch(/realpath|resolve|exported|allowed|existsSync/)
     })
+
+    it('dns benchmark validates the selected resolver before creating a Resolver', () => {
+        const body = handlerBody('dns-lookup-server')
+        expect(body).toContain('new dns.Resolver()')
+        expect(body).toMatch(/validators\.isIPv4\(server\)/)
+    })
 })

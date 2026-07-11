@@ -11,7 +11,7 @@ const localRequire = createRequire(import.meta.url)
 const { filterGhosts } = localRequire('../electron/scanner/ghostFilter.js')
 
 // Alias so the pre-existing test body keeps reading naturally.
-const currentProductionGhostFilter = (rows) => filterGhosts(rows)
+const currentProductionGhostFilter = (rows, options) => filterGhosts(rows, options)
 
 const row = (ip, overrides = {}) => ({
     ip,
@@ -157,5 +157,13 @@ describe('Scanner proxy-ARP ghost filter', () => {
         expect(ips([
             row('192.168.1.20', { mac: 'aa:bb:cc:dd:ee:20' }),
         ])).toEqual(['192.168.1.20'])
+    })
+
+    it('uses session gateway evidence when the current batch does not contain the gateway', () => {
+        const filtered = currentProductionGhostFilter([
+            row('192.168.1.88', { mac: 'aa:bb:cc:dd:ee:01' }),
+            row('192.168.1.89', { mac: '10:20:30:40:50:60' }),
+        ], { gatewayIp: '192.168.1.1', gatewayMac: 'aa:bb:cc:dd:ee:01' })
+        expect(filtered.map(item => item.ip)).toEqual(['192.168.1.89'])
     })
 })

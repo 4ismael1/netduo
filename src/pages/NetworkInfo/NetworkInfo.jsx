@@ -47,6 +47,7 @@ export default function NetworkInfo() {
     const publicIP = net.publicIP || '-'
     const geoInfo = net.geo
     const loading = net.loading
+    const context = net.networkContext
     const transportLabel = net.isVpn
         ? 'VPN'
         : (net.isWifi ? 'Wi-Fi' : (net.isEthernet ? 'Ethernet' : (net.connected ? 'Network' : 'Offline')))
@@ -69,6 +70,10 @@ export default function NetworkInfo() {
             `Interface:   ${net.ifaceName || '-'}`,
             `Local IP:    ${net.localIP || '-'}`,
             `Gateway:     ${net.isVpn ? 'Paused (VPN active)' : (net.gateway || '-')}`,
+            `CIDR:        ${context?.cidr || '-'}`,
+            `Netmask:     ${context?.netmask || '-'}`,
+            `Broadcast:   ${context?.broadcastAddress || '-'}`,
+            `Host range:  ${context?.firstHost || '-'} - ${context?.lastHost || '-'}`,
             '',
             'PUBLIC',
             `Public IP:   ${visiblePublicIP}`,
@@ -139,6 +144,11 @@ export default function NetworkInfo() {
                                 { label: 'Interface', value: net.ifaceName || '-' },
                                 { label: 'Local IP', value: net.localIP || '-', mono: true },
                                 { label: 'Gateway', value: net.isVpn ? 'Paused (VPN active)' : (net.gateway || '-'), mono: true },
+                                { label: 'Active CIDR', value: context?.cidr || '-', mono: true },
+                                { label: 'Netmask', value: context?.netmask || '-', mono: true },
+                                { label: 'Broadcast', value: context?.broadcastAddress || '-', mono: true },
+                                { label: 'Usable Hosts', value: Number.isFinite(context?.hostCount) ? String(context.hostCount) : '-' },
+                                { label: 'Route Source', value: context?.source || '-' },
                             ].map(({ label, value, mono }) => (
                                 <div key={label} style={{ padding: '16px 20px', borderRight: '1px solid var(--border-light)', borderBottom: '1px solid var(--border-light)', background: 'var(--bg-app)' }}>
                                     <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{label}</div>

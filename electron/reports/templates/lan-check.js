@@ -85,16 +85,18 @@ function buildHTML(payload) {
           <div class="muted" style="font-size:9pt;margin-top:2px;">${esc(riskLabel)}</div>
         </div>
         <div class="summary-card">
-          <div class="label">Devices scanned</div>
-          <div class="value">${summary.devicesTotal ?? devices.length}</div>
+          <div class="label">Coverage</div>
+          <div class="value">${summary.coveragePercent ?? 100}%</div>
+          <div class="muted" style="font-size:9pt;margin-top:2px;">${summary.targetsScanned ?? devices.length} / ${summary.activeCandidates ?? summary.devicesTotal ?? devices.length} active hosts</div>
         </div>
         <div class="summary-card">
           <div class="label">Open services</div>
           <div class="value warn">${summary.confirmedOpenServices ?? openPorts.length}</div>
         </div>
         <div class="summary-card">
-          <div class="label">Findings</div>
-          <div class="value ${findings.length ? 'warn' : 'success'}">${findings.length}</div>
+          <div class="label">Confidence</div>
+          <div class="value">${summary.confidencePercent ?? 100}%</div>
+          <div class="muted" style="font-size:9pt;margin-top:2px;">${summary.uncertaintyPercent ?? 0}% uncertainty</div>
         </div>
       </div>
     `
@@ -213,6 +215,9 @@ function buildHTML(payload) {
             ['Perfil', (payload?.profile || '').toUpperCase()],
             ['Risk score', `${score}/100 (${riskLabel})`],
             ['Dispositivos', `${summary.devicesTotal ?? devices.length} en alcance`],
+            ['Cobertura', `${summary.coveragePercent ?? 100}% (${summary.targetsScanned ?? devices.length} analizados)`],
+            ['Confianza', `${summary.confidencePercent ?? 100}%`],
+            ['Incertidumbre', `${summary.uncertaintyPercent ?? 0}%`],
             ['Servicios abiertos', `${summary.confirmedOpenServices ?? openPorts.length}`],
             ['Ejecutado', fmtDate(payload?.generatedAt)],
             ['Duración', fmtDuration(summary.durationMs)],

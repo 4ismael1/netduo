@@ -23,6 +23,7 @@ const DEFAULT_PUBLIC_CONFIG_KEYS = [
     'notifications',
     'notifyNewDevices',
     'macVendorLookupOnline',
+    'onlineNetworkInfo',
     'latencyThreshold',
     'lancheck.settings',
 ]
@@ -1037,13 +1038,6 @@ function deviceInventoryPurgeGhosts(networkId, seenKeys, scanCoveredFullRange, g
          WHERE network_id = ?
     `).all(networkId)
 
-    // Tally MAC occurrences for signature 2.
-    const macCounts = new Map()
-    for (const r of rows) {
-        if (!r.mac) continue
-        const k = r.mac.toLowerCase()
-        macCounts.set(k, (macCounts.get(k) || 0) + 1)
-    }
 
     // Find the gateway's MAC so we can exempt its row from the shared-MAC
     // deletion. Without this, a proxy-ARP router that answers for 4+ ghost
@@ -1068,10 +1062,10 @@ function deviceInventoryPurgeGhosts(networkId, seenKeys, scanCoveredFullRange, g
         // Signature 1: no-MAC entry missing from current full scan.
         const isMaclessGhost = !r.mac && scanCoveredFullRange && !keys.has(r.device_key)
 
-        // Signature 2: MAC shared by 4+ rows on this network. If that MAC
+        // Signature 2: stale row sharing the known gateway MAC. If that MAC
         // is the gateway's, any row sharing it is a proxy-ARP ghost —
         // but the gateway itself has already been exempted above.
-        const isSharedMacGhost = macKey && (macCounts.get(macKey) || 0) >= 4
+        const isSharedMacGhost = gatewayMac && macKey === gatewayMac && !keys.has(r.device_key)
 
         if (isMaclessGhost || isSharedMacGhost) {
             toDelete.push(r.device_key)
@@ -1085,9 +1079,6 @@ function deviceInventoryPurgeGhosts(networkId, seenKeys, scanCoveredFullRange, g
         for (const key of toDelete) stmt.run(key)
     })
     tx()
-    // gatewayMac is computed above for diagnostics/future heuristics; the
-    // gateway-exempt path uses device_key directly.
-    void gatewayMac
     return toDelete.length
 }
 

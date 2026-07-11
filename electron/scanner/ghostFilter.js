@@ -55,8 +55,12 @@ function hasActiveDiscoveryProof(row) {
     return row.activeSource === 'mdns' || row.activeSource === 'ssdp'
 }
 
-function filterGhosts(results) {
+function filterGhosts(results, options = {}) {
     if (!Array.isArray(results) || results.length === 0) return results
+    // Routed/VPN/manual scopes do not share the scanner's L2 segment, so a
+    // valid remote host will naturally have no local ARP entry. Proxy-ARP
+    // rules are only valid when the caller confirms local-L2 discovery.
+    if (options.layer2Expected === false) return results
 
     // Real gateway = marked by the heuristic AND has a resolvable MAC.
     // If the heuristic flags two candidates (`.1` and `.254`, common
@@ -64,7 +68,8 @@ function filterGhosts(results) {
     // real MAC is authentic; the other is a phantom and will be
     // dropped by Rule A below.
     const gateway = results.find(r => r && r.alive && r.isGateway && hasMac(r))
-    const gatewayMac = gateway ? normMac(gateway.mac) : null
+    const gatewayMac = normMac(options.gatewayMac) || (gateway ? normMac(gateway.mac) : null)
+    const gatewayIp = typeof options.gatewayIp === 'string' ? options.gatewayIp : null
 
     return results.filter(r => {
         if (!r) return false
@@ -77,7 +82,7 @@ function filterGhosts(results) {
         if (!hasMac(r)) return hasActiveDiscoveryProof(r)
 
         // Real gateway with MAC: keep regardless of Rule B.
-        if (r.isGateway) return true
+        if (r.isGateway || (gatewayIp && r.ip === gatewayIp)) return true
 
         // Rule B: shares the real gateway's MAC without being it.
         if (gatewayMac && normMac(r.mac) === gatewayMac) return false

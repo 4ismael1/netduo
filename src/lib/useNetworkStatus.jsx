@@ -77,12 +77,17 @@ export function NetworkStatusProvider({ children }) {
     const [linkType, setLinkType] = useState('other')
     const [isVpn, setIsVpn] = useState(false)
     const [vpnStatus, setVpnStatus] = useState(null)
+    const [networkContext, setNetworkContext] = useState(null)
+    const [networkContexts, setNetworkContexts] = useState([])
     const [loading, setLoading] = useState(true)
     const [fastPollMs, setFastPollMs] = useState(DEFAULT_FAST_POLL_MS)
     const mountedRef = useRef(true)
     const wifiRef = useRef(null)
     const publicIPRef = useRef(null)
     const vpnStatusRef = useRef(null)
+    const networkContextRef = useRef(null)
+    const onlineNetworkInfoRef = useRef(false)
+    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(false)
 
     useEffect(() => {
         wifiRef.current = wifi
@@ -96,6 +101,10 @@ export function NetworkStatusProvider({ children }) {
         vpnStatusRef.current = vpnStatus
     }, [vpnStatus])
 
+    useEffect(() => {
+        networkContextRef.current = networkContext
+    }, [networkContext])
+
     /** Wraps a promise with a timeout — resolves undefined if it takes too long */
     const withTimeout = (promise, ms) => Promise.race([
         promise,
@@ -107,14 +116,16 @@ export function NetworkStatusProvider({ children }) {
             // ── Phase 1: all local calls in parallel — unblocks UI when done ──
             // Each call has a 4s safety timeout so the skeleton never gets stuck
             const LOCAL_TIMEOUT = 4000
+            const NETWORK_CONTEXT_TIMEOUT = 8000
             const localCalls = [
                 withTimeout(bridge.getNetworkInterfaces(), LOCAL_TIMEOUT),
+                bridge.getNetworkContext ? withTimeout(bridge.getNetworkContext(), NETWORK_CONTEXT_TIMEOUT) : Promise.resolve(null),
                 skipWifi ? Promise.resolve(undefined) : withTimeout(bridge.getWifiInfo(), LOCAL_TIMEOUT),
                 withTimeout(bridge.getDnsServers(), LOCAL_TIMEOUT),
                 withTimeout(bridge.getSystemInfo(), LOCAL_TIMEOUT),
                 bridge.getVpnStatus ? withTimeout(bridge.getVpnStatus(), LOCAL_TIMEOUT) : Promise.resolve(null),
             ]
-            const [ifaces, w, d, sys, vpn] = await Promise.allSettled(localCalls)
+            const [ifaces, contextResult, w, d, sys, vpn] = await Promise.allSettled(localCalls)
 
             if (!mountedRef.current) return
 
@@ -126,15 +137,35 @@ export function NetworkStatusProvider({ children }) {
                 setVpnStatus(nextVpnStatus || null)
             }
 
+            const nextNetworkContext = contextResult.status === 'fulfilled'
+                ? (contextResult.value?.active || null)
+                : null
+            if (nextNetworkContext) {
+                networkContextRef.current = nextNetworkContext
+                setNetworkContext(nextNetworkContext)
+            }
+            if (contextResult.status === 'fulfilled' && Array.isArray(contextResult.value?.interfaces)) {
+                setNetworkContexts(contextResult.value.interfaces)
+            }
+
             if (ifaces.status === 'fulfilled') {
                 const list = ifaces.value || []
                 setInterfaces(list)
+
+                const cachedNetworkContext = networkContextRef.current
+                const contextForPrimary = nextNetworkContext || (
+                    cachedNetworkContext?.address && list.some(item =>
+                        item?.family === 'IPv4' && item?.address === cachedNetworkContext.address
+                    ) ? cachedNetworkContext : null
+                )
 
                 const nextWifi = (!skipWifi && w.status === 'fulfilled' && w.value !== undefined)
                     ? w.value
                     : wifiRef.current
                 const wifiConnected = Boolean(nextWifi?.ssid)
-                const primary = pickPrimaryInterface(list, wifiConnected)
+                const primary = contextForPrimary?.address
+                    ? (list.find(item => item?.family === 'IPv4' && item?.address === contextForPrimary.address) || pickPrimaryInterface(list, wifiConnected))
+                    : pickPrimaryInterface(list, wifiConnected)
                 const hasVpnInterface = list.some(item =>
                     item?.family === 'IPv4' &&
                     !item?.internal &&
@@ -145,17 +176,15 @@ export function NetworkStatusProvider({ children }) {
                 if (primary) {
                     const detectedType = inferLinkType(primary)
                     const vpnActive = vpnActiveFromProbe || hasVpnInterface || detectedType === 'vpn'
-                    setLocalIP(primary.address)
-                    setIfaceName(primary.name)
+                    setLocalIP(contextForPrimary?.address || primary.address)
+                    setIfaceName(contextForPrimary?.interfaceName || primary.name)
                     setConnected(true)
                     setLinkType(detectedType)
                     setIsVpn(vpnActive)
                     if (vpnActive || detectedType === 'vpn') {
                         setGateway(null)
                     } else {
-                        const parts = primary.address.split('.')
-                        parts[3] = '1'
-                        setGateway(parts.join('.'))
+                        setGateway(contextForPrimary?.gateway || null)
                     }
                 } else if (vpnActiveFromProbe) {
                     setLocalIP(nextVpnStatus?.tunnel?.localIp || null)
@@ -165,6 +194,8 @@ export function NetworkStatusProvider({ children }) {
                     setLinkType('vpn')
                     setIsVpn(true)
                 } else {
+                    networkContextRef.current = null
+                    setNetworkContext(null)
                     setLocalIP(null)
                     setIfaceName(null)
                     setGateway(null)
@@ -182,22 +213,20 @@ export function NetworkStatusProvider({ children }) {
             // All local data is ready — skeleton disappears, UI renders complete
             if (mountedRef.current) setLoading(false)
 
-            // ── Phase 2: only public IP + geo in background (hidden behind eye toggle) ──
-            if (!skipGeo) {
+            // Public IP is a core diagnostic value. Detailed geolocation
+            // remains behind the explicit privacy option in Settings.
+            let pip = publicIPRef.current
+            if (!skipGeo || !pip || pip === 'Unavailable' || pip === 'Unknown') {
                 try {
-                    const pip = await bridge.getPublicIP()
+                    pip = await bridge.getPublicIP()
                     if (!mountedRef.current) return
                     setPublicIP(pip)
-                    if (pip && pip !== 'Unavailable') {
-                        const g = await bridge.getIPGeo(pip)
-                        if (mountedRef.current) setGeo(g)
-                    }
                 } catch { /* ok */ }
-            } else if (!publicIPRef.current) {
+            }
+            if (onlineNetworkInfoRef.current && !skipGeo && pip && pip !== 'Unavailable' && pip !== 'Unknown') {
                 try {
-                    const pip = await bridge.getPublicIP()
-                    if (!mountedRef.current) return
-                    setPublicIP(pip)
+                    const g = await bridge.getIPGeo(pip)
+                    if (mountedRef.current) setGeo(g)
                 } catch { /* ok */ }
             }
         } catch { /* silent */ }
@@ -205,11 +234,15 @@ export function NetworkStatusProvider({ children }) {
 
     useEffect(() => {
         mountedRef.current = true
-        fetchAll({ skipWifi: false, skipGeo: false })
+        fetchAll({ skipWifi: false, skipGeo: true })
 
-        bridge.configGet('pollInterval').then(value => {
+        bridge.configGetPublic(['pollInterval', 'onlineNetworkInfo']).then(cfg => {
             if (!mountedRef.current) return
-            setFastPollMs(normalizePollIntervalMs(value))
+            setFastPollMs(normalizePollIntervalMs(cfg?.pollInterval))
+            const enabled = cfg?.onlineNetworkInfo === true
+            onlineNetworkInfoRef.current = enabled
+            setOnlineNetworkInfo(enabled)
+            if (enabled) fetchAll({ skipWifi: true, skipGeo: false })
         }).catch(error => {
             logBridgeWarning('network-status:poll-interval-load', error)
             if (!mountedRef.current) return
@@ -228,8 +261,19 @@ export function NetworkStatusProvider({ children }) {
         })
 
         const offConfigChanged = bridge.onConfigChanged?.(({ key, value, deleted }) => {
-            if (!mountedRef.current || key !== 'pollInterval') return
-            setFastPollMs(deleted ? DEFAULT_FAST_POLL_MS : normalizePollIntervalMs(value))
+            if (!mountedRef.current) return
+            if (key === 'pollInterval') {
+                setFastPollMs(deleted ? DEFAULT_FAST_POLL_MS : normalizePollIntervalMs(value))
+            }
+            if (key === 'onlineNetworkInfo') {
+                const enabled = !deleted && value === true
+                onlineNetworkInfoRef.current = enabled
+                setOnlineNetworkInfo(enabled)
+                if (enabled) fetchAll({ skipWifi: true, skipGeo: false })
+                else {
+                    setGeo(null)
+                }
+            }
         })
 
         // Keep Ethernet/Wi-Fi status fresh even if no WLAN event is emitted.
@@ -274,6 +318,9 @@ export function NetworkStatusProvider({ children }) {
         isEthernet: linkType === 'ethernet',
         isVpn,
         vpnStatus,
+        networkContext,
+        networkContexts,
+        onlineNetworkInfo,
         loading,
         refresh: () => fetchAll({ skipWifi: false, skipGeo: false }),
     }

@@ -5,13 +5,16 @@ import {
     X, Globe, Clock, Signal, Shield, ShieldCheck, ChevronRight, RefreshCw,
     Shuffle, Home, AlertCircle, Tag, XCircle, Eye, EyeOff,
     Gamepad2, Speaker, Camera, Lightbulb, Watch, Headphones, Thermometer,
-    Tv2, Mic, Radio, Plug, Webcam, ArrowUp, ArrowDown, ArrowUpDown
+    Tv2, Mic, Radio, Plug, Webcam, ArrowUp, ArrowDown, ArrowUpDown,
+    SlidersHorizontal, ChevronDown
 } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { validateLanScanInputs } from '../../lib/validation'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import { mergeScanWithInventory, primaryLabel, isHideableWhenOffline, stableKey, unscopeKey } from '../../lib/deviceInventory'
+import { buildContextScanSegments } from '../../lib/ipv4Scope'
+import { assessDeviceEvidence } from '../../lib/deviceEvidence'
 import { resolveVendorKey, resolveHostnameHint, cleanVendorName } from '../../lib/vendorClassify'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import DeviceMetaEditor from '../../components/DeviceMetaEditor/DeviceMetaEditor'
@@ -577,6 +580,10 @@ export default function Scanner() {
     const [baseIP, setBaseIP] = useState(() => extractSubnet(net.gateway) || extractSubnet(net.localIP) || '192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
+    const [scopeMode, setScopeMode] = useState('auto')
+    const [discoveryMode, setDiscoveryMode] = useState('balanced')
+    const [advancedOpen, setAdvancedOpen] = useState(false)
+    const [selectedInterfaceAddress, setSelectedInterfaceAddress] = useState('')
     const [selected, setSelected] = useState(null)
     const [detailLoading, setDetailLoading] = useState(false)
     const [detailData, setDetailData] = useState(null)
@@ -634,6 +641,30 @@ export default function Scanner() {
     // when the user has already taken control.
     const safeModeUserDirtyRef = useRef(false)
     const showOfflineUserDirtyRef = useRef(false)
+    const previousSelectedScopeRef = useRef(null)
+    const selectedNetworkContext = useMemo(() => {
+        const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
+        return contexts.find(item => item.address === selectedInterfaceAddress) || net.networkContext || null
+    }, [net.networkContexts, net.networkContext, selectedInterfaceAddress])
+
+    useEffect(() => {
+        if (scopeMode !== 'auto' || !selectedNetworkContext?.cidr) return
+        if (previousSelectedScopeRef.current === null) {
+            previousSelectedScopeRef.current = selectedNetworkContext.cidr
+            return
+        }
+        if (previousSelectedScopeRef.current === selectedNetworkContext.cidr) return
+        previousSelectedScopeRef.current = selectedNetworkContext.cidr
+        bridge.lanScanCancel?.(scanRunRef.current)
+        scanRunRef.current += 1
+        setScanning(false)
+        setProgress(0)
+        setDevices([])
+        setInventory([])
+        setNewDeviceKeys(new Set())
+        setSelected(null)
+        setDetailData(null)
+    }, [scopeMode, selectedNetworkContext?.cidr])
 
     // Persist inventory + networkId snapshots into sessionStorage so a
     // remount of the Scanner route (user navigated away and came back)
@@ -655,6 +686,11 @@ export default function Scanner() {
             // null / undefined → keep default (false), never visited this setting
         }).catch(() => { /* noop */ })
     }, [])
+
+    function changeDiscoveryMode(value) {
+        if (!['quick', 'balanced', 'deep', 'passive'].includes(value)) return
+        setDiscoveryMode(value)
+    }
 
     // Load the Show/Hide offline preference on mount. Mirrors the Safe
     // Scan pattern: persist the explicit boolean, restore it on next
@@ -801,7 +837,8 @@ export default function Scanner() {
     // Once the scan completes, deriveNetworkId() gives us the real
     // gateway-MAC identity and this effect re-runs with the new key.
     useEffect(() => {
-        if (!baseIP && !networkId) return
+        const currentScope = scopeMode === 'auto' ? selectedNetworkContext?.cidr : baseIP
+        if (!currentScope) return
         let cancelled = false
 
         // Resolve which network identity to load.
@@ -828,7 +865,8 @@ export default function Scanner() {
         //      identity-wise but mixes networks with same subnet, so
         //      we only land here when (1)-(3) all fail.
         const resolveKey = async () => {
-            const gatewayIp = (net?.gateway || '').trim()
+            const candidateGateway = scopeMode === 'auto' ? selectedNetworkContext?.gateway : net?.gateway
+            const gatewayIp = String(candidateGateway || '').trim()
             if (gatewayIp && bridge.getArpTable) {
                 try {
                     const arp = await bridge.getArpTable()
@@ -845,14 +883,12 @@ export default function Scanner() {
             }
 
             // ARP didn't resolve — try cached identity from this session
-            if (networkId) return networkId
-
-            if (baseIP) {
+            if (currentScope) {
                 try {
-                    const remembered = await bridge.configGet?.(`scanner.networkIdByBase.${baseIP}`)
+                    const remembered = await bridge.configGet?.(`scanner.networkIdByBase.${currentScope}`)
                     if (typeof remembered === 'string' && remembered) return remembered
                 } catch { /* fallthrough */ }
-                return `ip:${baseIP}`
+                return `ip:${currentScope}`
             }
             return null
         }
@@ -863,9 +899,7 @@ export default function Scanner() {
             // differs — this is what makes network switching reactive.
             // Previously we only set it when networkId was null, which
             // meant a stale value would survive forever once seeded.
-            if (currentKey !== networkId && currentKey !== `ip:${baseIP}`) {
-                setNetworkId(currentKey)
-            }
+            setNetworkId(previous => previous === currentKey ? previous : currentKey)
             return bridge.deviceInventoryList?.(currentKey).then(list => {
                 if (cancelled) return
                 setInventory(Array.isArray(list) ? list : [])
@@ -876,7 +910,7 @@ export default function Scanner() {
         return () => { cancelled = true }
         // `net.gateway` is included so changing networks (Wi-Fi switch,
         // VPN connect/disconnect) re-resolves the inventory immediately.
-    }, [baseIP, networkId, net?.gateway])
+    }, [baseIP, net?.gateway, scopeMode, selectedNetworkContext?.cidr, selectedNetworkContext?.gateway])
 
     // Auto-scroll inside device diagnostics when checks are done.
     useEffect(() => {
@@ -891,22 +925,41 @@ export default function Scanner() {
         })
     }, [detailLoading, detailData, selected?.ip])
     function validateInputs() {
+        if (scopeMode === 'auto' && selectedNetworkContext) {
+            const detected = buildContextScanSegments(selectedNetworkContext)
+            if (!detected.ok) {
+                setInputError(detected.error)
+                return null
+            }
+            setInputError(null)
+            return detected
+        }
         const validated = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
         if (!validated.ok) {
             setInputError(validated.error)
             return null
         }
         setInputError(null)
-        return validated
+        return {
+            ...validated,
+            scopeKey: validated.baseIP,
+            gatewayIp: net.gateway || null,
+            hostCount: validated.end - validated.start + 1,
+            segments: [{ baseIP: validated.baseIP, start: validated.start, end: validated.end }],
+        }
     }
 
     function enrichForView(device) {
         const cls = classifyDevice(device)
+        const evidence = assessDeviceEvidence(device)
         return {
             ...device,
             deviceType: cls.type,
             devColor: cls.color,
             DevIcon: cls.Icon,
+            evidenceState: evidence.state,
+            evidenceLabel: evidence.label,
+            evidenceConfidence: evidence.confidence,
         }
     }
 
@@ -1001,11 +1054,10 @@ export default function Scanner() {
         if (!validated) return
         const scanId = scanRunRef.current + 1
         scanRunRef.current = scanId
-        const safeBaseIP = validated.baseIP
-        const safeRangeStart = validated.start
-        const safeRangeEnd = validated.end
-        const scanGatewayIp = net.gateway || null
-        setBaseIP(safeBaseIP)
+        const scanScopeKey = validated.scopeKey
+        const scanGatewayIp = validated.gatewayIp || net.gateway || null
+        const scanSegments = validated.segments
+        if (scopeMode === 'manual') setBaseIP(validated.baseIP)
         // Clear newDeviceKeys at the start of every scan so devices
         // discovered live during this run aren't re-tagged with stale
         // 'new' badges from the previous scan's merge result. The fresh
@@ -1019,21 +1071,36 @@ export default function Scanner() {
         // flooding them with dozens of alerts on the initial sweep.
         let hasBaseline = false
         try {
-            const prev = await bridge.deviceSnapshotLatest(safeBaseIP)
+            const prev = await bridge.deviceSnapshotLatest(scanScopeKey)
             hasBaseline = !!(prev && Array.isArray(prev.devices) && prev.devices.length)
         } catch { /* no history yet */ }
 
-        const total = safeRangeEnd - safeRangeStart + 1
+        const total = validated.hostCount
+        let completedTargets = 0
         const foundRaw = []
-        for (let s = safeRangeStart; s <= safeRangeEnd; s += SCAN_BATCH_SIZE) {
-            const e = Math.min(s + SCAN_BATCH_SIZE - 1, safeRangeEnd)
-            const results = await bridge.lanScan(safeBaseIP, s, e, { safeMode, gatewayIp: scanGatewayIp })
-            if (scanRunRef.current !== scanId) return
-            if (results) {
-                const enriched = results.map(r => enrichForView(r))
-                foundRaw.push(...enriched); setDevices([...foundRaw])
+        for (let segmentIndex = 0; segmentIndex < scanSegments.length; segmentIndex += 1) {
+            const segment = scanSegments[segmentIndex]
+            for (let s = segment.start; s <= segment.end; s += SCAN_BATCH_SIZE) {
+                const e = Math.min(s + SCAN_BATCH_SIZE - 1, segment.end)
+                const isLastBatch = segmentIndex === scanSegments.length - 1 && e >= segment.end
+                const results = await bridge.lanScan(segment.baseIP, s, e, {
+                    safeMode,
+                    discoveryMode,
+                    gatewayIp: scanGatewayIp,
+                    localIp: selectedNetworkContext?.address || net.localIP || null,
+                    localMac: selectedNetworkContext?.mac || null,
+                    scanId,
+                    isLastBatch,
+                    layer2Expected: scopeMode === 'auto',
+                })
+                if (scanRunRef.current !== scanId) return
+                if (results) {
+                    const enriched = results.map(r => enrichForView(r))
+                    foundRaw.push(...enriched); setDevices([...foundRaw])
+                }
+                completedTargets += e - s + 1
+                setProgress(Math.round((completedTargets / total) * 100))
             }
-            setProgress(Math.round(((e - safeRangeStart + 1) / total) * 100))
         }
         if (scanRunRef.current !== scanId) return
 
@@ -1042,24 +1109,24 @@ export default function Scanner() {
         const found = foundRaw
 
         setScanning(false)
-        bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: `${safeBaseIP}.0/24`, results: { found: found.length } })
+        bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: validated.cidr || `${scanScopeKey}.0/24`, results: { found: found.length } })
 
         // Derive a stable network identity. Prefer the scanned gateway
         // when available; for partial scans that don't include the
         // gateway IP, fall back to looking it up in the OS ARP cache —
         // this prevents two different `192.168.1.x` networks from
         // sharing the same `ip:192.168.1` fallback identity.
-        const scanNetworkId = await resolveNetworkId(found, safeBaseIP, scanGatewayIp)
+        const scanNetworkId = await resolveNetworkId(found, scanScopeKey, scanGatewayIp)
         setNetworkId(scanNetworkId)
         // Remember this mapping so next mount loads the right inventory
         // immediately instead of falling back to `ip:<subnet>` (which can
         // resurface legacy pre-migration phantoms).
         if (scanNetworkId && scanNetworkId.startsWith('mac:')) {
-            bridge.configSet?.(`scanner.networkIdByBase.${safeBaseIP}`, scanNetworkId)
+            bridge.configSet?.(`scanner.networkIdByBase.${scanScopeKey}`, scanNetworkId)
                 .catch(() => { /* best-effort */ })
         }
 
-        void enrichUnknownDevices(found, scanId, scanNetworkId, safeBaseIP)
+        void enrichUnknownDevices(found, scanId, scanNetworkId, scanScopeKey)
 
         // Persist this scan as a snapshot (used to establish a baseline so we
         // skip first-scan notification floods — no longer diff'd for UI).
@@ -1080,10 +1147,10 @@ export default function Scanner() {
             // would overwrite the newer run's results with stale data.
             // Guard after every await.
 
-            await bridge.deviceSnapshotAdd(safeBaseIP, slim)
+            await bridge.deviceSnapshotAdd(scanScopeKey, slim)
             if (scanRunRef.current !== scanId) return
 
-            const mergeResult = await bridge.deviceInventoryMerge(scanNetworkId, safeBaseIP, slim)
+            const mergeResult = await bridge.deviceInventoryMerge(scanNetworkId, scanScopeKey, slim)
             if (scanRunRef.current !== scanId) return
 
             const newKeys = Array.isArray(mergeResult?.newKeys) ? mergeResult.newKeys : []
@@ -1106,7 +1173,8 @@ export default function Scanner() {
             // proxy-ARPing router doesn't disappear with its ghosts.
             // Only runs when the scan covered the full /24 — otherwise we
             // can't reliably say "not seen = ghost".
-            const scanCoveredFullRange = safeRangeStart <= 1 && safeRangeEnd >= 254
+            const scanCoveredFullRange = scopeMode === 'auto'
+                || (scanSegments.length === 1 && scanSegments[0].start <= 1 && scanSegments[0].end >= 254)
             if (scanNetworkId) {
                 try {
                     const seenKeys = [
@@ -1135,6 +1203,7 @@ export default function Scanner() {
     }
 
     function stopScan() {
+        bridge.lanScanCancel?.(scanRunRef.current)
         scanRunRef.current += 1
         setScanning(false)
     }
@@ -1215,10 +1284,11 @@ export default function Scanner() {
        appear alongside online ones. Then apply UI enrichment (icon + colour)
        so every card can render with a consistent visual. */
     const mergedDevices = useMemo(() => {
-        const scanOnlySubnet = inventory.filter(i => !baseIP || i.baseIP === baseIP)
+        const activeScopeKey = scopeMode === 'auto' ? selectedNetworkContext?.cidr : baseIP
+        const scanOnlySubnet = inventory.filter(i => !activeScopeKey || i.baseIP === activeScopeKey)
         const base = mergeScanWithInventory(devices, scanOnlySubnet, newDeviceKeys, { gatewayIp: net.gateway || null })
         return base.map(d => enrichForView(d))
-    }, [devices, inventory, newDeviceKeys, baseIP, net.gateway])
+    }, [devices, inventory, newDeviceKeys, baseIP, net.gateway, selectedNetworkContext?.cidr, scopeMode])
 
     const visibleDevices = useMemo(() => {
         let pool = mergedDevices
@@ -1240,9 +1310,8 @@ export default function Scanner() {
                 if (!a.isGateway && b.isGateway) return 1
                 if (a.isLocal && !b.isLocal) return -1
                 if (!a.isLocal && b.isLocal) return 1
-                const av = parseInt(String(a.ip || '').split('.').pop(), 10)
-                const bv = parseInt(String(b.ip || '').split('.').pop(), 10)
-                return (isNaN(av) ? 999 : av) - (isNaN(bv) ? 999 : bv)
+                const toNumber = ip => String(ip || '').split('.').reduce((acc, part) => ((acc * 256) + (Number(part) || 0)) >>> 0, 0)
+                return toNumber(a.ip) - toNumber(b.ip)
             })
             return sorted
         }
@@ -1318,7 +1387,7 @@ export default function Scanner() {
                     </div>
                     <div>
                         <div className="scan-status">
-                            {scanning ? <><Loader2 size={14} className="spin-icon" /> Scanning {baseIP}.*{safeMode && <span className="safe-mode-tag"> · safe mode (~2 min)</span>}</>
+                            {scanning ? <><Loader2 size={14} className="spin-icon" /> Scanning {scopeMode === 'auto' ? (selectedNetworkContext?.cidr || `${baseIP}.*`) : `${baseIP}.*`}{safeMode && <span className="safe-mode-tag"> · safe mode</span>}</>
                                 : devices.length ? <span style={{color:'var(--color-success)'}}>{devices.length} device{devices.length!==1?'s':''} found</span>
                                 : 'Ready to scan'}
                         </div>
@@ -1340,21 +1409,85 @@ export default function Scanner() {
                     </div>
                 </div>
                 <div className="scan-config-right">
-                    <input className="v3-input sc-ip" value={baseIP} onChange={e=>{ setBaseIP(e.target.value); if (inputError) setInputError(null) }} placeholder="192.168.1" />
-                    <span className="sc-sep">.</span>
-                    <input className="v3-input sc-range mono" type="number" value={rangeStart} onChange={e=>{ setRangeStart(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
-                    <span className="sc-sep">–</span>
-                    <input className="v3-input sc-range mono" type="number" value={rangeEnd} onChange={e=>{ setRangeEnd(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
+                    {scopeMode === 'auto' ? (
+                        <div className="scan-scope-summary" title={`Network: ${selectedNetworkContext?.cidr || 'detecting'} · Gateway: ${selectedNetworkContext?.gateway || 'unknown'}`}>
+                            <Wifi size={15} />
+                            <span><small>Your network</small>{selectedNetworkContext?.cidr || 'Detecting…'}</span>
+                        </div>
+                    ) : (
+                        <>
+                            <input className="v3-input sc-ip" value={baseIP} onChange={e=>{ setBaseIP(e.target.value); if (inputError) setInputError(null) }} placeholder="192.168.1" />
+                            <span className="sc-sep">.</span>
+                            <input className="v3-input sc-range mono" type="number" value={rangeStart} onChange={e=>{ setRangeStart(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
+                            <span className="sc-sep">–</span>
+                            <input className="v3-input sc-range mono" type="number" value={rangeEnd} onChange={e=>{ setRangeEnd(+e.target.value); if (inputError) setInputError(null) }} min={1} max={254} />
+                        </>
+                    )}
                     {scanning ? (
                         <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={stopScan}>
                             <XCircle size={15} /> Stop
                         </button>
                     ) : (
                         <button className="v3-btn v3-btn-primary" onClick={startScan}>
-                            <Search size={15} /> Scan
+                            <Search size={15} /> Scan network
                         </button>
                     )}
+                    <button
+                        type="button"
+                        className={`scan-advanced-toggle ${advancedOpen ? 'open' : ''}`}
+                        onClick={() => setAdvancedOpen(value => !value)}
+                        aria-expanded={advancedOpen}
+                        aria-controls="scanner-advanced-options"
+                    >
+                        <SlidersHorizontal size={15} />
+                        Options
+                        <ChevronDown size={14} className="scan-advanced-chevron" />
+                    </button>
                 </div>
+                {advancedOpen && (
+                    <div className="scan-advanced-panel" id="scanner-advanced-options">
+                        <div className="scan-advanced-heading">
+                            <div>
+                                <span>Advanced options</span>
+                                <small>You normally do not need to change these settings.</small>
+                            </div>
+                            <span className={`scan-defaults-badge ${discoveryMode !== 'balanced' || scopeMode !== 'auto' ? 'custom' : ''}`}>
+                                {discoveryMode === 'balanced' && scopeMode === 'auto' ? 'Recommended defaults active' : 'Custom settings'}
+                            </span>
+                        </div>
+                        <div className="scan-advanced-grid">
+                            <label className="scan-advanced-field">
+                                <span>Scan method</span>
+                                <select className="v3-input" value={discoveryMode} onChange={e => changeDiscoveryMode(e.target.value)} disabled={scanning}>
+                                    <option value="quick">Quick</option>
+                                    <option value="balanced">Recommended (default)</option>
+                                    <option value="deep">Thorough</option>
+                                    <option value="passive">Passive only</option>
+                                </select>
+                                <small>Recommended finds most devices without making the scan too slow.</small>
+                            </label>
+                            <label className="scan-advanced-field">
+                                <span>Network range</span>
+                                <select className="v3-input" value={scopeMode} onChange={e => setScopeMode(e.target.value)} disabled={scanning}>
+                                    <option value="auto">Detect automatically (default)</option>
+                                    <option value="manual">Enter a range manually</option>
+                                </select>
+                                <small>Automatic detection is the right choice for almost everyone.</small>
+                            </label>
+                            {scopeMode === 'auto' && (net.networkContexts?.length || 0) > 1 && (
+                                <label className="scan-advanced-field">
+                                    <span>Network connection</span>
+                                    <select className="v3-input" value={selectedNetworkContext?.address || ''} onChange={e => setSelectedInterfaceAddress(e.target.value)} disabled={scanning}>
+                                        {net.networkContexts.map(item => (
+                                            <option key={`${item.interfaceName}-${item.address}`} value={item.address}>{item.interfaceName || 'Connection'} · {item.cidr}</option>
+                                        ))}
+                                    </select>
+                                    <small>Only change this if your computer is connected to more than one network.</small>
+                                </label>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
             {inputError && <div className="scan-error"><AlertCircle size={14} />{inputError}</div>}
 
@@ -1429,6 +1562,7 @@ export default function Scanner() {
                                         return {
                                             baseIP,
                                             range: { start: rangeStart, end: rangeEnd },
+                                            scope: scopeMode === 'auto' ? selectedNetworkContext?.cidr : `${baseIP}.${rangeStart}-${rangeEnd}`,
                                             scannedAt: new Date().toISOString(),
                                             hostname,
                                             devices: slimDevices,
@@ -1498,6 +1632,7 @@ export default function Scanner() {
                                                 {d.isLocal && <span className="gw-tag" style={{background:'rgba(59,130,246,0.1)',color:'#3b82f6'}}>YOU</span>}
                                                 {d.isRandomized && !d.isLocal && !d.isGateway && <span className="gw-tag" style={{background:'rgba(139,92,246,0.1)',color:'#8b5cf6'}}>RND</span>}
                                                 {d.seenOnly && !d.isLocal && d.presence !== 'offline' && d.presence !== 'cached' && <span className="gw-tag" style={{background:'rgba(148,163,184,0.15)',color:'#64748b'}}>ARP</span>}
+                                                <span className="src-badge" title={`Detection confidence: ${d.evidenceConfidence}%`}>{d.evidenceLabel}</span>
                                                 {d.nameSource && d.nameSource !== 'unknown' && SRC_COLORS[d.nameSource] && (
                                                     <span className="src-badge" style={{background: SRC_COLORS[d.nameSource].bg, color: SRC_COLORS[d.nameSource].fg}}>
                                                         {SRC_COLORS[d.nameSource].label}
@@ -1565,6 +1700,7 @@ export default function Scanner() {
                                 } full/>
                                 <DF l="Role" v={selected.isLocal?'This Device':selected.isGateway?'Default Gateway':selected.isRandomized?'Private/Random MAC':'Client'} full/>
                                 <DF l="Discovery" v={discoveryEvidenceLabel(selected)} full/>
+                                <DF l="Evidence confidence" v={`${selected.evidenceLabel || 'Unconfirmed'} (${selected.evidenceConfidence ?? 0}%)`} full/>
                                 {selected.modelName && <DF l="Model" v={selected.modelName} full/>}
                                 {selected.modelNumber && <DF l="Model #" v={selected.modelNumber} m/>}
                                 {selected.serialNumber && <DF l="Serial" v={selected.serialNumber} full m/>}

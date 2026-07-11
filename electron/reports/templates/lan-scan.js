@@ -72,6 +72,7 @@ function buildHTML(payload) {
     const devices = Array.isArray(payload?.devices) ? payload.devices : []
     const baseIP = payload?.baseIP || '—'
     const range = payload?.range || { start: 1, end: 254 }
+    const scope = payload?.scope || `${baseIP}.${range.start}-${range.end}`
     const scannedAt = payload?.scannedAt || new Date().toISOString()
     const hostname = payload?.hostname || '—'
 
@@ -96,7 +97,7 @@ function buildHTML(payload) {
         </div>
         <div class="summary-card">
           <div class="label">IP range</div>
-          <div class="value" style="font-size:11pt;">${esc(baseIP)}.${range.start}–${range.end}</div>
+          <div class="value" style="font-size:11pt;">${esc(scope)}</div>
         </div>
       </div>
     `
@@ -155,10 +156,10 @@ function buildHTML(payload) {
 
     return buildReportHTML({
         kicker: 'LAN SCAN REPORT',
-        title: `Inventario de red ${baseIP}.0/24`,
+        title: `Inventario de red ${scope}`,
         subtitle: `Escaneo de dispositivos activos en la subred local, ejecutado desde ${hostname}.`,
         meta: [
-            ['Subred', `${baseIP}.${range.start}–${range.end}`],
+            ['Subred', scope],
             ['Dispositivos', `${devices.length} (${totalResponsive} responsivos)`],
             ['Ejecutado', fmtDate(scannedAt)],
             ['Estación', hostname],
@@ -220,7 +221,7 @@ function buildCSVData(payload) {
 registerReport('lan-scan', {
     html: buildHTML,
     csv: buildCSVData,
-    filenameDetail: (payload) => (payload?.baseIP || 'lan').replace(/\./g, '-'),
+    filenameDetail: (payload) => (payload?.scope || payload?.baseIP || 'lan').replace(/[^a-z0-9]+/gi, '-'),
 })
 
 module.exports = { buildHTML, buildCSVData }

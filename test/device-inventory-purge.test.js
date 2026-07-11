@@ -171,6 +171,7 @@ describe.skipIf(!canUseNativeSqlite)('deviceInventoryPurgeGhosts', () => {
             networkId,
             new Set([`${networkId}::mac:aabbccddee01`]),
             true,
+            `${networkId}::mac:aabbccddee01`,
         )
 
         const rows = database.deviceInventoryList(networkId)

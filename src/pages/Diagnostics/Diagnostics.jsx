@@ -467,7 +467,7 @@ function MtrPanel() {
     }
 
     return (
-        <DiagPanel title="MTR Analysis" icon={RadioReceiver} description="Combines traceroute and ping into a continuous connection quality monitor">
+        <DiagPanel title="MTR-like Hop Monitor" icon={RadioReceiver} description="Runs traceroute once, then continuously pings each discovered hop; this is not protocol-identical to native MTR">
             <div className="diag-controls-row">
                 <div style={{ flex: 1, position: 'relative' }}>
                     <RadioReceiver size={16} style={{ position: 'absolute', left: 12, top: 11, color: 'var(--text-muted)' }} />
@@ -611,7 +611,7 @@ function PortCheckPanel() {
 const SECTIONS = [
     { id: 'traceroute', label: 'Traceroute Explorer', Icon: Rss, Panel: TraceroutePanel },
     { id: 'ping', label: 'Live Ping Terminal', Icon: TerminalSquare, Panel: PingPanel },
-    { id: 'mtr', label: 'MTR Analysis', Icon: RadioReceiver, Panel: MtrPanel },
+    { id: 'mtr', label: 'MTR-like Hop Monitor', Icon: RadioReceiver, Panel: MtrPanel },
     { id: 'dns', label: 'DNS Resolution', Icon: Globe, Panel: DnsPanel },
     { id: 'portcheck', label: 'Port Checker', Icon: ArrowRight, Panel: PortCheckPanel },
     { id: 'ports', label: 'Port Scanner', Icon: Server, Panel: PortScanPanel },

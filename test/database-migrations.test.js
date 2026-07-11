@@ -2,9 +2,9 @@
 /**
  * Audits SQLite migration behavior with real better-sqlite3 databases.
  *
- * The existing mocked database tests missed v5 because the fake DB did not
- * implement PRAGMA table_info. These tests exercise virgin, legacy, and
- * repeated init paths against actual SQLite files.
+ * Mocked database tests cannot prove real SQLite schema behavior. These tests
+ * exercise virgin, legacy, and repeated-init paths through the current v6
+ * schema against actual SQLite files.
  *
  * NOTE on skip behaviour: better-sqlite3 ships with native bindings
  * compiled against Electron's NODE_MODULE_VERSION (143 for Electron 40),
@@ -52,15 +52,17 @@ afterEach(() => {
     tmpDir = null
 })
 
-describe.skipIf(!canUseNativeSqlite)('database migrations v1 to v5', () => {
-    it('creates a virgin database at user_version 5 with inventory network_id', () => {
+describe.skipIf(!canUseNativeSqlite)('database migrations v1 to v6', () => {
+    it('creates a virgin database at user_version 6 with current inventory and WAN history schemas', () => {
         const db = database.init(makeTempDir())
         const version = db.pragma('user_version', { simple: true })
         const cols = db.prepare('PRAGMA table_info(device_inventory)').all().map(c => c.name)
 
-        expect(version).toBe(5)
+        expect(version).toBe(6)
         expect(cols).toContain('network_id')
         expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_inventory_network'").get()).toBeTruthy()
+        expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='wan_probe_history'").get()).toBeTruthy()
+        expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_wan_probe_history_ts'").get()).toBeTruthy()
     })
 
     it('is idempotent when init runs repeatedly against the same DB', () => {
@@ -73,7 +75,7 @@ describe.skipIf(!canUseNativeSqlite)('database migrations v1 to v5', () => {
         database.close()
         db = database.init(dir)
 
-        expect(db.pragma('user_version', { simple: true })).toBe(5)
+        expect(db.pragma('user_version', { simple: true })).toBe(6)
         expect(database.configGet('theme')).toBe('dark')
     })
 
@@ -106,7 +108,7 @@ describe.skipIf(!canUseNativeSqlite)('database migrations v1 to v5', () => {
         const migrated = database.init(dir)
         const row = migrated.prepare('SELECT device_key, network_id FROM device_inventory').get()
 
-        expect(migrated.pragma('user_version', { simple: true })).toBe(5)
+        expect(migrated.pragma('user_version', { simple: true })).toBe(6)
         expect(row).toEqual({ device_key: 'mac:aabbccddee10', network_id: 'ip:192.168.1' })
     })
 
@@ -139,7 +141,7 @@ describe.skipIf(!canUseNativeSqlite)('database migrations v1 to v5', () => {
         const migrated = database.init(dir)
         const row = migrated.prepare('SELECT device_key, network_id FROM device_inventory').get()
 
-        expect(migrated.pragma('user_version', { simple: true })).toBe(5)
+        expect(migrated.pragma('user_version', { simple: true })).toBe(6)
         expect(row).toEqual({ device_key: 'ip:10.0.0.5', network_id: null })
     })
 })

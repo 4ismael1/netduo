@@ -11,7 +11,7 @@
   <a href="https://apps.microsoft.com/detail/9PP5SB94FD03">
     <img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-Download-0078D4?logo=microsoft&logoColor=white" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-1.3.2-3b82f6" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.0-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
@@ -65,18 +65,18 @@ Main value:
 ## Key Features
 
 - Real-time latency, packet loss, and host monitoring.
-- LAN device discovery with vendor, hostname, and MAC identification.
+- LAN device discovery with real interface/gateway detection, CIDR-aware scope, vendor, hostname, MAC, and evidence confidence.
 - **Per-network persistent inventory** - devices are tracked by gateway MAC, so switching Wi-Fi networks keeps each inventory cleanly separate (even across subnets that happen to share `192.168.x.0/24`).
 - **Fing-style device state** - Online / Offline / New badges, editable nicknames, notes and device-type overrides; new-device desktop notifications.
-- **Deterministic proxy-ARP ghost filter** - phantom `.254` / shared-MAC hosts from ICMP-proxying routers (Tenda, TP-Link, ISP CPEs) never reach the inventory.
+- **Session-aware proxy-ARP handling** - gateway evidence is retained across scan batches and L2-only rules are disabled for routed/manual scopes.
 - LAN Check with staged scan pipeline, paginated asset snapshots, and persistent report history.
 - WAN Check with synchronized multi-probe scanning, auto-saved report history, and full PDF/CSV export.
 - TCP/UDP transport modes with profile-based execution.
 - **PDF / CSV export** across 6 modules (LAN Scanner, LAN Check, WAN Probe, Speed Test, Monitor, Traceroute, DNS).
 - **Safe Scan mode** - gentler ICMP profile for legacy switches and sensitive infrastructure.
 - Adaptive speed test (M-Lab NDT7, Cloudflare, Hetzner, OVH) with historical trends.
-- Built-in protocol utilities (SSL, WHOIS, MTR, WoL, ARP, DNS benchmark, subnet calc).
-- **Cancel anywhere**: every long-running operation (scan, speed test, probe, trace) can be stopped instantly from the UI.
+- Built-in protocol utilities (SSL, WHOIS, MTR-like hop monitoring, WoL, ARP, DNS benchmark, subnet calc).
+- **Backend cancellation**: LAN discovery, LAN service scans, speed tests, probes, and traces can be stopped from the UI; active scan sockets/processes are closed.
 - **DB self-healing** - corrupt SQLite files are quarantined and recreated automatically on startup.
 - No telemetry, no analytics, no tracking - fully local.
 - Desktop-native persistence and settings management.
@@ -85,11 +85,11 @@ Main value:
 
 - `Dashboard`: health summary, local/public IP, gateway/DNS, Wi-Fi signal, quick actions.
 - `Speed Test`: download/upload stages, latency/jitter, cancellable, per-run history.
-- `Scanner`: LAN sweep with vendor detection, host detail modal, ping and open-port diagnostics.
+- `Scanner`: CIDR-aware LAN sweep with interface selection, evidence confidence, vendor detection, inventory, host detail, ping and open-port diagnostics.
 - `Monitor`: continuous host telemetry for latency and packet loss with configurable alerts.
-- `Diagnostics`: traceroute, live ping, MTR, parallel DNS resolution, port checker, port scanner.
+- `Diagnostics`: traceroute, live ping, MTR-like hop monitoring, parallel DNS resolution, port checker, port scanner.
 - `Tools`: SSL inspector, HTTP tester, WHOIS, DNS benchmark, subnet calculator, ARP cache, Wake-on-LAN.
-- `LAN Check`: setup -> scanning -> report -> history workflow for local security auditing.
+- `LAN Check`: coverage-aware setup -> scanning -> report -> history workflow with risk, uncertainty, and confidence reported separately.
 - `WAN Check`: quick/advanced/deep profiles, multi-probe orchestration, normalized findings.
 - `Network`: full interface inventory, public IP with geolocation, Wi-Fi, VPN, DNS config.
 - `History`: centralized activity timeline across every module.

@@ -195,7 +195,10 @@
 
 .lchk-range-inputs {
     display: grid;
-    grid-template-columns: minmax(170px, 1fr) auto 90px auto 90px;
+    /* Manual mode has six controls: scope selector, base IP, dot,
+       range start, separator and range end. Keeping all six explicit
+       prevents the final input from becoming an implicit second row. */
+    grid-template-columns: minmax(170px, 1fr) minmax(150px, 1fr) auto 90px auto 90px;
     gap: 8px;
     align-items: center;
 }
@@ -975,7 +978,7 @@
 
     .lchk-range-inputs {
         gap: 6px;
-        grid-template-columns: minmax(150px, 1fr) auto 80px auto 80px;
+        grid-template-columns: minmax(150px, 1fr) minmax(130px, 1fr) auto 80px auto 80px;
     }
 
     .lchk-scope-meta {

@@ -84,8 +84,10 @@ export default function Settings() {
     const [interval, setInterval] = useState('2')
     const [notifs, setNotifs] = useState(true)
     const [notifyNewDevices, setNotifyNewDevices] = useState(true)
-    const [macVendorOnline, setMacVendorOnline] = useState(true)
+    const [macVendorOnline, setMacVendorOnline] = useState(false)
+    const [onlineNetworkInfo, setOnlineNetworkInfo] = useState(false)
     const [latencyThr, setLatencyThr] = useState('200')
+    const [appVersion, setAppVersion] = useState('—')
     const [clearStatus, setClearStatus] = useState(null) // 'confirm' | 'ok' | 'error' | null
     const [clearBusy, setClearBusy] = useState(false)
 
@@ -112,14 +114,21 @@ export default function Settings() {
 
     // Load persisted settings on mount
     useEffect(() => {
-        bridge.configGetPublic(['accentColor', 'theme', 'pollInterval', 'notifications', 'notifyNewDevices', 'macVendorLookupOnline', 'latencyThreshold']).then(cfg => {
+        bridge.getAppVersion?.().then(version => {
+            if (version) setAppVersion(String(version))
+        }).catch(() => {})
+
+        bridge.configGetPublic(['accentColor', 'theme', 'pollInterval', 'notifications', 'notifyNewDevices', 'macVendorLookupOnline', 'onlineNetworkInfo', 'latencyThreshold']).then(cfg => {
             if (!cfg) return
             if (cfg.accentColor) { setAccent(cfg.accentColor); applyCSSAccent(cfg.accentColor) }
-            if (cfg.theme) { setTheme(cfg.theme); applyTheme(cfg.theme) }
+            const activeTheme = ['light', 'dark', 'nothing'].includes(cfg.theme) ? cfg.theme : 'light'
+            setTheme(activeTheme)
+            applyTheme(activeTheme)
             if (cfg.pollInterval) setInterval(cfg.pollInterval)
             if (cfg.notifications !== undefined) setNotifs(cfg.notifications)
             if (cfg.notifyNewDevices !== undefined) setNotifyNewDevices(cfg.notifyNewDevices)
             if (cfg.macVendorLookupOnline !== undefined) setMacVendorOnline(cfg.macVendorLookupOnline)
+            if (cfg.onlineNetworkInfo !== undefined) setOnlineNetworkInfo(cfg.onlineNetworkInfo)
             if (cfg.latencyThreshold) setLatencyThr(cfg.latencyThreshold)
         }).catch(error => {
             logBridgeWarning('settings:bootstrap', error)
@@ -223,6 +232,14 @@ export default function Settings() {
                         </div>
                     </label>
                     <label className="toggle-label">
+                        <input type="checkbox" className="toggle-input" checked={onlineNetworkInfo} onChange={e => { setOnlineNetworkInfo(e.target.checked); persistSetting('onlineNetworkInfo', e.target.checked) }} />
+                        <div className="toggle-track"><div className="toggle-thumb" /></div>
+                        <div>
+                            <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>IP geolocation details</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Optional country, city and ISP lookup. Your public IP itself is always detected for connection diagnostics.</div>
+                        </div>
+                    </label>
+                    <label className="toggle-label">
                         <input type="checkbox" className="toggle-input" checked={notifyNewDevices} onChange={e => { setNotifyNewDevices(e.target.checked); persistSetting('notifyNewDevices', e.target.checked) }} />
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
                         <div>
@@ -235,7 +252,7 @@ export default function Settings() {
                         <div className="toggle-track"><div className="toggle-thumb" /></div>
                         <div>
                             <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Online vendor lookup (MAC API)</div>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Query macvendors.com when the local OUI table misses a prefix. Disable to keep scans fully offline.</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Explicit opt-in: sends only the manufacturer prefix (OUI), not the full MAC address, when the local table misses. Leave disabled for fully offline scans.</div>
                         </div>
                     </label>
                 </div>
@@ -307,7 +324,7 @@ export default function Settings() {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                v1.3.2
+                                v{appVersion}
                             </span>
                         </div>
                         <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 4 }}>Professional Network Diagnostics Suite</div>

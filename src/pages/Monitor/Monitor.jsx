@@ -56,13 +56,18 @@ export default function Monitor() {
     const [alertThreshold, setAlertThreshold] = useState(200)
     const [notificationsEnabled, setNotificationsEnabled] = useState(true)
     const intervalRef = useRef(null)
+    const runningRef = useRef(false)
     const hostsRef = useRef(hosts)
     const alertedHostsRef = useRef(new Set())
+    const breachStreakRef = useRef(new Map())
     const sessionStartRef = useRef(null)
 
     // Keep ref in sync so the interval callback always sees current hosts
     useEffect(() => { hostsRef.current = hosts }, [hosts])
-    useEffect(() => () => clearInterval(intervalRef.current), [])
+    useEffect(() => () => {
+        runningRef.current = false
+        clearTimeout(intervalRef.current)
+    }, [])
 
     useEffect(() => {
         let mounted = true
@@ -77,6 +82,14 @@ export default function Monitor() {
         }).catch(error => {
             logBridgeWarning('monitor:bootstrap', error)
         })
+        bridge.configGet('monitor.settings').then(saved => {
+            if (!mounted || !saved || typeof saved !== 'object') return
+            if (Array.isArray(saved.hosts)) {
+                const validHosts = saved.hosts.filter(isValidTarget).slice(0, 5)
+                if (validHosts.length) setHosts(validHosts)
+            }
+            if ([1000, 2000, 5000, 10000].includes(saved.interval)) setIntervalMs(saved.interval)
+        }).catch(() => { /* keep defaults */ })
 
         const offConfigChanged = bridge.onConfigChanged?.(({ key, value, deleted }) => {
             if (key === 'latencyThreshold') {
@@ -99,11 +112,11 @@ export default function Monitor() {
         }
     }, [])
 
-    function sendLatencyNotification(host, latency) {
+    function sendMonitorNotification(host, message) {
         if (!notificationsEnabled || typeof Notification === 'undefined') return
         if (Notification.permission === 'granted') {
             new Notification('NetDuo latency alert', {
-                body: `${host} reached ${latency} ms (threshold: ${alertThreshold} ms).`,
+                body: `${host}: ${message}`,
                 silent: false,
             })
             return
@@ -112,7 +125,7 @@ export default function Monitor() {
         Notification.requestPermission().then(permission => {
             if (permission !== 'granted') return
             new Notification('NetDuo latency alert', {
-                body: `${host} reached ${latency} ms (threshold: ${alertThreshold} ms).`,
+                body: `${host}: ${message}`,
                 silent: false,
             })
         }).catch(error => {
@@ -121,25 +134,35 @@ export default function Monitor() {
     }
 
     function startMonitor() {
+        runningRef.current = false
+        clearTimeout(intervalRef.current)
+        runningRef.current = true
         setRunning(true)
         setData([])
         setStats({})
         alertedHostsRef.current.clear()
+        breachStreakRef.current.clear()
         sessionStartRef.current = new Date().toISOString()
         const tick = async () => {
             try {
-                const results = {}
-                for (const h of hostsRef.current) {
+                const currentHosts = [...hostsRef.current]
+                const rows = await Promise.all(currentHosts.map(async h => {
                     const r = await bridge.pingSingle(h)
-                    results[h] = r?.time ?? null
-                }
+                    return [h, r?.time ?? null]
+                }))
+                if (!runningRef.current) return
+                const results = Object.fromEntries(rows)
                 for (const h of hostsRef.current) {
                     const latency = results[h]
-                    const isBreached = latency != null && latency >= alertThreshold
+                    const isBreached = latency == null || latency >= alertThreshold
                     const wasBreached = alertedHostsRef.current.has(h)
-                    if (isBreached && !wasBreached) {
+                    const streak = isBreached ? (breachStreakRef.current.get(h) || 0) + 1 : 0
+                    breachStreakRef.current.set(h, streak)
+                    if (streak >= 3 && !wasBreached) {
                         alertedHostsRef.current.add(h)
-                        sendLatencyNotification(h, latency)
+                        sendMonitorNotification(h, latency == null
+                            ? 'failed three consecutive probes.'
+                            : `exceeded ${alertThreshold} ms for three consecutive probes (latest: ${latency} ms).`)
                     } else if (!isBreached && wasBreached) {
                         alertedHostsRef.current.delete(h)
                     }
@@ -159,14 +182,18 @@ export default function Monitor() {
                     return next
                 })
             } catch (e) { console.warn('Monitor tick error:', e) }
+            finally {
+                if (runningRef.current) intervalRef.current = setTimeout(tick, interval)
+            }
         }
         tick()
-        intervalRef.current = setInterval(tick, interval)
     }
 
     function stopMonitor() {
-        clearInterval(intervalRef.current)
+        runningRef.current = false
+        clearTimeout(intervalRef.current)
         alertedHostsRef.current.clear()
+        breachStreakRef.current.clear()
         setRunning(false)
     }
 
@@ -178,16 +205,25 @@ export default function Monitor() {
         if (hosts.length >= 5) { setInputError('Maximum 5 hosts'); return }
 
         setInputError(null)
-        setHosts(p => [...p, h])
+        setHosts(p => {
+            const next = [...p, h]
+            bridge.configSet('monitor.settings', { hosts: next, interval }).catch(() => { /* best effort */ })
+            return next
+        })
         setNewHost('')
         if (running) {
-            clearInterval(intervalRef.current)
+            runningRef.current = false
+            clearTimeout(intervalRef.current)
             startMonitor()
         }
     }
 
     function removeHost(h) {
-        setHosts(p => p.filter(x => x !== h))
+        setHosts(p => {
+            const next = p.filter(x => x !== h)
+            bridge.configSet('monitor.settings', { hosts: next, interval }).catch(() => { /* best effort */ })
+            return next
+        })
         setStats(p => { const n = { ...p }; delete n[h]; return n })
     }
 
@@ -235,7 +271,11 @@ export default function Monitor() {
                     </button>
                     <div style={{ width: 1, height: 26, background: 'var(--border-light)' }} />
                     <select className="v3-input" style={{ width: 110, paddingLeft: 12 }} value={interval}
-                        onChange={e => setIntervalMs(Number(e.target.value))}>
+                        onChange={e => {
+                            const next = Number(e.target.value)
+                            setIntervalMs(next)
+                            bridge.configSet('monitor.settings', { hosts, interval: next }).catch(() => { /* best effort */ })
+                        }}>
                         <option value={1000}>1 sec tick</option>
                         <option value={2000}>2 sec tick</option>
                         <option value={5000}>5 sec tick</option>
