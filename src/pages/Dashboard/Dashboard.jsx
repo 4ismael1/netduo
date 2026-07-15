@@ -11,11 +11,21 @@ import bridge from '../../lib/electronBridge'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import { canProbeGateway } from '../../lib/gatewayProbe'
 import { DEFAULT_POLL_INTERVAL_SECONDS, normalizePollIntervalMs } from '../../lib/polling.js'
-import { measureProbeRound } from '../../lib/probeRound.js'
 import { persistPublicIpVisible, readPublicIpVisible } from '../../lib/publicIpPrivacy.js'
 import useAppVisibility from '../../lib/useAppVisibility.js'
 import DashboardSkeleton from './DashboardSkeleton.jsx'
 import { appendDashboardChartSample } from './presentationSeries.js'
+import {
+    readDashboardConfigCache,
+    readDashboardLayoutCache,
+    readDashboardPingState,
+    readDashboardSignalHistory,
+    runSharedDashboardProbe,
+    writeDashboardConfigCache,
+    writeDashboardLayoutCache,
+    writeDashboardPingState,
+    writeDashboardSignalHistory,
+} from './dashboardSession.js'
 import './Dashboard.css'
 
 const MAX_PTS = 30
@@ -36,9 +46,6 @@ const healthConfig = {
 }
 
 /* Session-only telemetry persists across navigation, but never across networks. */
-const _pingCacheByEpoch = new Map()
-const _signalHistoryByUnderlay = new Map()
-const MAX_CACHED_NETWORK_KEYS = 4
 const MAX_SIGNAL_PTS = 60
 
 function normalizedEpoch(value) {
@@ -52,25 +59,6 @@ function normalizedUnderlayIdentity(value, routeEpoch) {
     // former route-epoch behaviour in that compatibility case is safer than
     // allowing unrelated physical links to share one anonymous history.
     return identity || `route:${routeEpoch}`
-}
-
-function emptyPingState() {
-    return {
-        pingData: Object.fromEntries(HOSTS.map(host => [host, []])),
-        pingLatest: {},
-        gwPing: null,
-        gwPingState: 'idle',
-    }
-}
-
-function boundedSet(map, key, value) {
-    map.delete(key)
-    map.set(key, value)
-    while (map.size > MAX_CACHED_NETWORK_KEYS) map.delete(map.keys().next().value)
-}
-
-function cachedPingState(epoch) {
-    return _pingCacheByEpoch.get(epoch) || emptyPingState()
 }
 
 /** Convert "76%" to approximate dBm */
@@ -113,34 +101,46 @@ export default function Dashboard() {
     const appVisible = useAppVisibility()
     const networkEpoch = normalizedEpoch(net.networkEpoch)
     const underlayIdentityKey = normalizedUnderlayIdentity(net.underlayIdentityKey, networkEpoch)
+    const [initialPingState] = useState(() => readDashboardPingState(networkEpoch, HOSTS))
     const dashRef = useRef(null)
-    const [pingData, setPingData] = useState(() => cachedPingState(networkEpoch).pingData)
-    const [pingLatest, setPingLatest] = useState(() => cachedPingState(networkEpoch).pingLatest)
-    const [gwPing, setGwPing] = useState(() => cachedPingState(networkEpoch).gwPing)
-    const [gwPingState, setGwPingState] = useState(() => cachedPingState(networkEpoch).gwPingState)
+    const [pingData, setPingData] = useState(initialPingState.pingData)
+    const [pingLatest, setPingLatest] = useState(initialPingState.pingLatest)
+    const [gwPing, setGwPing] = useState(initialPingState.gwPing)
+    const [gwPingState, setGwPingState] = useState(initialPingState.gwPingState)
     // Never claim an excellent Internet path before the first external probe.
     // The core snapshot establishes the local link; probe results establish health.
-    const [health, setHealth] = useState('loading')
-    const [signalPts, setSignalPts] = useState(() => [...(_signalHistoryByUnderlay.get(underlayIdentityKey) || [])])
+    const [health, setHealth] = useState(() => {
+        if (net.loading) return 'loading'
+        if (!net.connected) return 'offline'
+        return initialPingState.health || 'loading'
+    })
+    const [signalPts, setSignalPts] = useState(() => [...readDashboardSignalHistory(underlayIdentityKey)])
     const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
     const [showPublicIP, setShowPublicIP] = useState(readPublicIpVisible)
-    const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
-    const stateRef = useRef({})
+    const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(readDashboardLayoutCache().showExtraDeviceInfo)
+    const stateRef = useRef({ epoch: networkEpoch, ...initialPingState })
     const networkEpochRef = useRef(networkEpoch)
     const underlayIdentityRef = useRef(underlayIdentityKey)
     const probeGenerationRef = useRef(0)
+    const lastProbeAtRef = useRef(initialPingState.lastSampledAt || 0)
+    const gatewayContextRef = useRef({
+        signature: `${networkEpoch}|${net.connected}|${net.gateway || '-'}|${net.isVpn}|${net.transitioning}`,
+        hydrated: initialPingState.visited === true,
+    })
     const samplingVisibleRef = useRef(appVisible)
     const pingTimerRef = useRef(null)
     const [ready, setReady] = useState(!net.loading)
-    const [pollMs, setPollMs] = useState(DEFAULT_POLL_INTERVAL_SECONDS * 1000)
-    const [latencyThr, setLatencyThr] = useState(150)
+    const [pollMs, setPollMs] = useState(readDashboardConfigCache().pollMs)
+    const [latencyThr, setLatencyThr] = useState(readDashboardConfigCache().latencyThr)
 
     // Load poll interval & latency threshold from config
     useEffect(() => {
         bridge.configGetPublic(['pollInterval', 'latencyThreshold', 'publicIpVisible']).then(cfg => {
             if (!cfg) return
-            setPollMs(normalizePollIntervalMs(cfg.pollInterval))
+            const nextPollMs = normalizePollIntervalMs(cfg.pollInterval)
+            setPollMs(nextPollMs)
+            writeDashboardConfigCache({ pollMs: nextPollMs })
             if (cfg.publicIpVisible !== undefined) {
                 const visible = cfg.publicIpVisible === true
                 setShowPublicIP(visible)
@@ -148,13 +148,18 @@ export default function Dashboard() {
             }
             if (cfg.latencyThreshold) {
                 const v = Number(cfg.latencyThreshold)
-                if (v > 0) setLatencyThr(v)
+                if (v > 0) {
+                    setLatencyThr(v)
+                    writeDashboardConfigCache({ latencyThr: v })
+                }
             }
         }).catch(() => {})
 
         const off = bridge.onConfigChanged?.(({ key, value, deleted }) => {
             if (key === 'pollInterval') {
-                setPollMs(deleted ? DEFAULT_POLL_INTERVAL_SECONDS * 1000 : normalizePollIntervalMs(value))
+                const nextPollMs = deleted ? DEFAULT_POLL_INTERVAL_SECONDS * 1000 : normalizePollIntervalMs(value)
+                setPollMs(nextPollMs)
+                writeDashboardConfigCache({ pollMs: nextPollMs })
             }
             if (key === 'publicIpVisible') {
                 const visible = !deleted && value === true
@@ -163,7 +168,10 @@ export default function Dashboard() {
             }
             if (key === 'latencyThreshold') {
                 const v = deleted ? 150 : Number(value)
-                if (v > 0) setLatencyThr(v)
+                if (v > 0) {
+                    setLatencyThr(v)
+                    writeDashboardConfigCache({ latencyThr: v })
+                }
             }
         })
         return () => off?.()
@@ -177,24 +185,29 @@ export default function Dashboard() {
     const shouldProbeGateway = canProbeGateway(net)
 
     useEffect(() => {
+        if (networkEpochRef.current === networkEpoch) return
         const previous = stateRef.current
-        if (Number.isInteger(previous.epoch) && previous.epoch !== networkEpoch) {
-            boundedSet(_pingCacheByEpoch, previous.epoch, {
+        if (Number.isInteger(previous.epoch)) {
+            writeDashboardPingState(previous.epoch, {
                 pingData: previous.pingData,
                 pingLatest: previous.pingLatest,
                 gwPing: previous.gwPing,
                 gwPingState: previous.gwPingState,
+                health: previous.health,
+                lastSampledAt: previous.lastSampledAt || lastProbeAtRef.current,
+                visited: true,
             })
         }
 
         networkEpochRef.current = networkEpoch
         probeGenerationRef.current += 1
-        const cached = cachedPingState(networkEpoch)
+        const cached = readDashboardPingState(networkEpoch, HOSTS)
+        lastProbeAtRef.current = cached.lastSampledAt || 0
         setPingData(cached.pingData)
         setPingLatest(cached.pingLatest)
         setGwPing(cached.gwPing)
         setGwPingState(cached.gwPingState)
-        setHealth('loading')
+        setHealth(cached.health || 'loading')
         stateRef.current = { epoch: networkEpoch, ...cached }
     }, [networkEpoch])
 
@@ -202,11 +215,16 @@ export default function Dashboard() {
     // A VPN route epoch therefore keeps the existing series, while a genuine
     // Wi-Fi/Ethernet switch selects a separate bounded history.
     useEffect(() => {
+        if (underlayIdentityRef.current === underlayIdentityKey) return
         underlayIdentityRef.current = underlayIdentityKey
-        setSignalPts([...(_signalHistoryByUnderlay.get(underlayIdentityKey) || [])])
+        setSignalPts([...readDashboardSignalHistory(underlayIdentityKey)])
     }, [underlayIdentityKey])
 
     useEffect(() => {
+        const signature = `${networkEpoch}|${net.connected}|${net.gateway || '-'}|${net.isVpn}|${net.transitioning}`
+        const previous = gatewayContextRef.current
+        gatewayContextRef.current = { signature, hydrated: true }
+        if (previous.hydrated && previous.signature === signature) return
         probeGenerationRef.current += 1
         if (net.transitioning) return
         if (net.isVpn) {
@@ -220,17 +238,29 @@ export default function Dashboard() {
 
     // Keep stateRef in sync for caching on unmount
     useEffect(() => {
-        stateRef.current = { epoch: networkEpoch, pingData, pingLatest, gwPing, gwPingState }
+        stateRef.current = {
+            epoch: networkEpochRef.current,
+            pingData,
+            pingLatest,
+            gwPing,
+            gwPingState,
+            health,
+            lastSampledAt: lastProbeAtRef.current,
+            visited: true,
+        }
     })
 
     useEffect(() => () => {
         const current = stateRef.current
         if (!Number.isInteger(current.epoch)) return
-        boundedSet(_pingCacheByEpoch, current.epoch, {
+        writeDashboardPingState(current.epoch, {
             pingData: current.pingData,
             pingLatest: current.pingLatest,
             gwPing: current.gwPing,
             gwPingState: current.gwPingState,
+            health: current.health,
+            lastSampledAt: lastProbeAtRef.current,
+            visited: true,
         })
     }, [])
 
@@ -246,21 +276,39 @@ export default function Dashboard() {
     useEffect(() => {
         if (!appVisible) return undefined
         const identity = underlayIdentityKey
+        let stopped = false
+        let timer = null
         const sampleSignal = () => {
-            if (!samplingVisibleRef.current || underlayIdentityRef.current !== identity) return
+            if (stopped || !samplingVisibleRef.current || underlayIdentityRef.current !== identity) return
             const dbm = pctToDbm(net.wifi?.signal)
             if (dbm == null) return
             const next = appendDashboardChartSample(
-                _signalHistoryByUnderlay.get(identity) || [],
+                readDashboardSignalHistory(identity),
                 { t: Date.now(), dbm },
                 { valueKey: 'dbm', maxPoints: MAX_SIGNAL_PTS },
             )
-            boundedSet(_signalHistoryByUnderlay, identity, next)
+            writeDashboardSignalHistory(identity, next)
             setSignalPts(next)
         }
-        sampleSignal()
-        const timer = setInterval(sampleSignal, pollMs)
-        return () => clearInterval(timer)
+
+        const tick = () => {
+            if (stopped) return
+            sampleSignal()
+            if (!stopped) timer = setTimeout(tick, pollMs)
+        }
+        const history = readDashboardSignalHistory(identity)
+        const lastSample = history.at(-1)
+        const lastSampledAt = Number(lastSample?.t) || 0
+        const currentDbm = pctToDbm(net.wifi?.signal)
+        const signalChanged = currentDbm != null && currentDbm !== lastSample?.dbm
+        const initialDelay = lastSampledAt > 0 && !signalChanged
+            ? Math.max(0, pollMs - (Date.now() - lastSampledAt))
+            : 0
+        timer = setTimeout(tick, initialDelay)
+        return () => {
+            stopped = true
+            if (timer) clearTimeout(timer)
+        }
     }, [appVisible, net.wifi?.signal, underlayIdentityKey, pollMs])
 
     // Every configured tick is one coherent round. All external targets and
@@ -269,7 +317,8 @@ export default function Dashboard() {
         if (!samplingVisibleRef.current || net.loading || net.transitioning || !net.connected) return
         const generation = probeGenerationRef.current
         const roundEpoch = networkEpoch
-        const round = await measureProbeRound({
+        const round = await runSharedDashboardProbe({
+            epoch: roundEpoch,
             externalTargets: HOSTS,
             gateway: net.gateway,
             includeGateway: shouldProbeGateway,
@@ -281,6 +330,7 @@ export default function Dashboard() {
             || !samplingVisibleRef.current
         ) return
 
+        lastProbeAtRef.current = round.sampledAt
         if (round.gatewayMeasured) {
             setGwPing(round.gateway)
             setGwPingState(round.gateway == null ? 'unreachable' : 'ok')
@@ -317,9 +367,16 @@ export default function Dashboard() {
             await doPingRound()
             if (!stopped) pingTimerRef.current = setTimeout(tick, pollMs)
         }
-        // Defer the first tick by one task so React Strict Mode can discard its
-        // probe effect without starting a duplicate real round in development.
-        pingTimerRef.current = setTimeout(tick, 0)
+        // Warm navigation resumes at the remaining interval instead of
+        // generating another network round merely because the route remounted.
+        // A genuinely stale or first-time Dashboard still probes immediately.
+        const lastSampledAt = lastProbeAtRef.current
+        const initialDelay = lastSampledAt > 0
+            ? Math.max(0, pollMs - (Date.now() - lastSampledAt))
+            : 0
+        // The timeout also lets React Strict Mode discard its first effect
+        // cycle without starting duplicate real work in development.
+        pingTimerRef.current = setTimeout(tick, initialDelay)
         return () => { stopped = true }
     }, [doPingRound, pollMs])
 
@@ -412,8 +469,9 @@ export default function Dashboard() {
         const overflow = container.scrollHeight > (container.clientHeight + 1)
         const slack = container.clientHeight - container.scrollHeight
         setShowExtraDeviceInfo(prev => {
-            if (prev) return !overflow
-            return !overflow && slack >= 180
+            const next = prev ? !overflow : (!overflow && slack >= 180)
+            writeDashboardLayoutCache({ showExtraDeviceInfo: next })
+            return next
         })
     }, [])
 

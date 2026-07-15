@@ -112,7 +112,7 @@ const SEVERITY_META = {
     info: { order: 4, icon: CheckCircle2 },
 }
 
-const REPORT_ROWS_PER_PAGE = 15
+const REPORT_ROWS_PER_PAGE = 8
 const WIFI_IFACE_RE = /(wi-?fi|wlan|wireless|802\.11)/i
 const ETHERNET_IFACE_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|intel\(r\).*ethernet|gigabit)/i
 const VIRTUAL_IFACE_RE = /(virtual|vmware|vethernet|hyper-v|loopback|bluetooth|hamachi|zerotier|tailscale|wireguard|wintun|tun|tap)/i
@@ -130,6 +130,10 @@ function resolveProfileUdpPorts(profileId, extendedSweep) {
     const base = PROFILE_UDP_PORTS[profileId] || PROFILE_UDP_PORTS.standard
     if (!extendedSweep) return uniqueSortedPorts(base)
     return uniqueSortedPorts([...base, ...HARDENING_EXTRA_UDP_PORTS])
+}
+function resolveDiscoveryMode(profileId) {
+    if (profileId === 'quick' || profileId === 'deep') return profileId
+    return 'balanced'
 }
 function byIpAsc(a, b) {
     const toNumber = ip => String(ip || '').split('.').reduce((acc, part) => ((acc * 256) + (Number(part) || 0)) >>> 0, 0)
@@ -233,7 +237,7 @@ function finding(id, severity, title, evidence, recommendation, category) {
 }
 function isActiveScanCandidate(device) {
     if (!device || device.isLocal) return false
-    if (device.isGateway || device.alive || device.discoveryOnly) return true
+    if (device.isGateway || device.alive || device.discoveryOnly || device.focusedTarget) return true
     return ['reachable', 'delay', 'probe', 'permanent'].includes(String(device.neighborState || '').toLowerCase())
 }
 function isIpInSegments(ip, segments) {
@@ -392,6 +396,20 @@ export default function LanCheck() {
         const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
         return contexts.find(item => item.address === selectedInterfaceAddress) || underlayContext
     }, [net.networkContexts, selectedInterfaceAddress, underlayContext])
+    const manualScopeValidation = useMemo(
+        () => validateLanScanInputs(baseIP, rangeStart, rangeEnd),
+        [baseIP, rangeStart, rangeEnd]
+    )
+    const scopeReferenceIp = selectedNetworkContext?.address || underlayLocalIP || null
+    const manualScopeMismatch = scopeMode === 'manual'
+        && manualScopeValidation.ok
+        && !!scopeReferenceIp
+        && !isIpInScope(scopeReferenceIp, manualScopeValidation.baseIP, 0, 255)
+    const selectedContextLabel = [
+        selectedNetworkContext?.interfaceName || 'Network interface',
+        selectedNetworkContext?.address,
+    ].filter(Boolean).join(' · ')
+    const detectedScopeLabel = selectedNetworkContext?.cidr || underlayLocalIP || 'the detected network'
 
     const preset = PROFILE_PRESETS[profile]
     const selectedPorts = useMemo(
@@ -427,7 +445,10 @@ export default function LanCheck() {
             if (typeof saved.baseIP === 'string' && !autoBaseResolvedRef.current) setBaseIP(saved.baseIP)
             if (Number.isInteger(saved.rangeStart)) setRangeStart(saved.rangeStart)
             if (Number.isInteger(saved.rangeEnd)) setRangeEnd(saved.rangeEnd)
-            if (saved.scopeMode === 'manual' || saved.scopeMode === 'auto') setScopeMode(saved.scopeMode)
+            // Always open on the detected network. Manual scope is an
+            // advanced, deliberate choice for the current session and must
+            // never become a stale default after the user changes networks.
+            setScopeMode('auto')
             if (typeof saved.selectedInterfaceAddress === 'string') setSelectedInterfaceAddress(saved.selectedInterfaceAddress)
         }).catch(error => {
             logBridgeWarning('lancheck:settings-bootstrap', error)
@@ -459,6 +480,12 @@ export default function LanCheck() {
             bridge.configSet?.('safeScanDefault', next).catch(() => { /* noop */ })
             return next
         })
+    }
+
+    function useDetectedNetworkScope() {
+        setSelectedInterfaceAddress(underlayContext?.address || '')
+        setScopeMode('auto')
+        setInputError('')
     }
 
     useEffect(() => {
@@ -766,7 +793,7 @@ export default function LanCheck() {
     async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit, segments = null, gatewayIp = null, isCurrent = () => true }) {
         const map = new Map()
         const addHost = (ip, extra = {}) => {
-            if (segments?.length ? !isIpInSegments(ip, segments) : !isIpInScope(ip, safeBase, start, end)) return
+            if (segments?.length ? !isIpInSegments(ip, segments) : !isIpInScope(ip, safeBase, start, end)) return false
             if (!map.has(ip)) {
                 map.set(ip, {
                     ip,
@@ -785,13 +812,13 @@ export default function LanCheck() {
             } else {
                 map.set(ip, { ...map.get(ip), ...extra })
             }
+            return true
         }
 
-        if (gatewayIp) addHost(gatewayIp, { isGateway: true, displayName: 'Gateway' })
-        else {
-            addHost(`${safeBase}.1`, { isGateway: true, displayName: 'Gateway candidate' })
-            addHost(`${safeBase}.254`, { isGateway: true, displayName: 'Gateway candidate' })
-        }
+        // Focused mode only scans targets backed by local evidence. Guessing
+        // .1/.254 on an unrelated manual subnet created fast, empty reports
+        // while wasting network and CPU work.
+        if (gatewayIp) addHost(gatewayIp, { isGateway: true, focusedTarget: true, displayName: 'Gateway' })
 
         if (!isCurrent()) return []
         try {
@@ -801,6 +828,7 @@ export default function LanCheck() {
             if (localIpv4?.address) {
                 addHost(localIpv4.address, {
                     isLocal: true,
+                    focusedTarget: true,
                     mac: localIpv4.mac || null,
                     displayName: localIpv4.address,
                 })
@@ -817,6 +845,8 @@ export default function LanCheck() {
                 if (segments?.length ? !isIpInSegments(row?.ip, segments) : !isIpInScope(row?.ip, safeBase, start, end)) continue
                 addHost(row.ip, {
                     mac: row.mac || null,
+                    focusedTarget: true,
+                    targetEvidence: 'neighbor-table',
                     displayName: row.ip,
                 })
             }
@@ -850,13 +880,16 @@ export default function LanCheck() {
         const validated = scopeMode === 'auto'
             ? buildContextScanSegments(selectedNetworkContext)
             : (() => {
-                const manual = validateLanScanInputs(baseIP, rangeStart, rangeEnd)
+                const manual = manualScopeValidation
+                const segments = manual.ok
+                    ? [{ baseIP: manual.baseIP, start: manual.start, end: manual.end }]
+                    : []
                 return manual.ok ? {
                     ...manual,
                     scopeKey: `${manual.baseIP}.${manual.start}-${manual.end}`,
                     hostCount: manual.end - manual.start + 1,
-                    gatewayIp: underlayGateway || null,
-                    segments: [{ baseIP: manual.baseIP, start: manual.start, end: manual.end }],
+                    gatewayIp: isIpInSegments(underlayGateway, segments) ? underlayGateway : null,
+                    segments,
                 } : manual
             })()
         if (!validated.ok) {
@@ -922,6 +955,11 @@ export default function LanCheck() {
         const start = scanSegments[0].start
         const end = scanSegments.at(-1).end
         const scopeLabel = finalValidated.cidr || `${safeBase}.${start}-${scanSegments.at(-1).baseIP}.${end}`
+        const candidateGateway = finalValidated.gatewayIp || selectedNetworkContext?.gateway || underlayGateway || null
+        const gatewayHint = isIpInSegments(candidateGateway, scanSegments) ? candidateGateway : null
+        const candidateLocalIp = selectedNetworkContext?.address || underlayLocalIP || null
+        const localIpHint = isIpInSegments(candidateLocalIp, scanSegments) ? candidateLocalIp : null
+        const localMacHint = localIpHint ? (selectedNetworkContext?.mac || null) : null
         const scanStarted = Date.now()
 
         bridge.configSet('lancheck.settings', {
@@ -956,9 +994,10 @@ export default function LanCheck() {
                         pushActivity(`Discovery sweep: ${segment.baseIP}.${chunkStart}-${chunkEnd}`, 'info')
                         const chunk = await bridge.lanScan(segment.baseIP, chunkStart, chunkEnd, {
                             safeMode,
-                            gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
-                            localIp: selectedNetworkContext?.address || underlayLocalIP || null,
-                            localMac: selectedNetworkContext?.mac || null,
+                            discoveryMode: resolveDiscoveryMode(profile),
+                            gatewayIp: gatewayHint,
+                            localIp: localIpHint,
+                            localMac: localMacHint,
                             scanId,
                             isLastBatch,
                             layer2Expected: scopeMode === 'auto',
@@ -982,7 +1021,7 @@ export default function LanCheck() {
                     end,
                     hostLimit: scanAllHosts ? 4096 : fallbackHostLimit,
                     segments: scanSegments,
-                    gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
+                    gatewayIp: gatewayHint,
                     isCurrent: isCurrentRun,
                 })
                 if (!isCurrentRun()) return
@@ -1016,8 +1055,25 @@ export default function LanCheck() {
                         ssdpResponders: new Set(upnpDevices.map(item => item.ip)).size,
                         igdCount: upnpDevices.filter(item => item.isIgd).length,
                         rootDeviceCount: upnpDevices.filter(item => item.isRootDevice).length,
-                        gatewayIgdCount: upnpDevices.filter(item => item.isIgd && item.ip === (finalValidated.gatewayIp || selectedNetworkContext?.gateway)).length,
+                        gatewayIgdCount: upnpDevices.filter(item => item.isIgd && item.ip === gatewayHint).length,
                     },
+                }
+                const upnpTargets = upnpDevices
+                    .filter(item => isIpInSegments(item?.ip, scanSegments))
+                    .map(item => ({
+                        ip: item.ip,
+                        alive: true,
+                        discoveryOnly: true,
+                        focusedTarget: true,
+                        activeSource: 'ssdp',
+                        displayName: item.friendlyName || item.modelName || item.ip,
+                        hostname: item.friendlyName || null,
+                        vendor: item.manufacturer || null,
+                        isGateway: item.ip === gatewayHint || !!item.isIgd,
+                    }))
+                if (upnpTargets.length) {
+                    discoveredHosts = mergeDevices(discoveredHosts, upnpTargets)
+                    setDiscovered(discoveredHosts)
                 }
                 if (!isCurrentRun()) return
                 const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
@@ -1026,7 +1082,7 @@ export default function LanCheck() {
             setProgress(50)
             setStepState(prev => ({ ...prev, upnp: safeMode ? 'skipped' : 'done', services: 'running' }))
 
-            const gateway = chooseGateway(discoveredHosts, finalValidated.gatewayIp || selectedNetworkContext?.gateway)
+            const gateway = chooseGateway(discoveredHosts, gatewayHint)
             pushActivity(gateway ? `Gateway candidate: ${gateway.ip}` : 'Gateway not identified in discovered scope', gateway ? 'info' : 'warn')
 
             const eligibleHosts = [...discoveredHosts]
@@ -1040,6 +1096,13 @@ export default function LanCheck() {
                 })
             const targetLimit = enableDiscovery ? cfg.hostLimit : Math.max(cfg.hostLimit, Math.min(64, cfg.hostLimit * 2))
             const targetHosts = scanAllHosts ? eligibleHosts : eligibleHosts.slice(0, targetLimit)
+
+            if (!targetHosts.length) {
+                const mismatchHelp = manualScopeMismatch
+                    ? ` This PC is currently on ${detectedScopeLabel}, outside the manual scope. Select "Use detected network" unless the remote subnet is intentional; for an intentional routed subnet, verify the route and firewall.`
+                    : ' Keep Discovery sweep enabled, verify the selected interface, and check that the network allows local discovery.'
+                throw new Error(`No active devices were found in ${scopeLabel}, so no report was saved.${mismatchHelp}`)
+            }
 
             const udpPortsToScan = selectedUdpPorts
             pushActivity(
@@ -1352,33 +1415,66 @@ export default function LanCheck() {
 
                             <div className="lchk-range-row">
                                 <label className="lchk-label">Subnet Scope</label>
-                                <div className="lchk-range-inputs">
-                                    <select className="v3-input" value={scopeMode} onChange={e => setScopeMode(e.target.value)} disabled={running}>
-                                        <option value="auto">Detected CIDR</option>
-                                        <option value="manual">Manual /24</option>
+                                <div className={`lchk-range-inputs ${scopeMode === 'auto' ? 'is-auto' : 'is-manual'}`}>
+                                    <select className="v3-input" aria-label="Subnet scope mode" value={scopeMode} onChange={e => setScopeMode(e.target.value)} disabled={running}>
+                                        <option value="auto">Detected network</option>
+                                        <option value="manual">Manual range (advanced)</option>
                                     </select>
                                     {scopeMode === 'auto' ? (
-                                        <>
+                                        <div className={`lchk-auto-scope-fields ${(net.networkContexts?.length || 0) > 1 ? 'has-interfaces' : 'single-interface'}`}>
                                             {(net.networkContexts?.length || 0) > 1 && (
-                                                <select className="v3-input" value={selectedNetworkContext?.address || ''} onChange={e => setSelectedInterfaceAddress(e.target.value)} disabled={running}>
+                                                <select
+                                                    className="v3-input"
+                                                    aria-label="Network interface"
+                                                    title={`${selectedContextLabel} · ${selectedNetworkContext?.cidr || 'CIDR pending'}`}
+                                                    value={selectedNetworkContext?.address || ''}
+                                                    onChange={e => setSelectedInterfaceAddress(e.target.value)}
+                                                    disabled={running}
+                                                >
                                                     {net.networkContexts.map(item => (
-                                                        <option key={`${item.interfaceName}-${item.address}`} value={item.address}>{item.interfaceName || 'Interface'} · {item.cidr}</option>
+                                                        <option key={`${item.interfaceName}-${item.address}`} value={item.address}>{item.interfaceName || 'Interface'} · {item.address}</option>
                                                     ))}
                                                 </select>
                                             )}
-                                            <input className="v3-input mono" value={selectedNetworkContext?.cidr || 'Detecting...'} readOnly />
-                                        </>
+                                            <input
+                                                className="v3-input mono lchk-cidr-input"
+                                                aria-label="Detected CIDR"
+                                                title={selectedNetworkContext?.cidr || 'Detecting network range'}
+                                                value={selectedNetworkContext?.cidr || 'Detecting...'}
+                                                readOnly
+                                            />
+                                        </div>
                                     ) : (
                                         <>
-                                            <input className="v3-input mono" value={baseIP} onChange={e => setBaseIP(e.target.value)} disabled={running} />
+                                            <input className="v3-input mono" aria-label="Manual subnet prefix" value={baseIP} onChange={e => setBaseIP(e.target.value)} disabled={running} />
                                             <span className="lchk-dot">.</span>
-                                            <input className="v3-input mono" type="number" min={1} max={254} value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} disabled={running} />
+                                            <input className="v3-input mono" aria-label="Manual range start" type="number" min={1} max={254} value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} disabled={running} />
                                             <span className="lchk-dot">-</span>
-                                            <input className="v3-input mono" type="number" min={1} max={254} value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} disabled={running} />
+                                            <input className="v3-input mono" aria-label="Manual range end" type="number" min={1} max={254} value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} disabled={running} />
                                         </>
                                     )}
                                 </div>
+                                {scopeMode === 'auto' && selectedNetworkContext && (
+                                    <div className="lchk-selected-scope" title={`${selectedContextLabel} · ${selectedNetworkContext.cidr || ''}`}>
+                                        <Wifi size={13} />
+                                        <span>{selectedContextLabel}</span>
+                                        <strong className="mono">{selectedNetworkContext.cidr || 'Detecting CIDR...'}</strong>
+                                    </div>
+                                )}
                             </div>
+
+                            {manualScopeMismatch && (
+                                <div className="lchk-scope-warning">
+                                    <AlertTriangle size={16} />
+                                    <div>
+                                        <strong>Manual scope is outside the current network</strong>
+                                        <span>This PC is on {detectedScopeLabel}, but the scan is set to {manualScopeValidation.baseIP}.{manualScopeValidation.start}-{manualScopeValidation.end}. Keep this only for an intentional routed subnet.</span>
+                                    </div>
+                                    <button type="button" className="v3-btn v3-btn-secondary" onClick={useDetectedNetworkScope} disabled={running}>
+                                        Use detected network
+                                    </button>
+                                </div>
+                            )}
 
                             {inputError && (
                                 <div className="lchk-inline-alert">
@@ -1676,145 +1772,163 @@ export default function LanCheck() {
                                     </div>
                                 </div>
                                 <div className="lchk-report-main-grid">
-                                    <div className="v3-card lchk-findings-card">
-                                        <div className="v3-card-header">
-                                            <div className="v3-card-title"><Shield size={16} color="var(--color-accent)" /> Findings</div>
-                                            <div className="lchk-severity-counters">
-                                                {Object.entries(severityCounts).map(([level, count]) => (
-                                                    <span key={level} className={`lchk-sev-chip ${level}`}>{level} {count}</span>
-                                                ))}
+                                    <div className="lchk-report-column">
+                                        <div className="v3-card lchk-findings-card">
+                                            <div className="v3-card-header">
+                                                <div className="v3-card-title"><Shield size={16} color="var(--color-accent)" /> Findings</div>
+                                                <div className="lchk-severity-counters">
+                                                    {Object.entries(severityCounts).map(([level, count]) => (
+                                                        <span key={level} className={`lchk-sev-chip ${level}`}>{level} {count}</span>
+                                                    ))}
+                                                </div>
                                             </div>
-                                        </div>
-                                        {!report.findings.length ? (
-                                            <div className="lchk-no-open">
-                                                <ShieldCheck size={15} color="var(--color-success)" />
-                                                No findings detected in this LAN scope.
-                                            </div>
-                                        ) : (
-                                            <div className="lchk-findings-list">
-                                                {report.findings.map(item => {
-                                                    const ItemIcon = SEVERITY_META[item.severity]?.icon || Info
-                                                    return (
-                                                        <div key={item.id} className={`lchk-finding ${item.severity}`}>
-                                                            <div className="lchk-finding-head">
-                                                                <span className="lchk-finding-severity"><ItemIcon size={13} /> {item.severity}</span>
-                                                                <strong>{item.title}</strong>
+                                            {!report.findings.length ? (
+                                                <div className="lchk-no-open">
+                                                    <ShieldCheck size={15} color="var(--color-success)" />
+                                                    No findings detected in this LAN scope.
+                                                </div>
+                                            ) : (
+                                                <div className="lchk-findings-list">
+                                                    {report.findings.map(item => {
+                                                        const ItemIcon = SEVERITY_META[item.severity]?.icon || Info
+                                                        return (
+                                                            <div key={item.id} className={`lchk-finding ${item.severity}`}>
+                                                                <div className="lchk-finding-head">
+                                                                    <span className={`lchk-finding-icon ${item.severity}`}><ItemIcon size={14} /></span>
+                                                                    <strong>{item.title}</strong>
+                                                                    <span className={`lchk-sev-chip ${item.severity}`}>{item.severity}</span>
+                                                                </div>
+                                                                <p>{item.evidence}</p>
+                                                                <div className="lchk-finding-rec">{item.recommendation}</div>
                                                             </div>
-                                                            <p>{item.evidence}</p>
-                                                            <div className="lchk-finding-rec">{item.recommendation}</div>
-                                                        </div>
-                                                    )
-                                                })}
+                                                        )
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="v3-card lchk-upnp-card">
+                                            <div className="v3-card-header">
+                                                <div className="v3-card-title"><Wifi size={16} color="var(--color-accent)" /> UPnP / SSDP Intel</div>
+                                                <span className="v3-badge info">{report.upnp?.summary?.ssdpResponders || 0} responders</span>
                                             </div>
-                                        )}
+                                            {!(report.upnp?.devices || []).length ? (
+                                                <div className="lchk-no-open">
+                                                    <ShieldCheck size={15} color="var(--color-success)" />
+                                                    No SSDP responders were discovered in selected subnet scope.
+                                                </div>
+                                            ) : (
+                                                <div className="lchk-upnp-list">
+                                                    {report.upnp.devices.slice(0, 12).map(item => (
+                                                        <div key={`${item.ip}-${item.usn || item.st || 'ssdp'}`} className="lchk-upnp-row">
+                                                            <div>
+                                                                <strong className="mono">{item.ip}</strong>
+                                                                <p>{item.friendlyName || item.modelName || item.server || 'SSDP responder'}</p>
+                                                            </div>
+                                                            <div className="lchk-upnp-tags">
+                                                                {item.isIgd && <span className="lchk-sev-chip high">IGD</span>}
+                                                                {item.isRootDevice && <span className="lchk-sev-chip medium">rootdevice</span>}
+                                                                {item.manufacturer && <span className="lchk-sev-chip info">{item.manufacturer}</span>}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
 
-                                    <div className="v3-card lchk-open-ports-card">
-                                        <div className="v3-card-header">
-                                            <div className="v3-card-title"><Fingerprint size={16} color="var(--color-accent)" /> Open Service Evidence</div>
-                                            <span className="v3-badge accent">{confirmedOpenServices} confirmed - {inconclusiveServices} inconclusive</span>
-                                        </div>
-                                        {!openRows.length ? (
-                                            <div className="lchk-no-open">
-                                                <CheckCircle2 size={16} color="var(--color-success)" />
-                                                No open TCP/UDP service evidence found in selected profile scope.
+                                    <div className="lchk-report-column">
+                                        <div className="v3-card lchk-open-ports-card">
+                                            <div className="v3-card-header">
+                                                <div className="v3-card-title"><Fingerprint size={16} color="var(--color-accent)" /> Open Service Evidence</div>
+                                                <span className="v3-badge accent">{confirmedOpenServices} confirmed - {inconclusiveServices} inconclusive</span>
                                             </div>
-                                        ) : (
-                                            <>
-                                                <div className="lchk-open-note">
-                                                    Entries marked <span className="mono">filtered</span> are inconclusive for UDP scans and require confirmation.
+                                            {!openRows.length ? (
+                                                <div className="lchk-no-open">
+                                                    <CheckCircle2 size={16} color="var(--color-success)" />
+                                                    No open TCP/UDP service evidence found in selected profile scope.
                                                 </div>
-                                                <div className="lchk-table-wrap">
-                                                    <table className="np-table">
-                                                        <thead>
-                                                            <tr>
-                                                                <th>Host</th>
-                                                                <th>Port</th>
-                                                                <th>Proto</th>
-                                                                <th>State</th>
-                                                                <th>Service</th>
-                                                                <th>Role</th>
-                                                                <th>Severity</th>
-                                                                <th>RTT</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {pagedRows.map((row, idx) => {
-                                                                const rawState = String(row.state || 'open').toLowerCase()
-                                                                const displayState = rawState === 'open|filtered' ? 'filtered' : (rawState || 'open')
-                                                                return (
-                                                                    <tr key={`${row.ip}-${row.protocol || 'tcp'}-${row.port}-${idx}`}>
-                                                                        <td className="mono">{row.ip}</td>
-                                                                        <td className="mono">{row.port}</td>
-                                                                        <td className="mono">{String(row.protocol || 'tcp').toUpperCase()}</td>
-                                                                        <td><span className={`lchk-state-chip ${displayState.replace(/\|/g, '-')}`}>{displayState}</span></td>
-                                                                        <td>
-                                                                            <div className="lchk-service-cell">
-                                                                                <strong>{row.service}</strong>
-                                                                                {row.detail ? <small>{row.detail}</small> : null}
-                                                                            </div>
-                                                                        </td>
-                                                                        <td>{row.isGateway ? <span className="lchk-role-chip"><Router size={11} /> Gateway</span> : row.displayName}</td>
-                                                                        <td><span className={`lchk-sev-chip ${row.severity}`}>{row.severity}</span></td>
-                                                                        <td className="mono">{row.time != null ? `${row.time}ms` : '-'}</td>
-                                                                    </tr>
-                                                                )
-                                                            })}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                                <div className="lchk-pagination">
-                                                    <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.max(1, v - 1))} disabled={reportPage <= 1}>
-                                                        <ChevronLeft size={13} />
-                                                        Prev
-                                                    </button>
-                                                    <span className="mono">Page {reportPage} / {totalPages}</span>
-                                                    <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.min(totalPages, v + 1))} disabled={reportPage >= totalPages}>
-                                                        Next
-                                                        <ChevronRight size={13} />
-                                                    </button>
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="lchk-report-support-grid">
-                                    <div className="v3-card lchk-upnp-card">
-                                        <div className="v3-card-header">
-                                            <div className="v3-card-title"><Wifi size={16} color="var(--color-accent)" /> UPnP / SSDP Intel</div>
-                                            <span className="v3-badge info">{report.upnp?.summary?.ssdpResponders || 0} responders</span>
-                                        </div>
-                                        {!(report.upnp?.devices || []).length ? (
-                                            <div className="lchk-no-open">
-                                                <ShieldCheck size={15} color="var(--color-success)" />
-                                                No SSDP responders were discovered in selected subnet scope.
-                                            </div>
-                                        ) : (
-                                            <div className="lchk-upnp-list">
-                                                {report.upnp.devices.slice(0, 12).map(item => (
-                                                    <div key={`${item.ip}-${item.usn || item.st || 'ssdp'}`} className="lchk-upnp-row">
-                                                        <div>
-                                                            <strong className="mono">{item.ip}</strong>
-                                                            <p>{item.friendlyName || item.modelName || item.server || 'SSDP responder'}</p>
-                                                        </div>
-                                                        <div className="lchk-upnp-tags">
-                                                            {item.isIgd && <span className="lchk-sev-chip high">IGD</span>}
-                                                            {item.isRootDevice && <span className="lchk-sev-chip medium">rootdevice</span>}
-                                                            {item.manufacturer && <span className="lchk-sev-chip info">{item.manufacturer}</span>}
-                                                        </div>
+                                            ) : (
+                                                <>
+                                                    <div className="lchk-open-note">
+                                                        Entries marked <span className="mono">filtered</span> are inconclusive for UDP scans and require confirmation.
                                                     </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    <div className="v3-card lchk-assets-card">
-                                        <div className="v3-card-header">
-                                            <div className="v3-card-title"><House size={16} color="var(--color-accent)" /> Asset Snapshot</div>
-                                            <span className="v3-badge accent">{report.devices.length} hosts</span>
+                                                    <div className="lchk-table-wrap">
+                                                        <table className="np-table">
+                                                            <colgroup>
+                                                                <col className="lchk-col-host" />
+                                                                <col className="lchk-col-port" />
+                                                                <col className="lchk-col-proto" />
+                                                                <col className="lchk-col-status" />
+                                                                <col className="lchk-col-service" />
+                                                                <col className="lchk-col-rtt" />
+                                                            </colgroup>
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>Host</th>
+                                                                    <th>Port</th>
+                                                                    <th>Proto</th>
+                                                                    <th>Status</th>
+                                                                    <th>Service</th>
+                                                                    <th>RTT</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {pagedRows.map((row, idx) => {
+                                                                    const rawState = String(row.state || 'open').toLowerCase()
+                                                                    const displayState = rawState === 'open|filtered' ? 'filtered' : (rawState || 'open')
+                                                                    const hostLabel = row.isGateway ? 'Gateway' : row.displayName
+                                                                    return (
+                                                                        <tr key={`${row.ip}-${row.protocol || 'tcp'}-${row.port}-${idx}`}>
+                                                                            <td>
+                                                                                <div className="lchk-host-cell">
+                                                                                    <strong className="mono">{row.ip}</strong>
+                                                                                    {hostLabel && hostLabel !== row.ip ? <small>{hostLabel}</small> : null}
+                                                                                </div>
+                                                                            </td>
+                                                                            <td className="mono">{row.port}</td>
+                                                                            <td className="mono">{String(row.protocol || 'tcp').toUpperCase()}</td>
+                                                                            <td>
+                                                                                <div className="lchk-status-cell">
+                                                                                    <span className={`lchk-state-chip ${displayState.replace(/\|/g, '-')}`}>{displayState}</span>
+                                                                                    <span className={`lchk-sev-chip ${row.severity}`}>{row.severity}</span>
+                                                                                </div>
+                                                                            </td>
+                                                                            <td>
+                                                                                <div className="lchk-service-cell">
+                                                                                    <strong>{row.service}</strong>
+                                                                                    {row.detail ? <small>{row.detail}</small> : null}
+                                                                                </div>
+                                                                            </td>
+                                                                            <td className="mono">{row.time != null ? `${row.time}ms` : '-'}</td>
+                                                                        </tr>
+                                                                    )
+                                                                })}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                    <div className="lchk-pagination">
+                                                        <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.max(1, v - 1))} disabled={reportPage <= 1}>
+                                                            <ChevronLeft size={13} />
+                                                            Prev
+                                                        </button>
+                                                        <span className="mono">Page {reportPage} / {totalPages}</span>
+                                                        <button className="v3-btn v3-btn-secondary" onClick={() => setReportPage(v => Math.min(totalPages, v + 1))} disabled={reportPage >= totalPages}>
+                                                            Next
+                                                            <ChevronRight size={13} />
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
                                         </div>
-                                        <PaginatedDeviceList devices={report.devices} />
+
+                                        <div className="v3-card lchk-assets-card">
+                                            <div className="v3-card-header">
+                                                <div className="v3-card-title"><House size={16} color="var(--color-accent)" /> Asset Snapshot</div>
+                                                <span className="v3-badge accent">{report.devices.length} hosts</span>
+                                            </div>
+                                            <PaginatedDeviceList devices={report.devices} />
+                                        </div>
                                     </div>
                                 </div>
                             </div>

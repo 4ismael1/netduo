@@ -195,12 +195,56 @@
 
 .lchk-range-inputs {
     display: grid;
-    /* Manual mode has six controls: scope selector, base IP, dot,
-       range start, separator and range end. Keeping all six explicit
-       prevents the final input from becoming an implicit second row. */
-    grid-template-columns: minmax(170px, 1fr) minmax(150px, 1fr) auto 90px auto 90px;
     gap: 8px;
     align-items: center;
+}
+
+.lchk-range-inputs > *,
+.lchk-auto-scope-fields > * {
+    min-width: 0;
+}
+
+.lchk-range-inputs .v3-input {
+    width: 100%;
+}
+
+.lchk-range-inputs.is-auto {
+    grid-template-columns: minmax(190px, .8fr) minmax(0, 1.65fr);
+}
+
+.lchk-auto-scope-fields {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.35fr) minmax(145px, .75fr);
+    gap: 8px;
+    min-width: 0;
+}
+
+.lchk-auto-scope-fields.single-interface {
+    grid-template-columns: minmax(170px, 1fr);
+}
+
+.lchk-range-inputs.is-manual {
+    grid-template-columns: minmax(190px, .9fr) minmax(135px, 1fr) auto 78px auto 78px;
+}
+
+.lchk-selected-scope {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.lchk-selected-scope span,
+.lchk-selected-scope strong {
+    overflow-wrap: anywhere;
+}
+
+.lchk-selected-scope strong {
+    color: var(--text-primary);
 }
 
 .lchk-dot {
@@ -220,6 +264,43 @@
     align-items: center;
     gap: 6px;
     font-size: 12px;
+}
+
+.lchk-scope-warning {
+    margin-top: 10px;
+    border: 1px solid color-mix(in srgb, var(--color-warning) 38%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 10%, var(--bg-surface));
+    border-radius: 10px;
+    padding: 10px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    color: var(--text-primary);
+}
+
+.lchk-scope-warning > svg {
+    color: var(--color-warning);
+}
+
+.lchk-scope-warning strong,
+.lchk-scope-warning span {
+    display: block;
+}
+
+.lchk-scope-warning strong {
+    font-size: 12px;
+}
+
+.lchk-scope-warning span {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.lchk-scope-warning .v3-btn {
+    white-space: nowrap;
 }
 
 .lchk-scan-options {
@@ -619,8 +700,7 @@
     min-width: 0;
 }
 
-.lchk-summary-grid,
-.lchk-report-support-grid {
+.lchk-summary-grid {
     display: grid;
     gap: 10px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -631,6 +711,13 @@
     gap: 10px;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
     align-items: start;
+}
+
+.lchk-report-column {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    align-content: start;
 }
 
 @media (min-width: 1320px) {
@@ -693,10 +780,43 @@
 }
 
 .lchk-finding-head {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 4px;
+    gap: 8px;
+    margin-bottom: 7px;
+}
+
+.lchk-finding-head > strong {
+    min-width: 0;
+    line-height: 1.35;
+}
+
+.lchk-finding-icon {
+    width: 25px;
+    height: 25px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--gray-500) 10%, transparent);
+    color: var(--text-secondary);
+}
+
+.lchk-finding-icon.critical { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
+.lchk-finding-icon.high { color: #f97316; background: color-mix(in srgb, #f97316 10%, transparent); }
+.lchk-finding-icon.medium { color: #b45309; background: color-mix(in srgb, var(--color-warning) 11%, transparent); }
+.lchk-finding-icon.low { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.lchk-finding-icon.info { color: var(--gray-600); }
+
+.lchk-finding.critical { border-left: 3px solid var(--color-danger); }
+.lchk-finding.high { border-left: 3px solid #f97316; }
+.lchk-finding.medium { border-left: 3px solid var(--color-warning); }
+.lchk-finding.low { border-left: 3px solid var(--color-accent); }
+.lchk-finding.info { border-left: 3px solid var(--gray-400); }
+
+.lchk-finding > p,
+.lchk-finding-rec {
+    padding-left: 33px;
 }
 
 .lchk-finding p,
@@ -731,8 +851,7 @@
 .lchk-asset-tags,
 .lchk-history-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-start; }
 
-.lchk-report-main-grid > .v3-card,
-.lchk-report-support-grid > .v3-card {
+.lchk-report-column > .v3-card {
     min-width: 0;
 }
 
@@ -755,9 +874,7 @@
 }
 
 .lchk-findings-list {
-    max-height: 430px;
-    overflow: auto;
-    padding-right: 2px;
+    overflow: visible;
 }
 
 .lchk-report-screen .v3-card-header {
@@ -801,15 +918,57 @@
 }
 
 .lchk-table-wrap {
-    overflow: auto;
-    max-height: 430px;
+    overflow-x: auto;
+    overflow-y: visible;
     border: 1px solid var(--border-subtle);
     border-radius: 10px;
     background: var(--bg-surface);
 }
 
 .lchk-open-ports-card .np-table {
-    min-width: 840px;
+    min-width: 640px;
+    table-layout: fixed;
+}
+
+.lchk-open-ports-card .np-table th,
+.lchk-open-ports-card .np-table td {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.lchk-col-host { width: 24%; }
+.lchk-col-port { width: 9%; }
+.lchk-col-proto { width: 10%; }
+.lchk-col-status { width: 22%; }
+.lchk-col-service { width: 27%; }
+.lchk-col-rtt { width: 8%; }
+
+.lchk-host-cell,
+.lchk-service-cell {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.lchk-host-cell strong,
+.lchk-service-cell strong,
+.lchk-host-cell small,
+.lchk-service-cell small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.lchk-host-cell small {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.3;
+}
+
+.lchk-status-cell {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
 }
 
 .lchk-role-chip,
@@ -853,11 +1012,6 @@
     color: #b45309;
     border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);
     background: color-mix(in srgb, var(--color-warning) 12%, transparent);
-}
-
-.lchk-service-cell {
-    display: grid;
-    gap: 2px;
 }
 
 .lchk-service-cell small {
@@ -976,9 +1130,19 @@
         margin-bottom: 5px;
     }
 
-    .lchk-range-inputs {
-        gap: 6px;
-        grid-template-columns: minmax(150px, 1fr) minmax(130px, 1fr) auto 80px auto 80px;
+    .lchk-range-inputs,
+    .lchk-auto-scope-fields { gap: 6px; }
+
+    .lchk-range-inputs.is-auto {
+        grid-template-columns: minmax(170px, .8fr) minmax(0, 1.7fr);
+    }
+
+    .lchk-auto-scope-fields {
+        grid-template-columns: minmax(205px, 1.3fr) minmax(135px, .7fr);
+    }
+
+    .lchk-range-inputs.is-manual {
+        grid-template-columns: minmax(170px, .85fr) minmax(125px, 1fr) auto 72px auto 72px;
     }
 
     .lchk-scope-meta {
@@ -1046,12 +1210,15 @@
     .lchk-report-actions { justify-content: flex-start; }
     .lchk-report-glance { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .lchk-report-main-grid { grid-template-columns: 1fr; }
-    .lchk-findings-list { max-height: 340px; }
+    .lchk-report-column { display: contents; }
+    .lchk-findings-card { order: 1; }
+    .lchk-open-ports-card { order: 2; }
+    .lchk-upnp-card { order: 3; }
+    .lchk-assets-card { order: 4; }
 }
 
 @media (max-width: 900px) {
     .lchk-summary-grid,
-    .lchk-report-support-grid,
     .lchk-report-glance { grid-template-columns: 1fr; }
 }
 
@@ -1063,8 +1230,12 @@
     .lchk-live-kpi,
     .lchk-plan-metrics,
     .lchk-step-strip { grid-template-columns: 1fr; }
-    .lchk-range-inputs { grid-template-columns: 1fr; }
+    .lchk-range-inputs.is-auto,
+    .lchk-range-inputs.is-manual,
+    .lchk-auto-scope-fields { grid-template-columns: 1fr; }
     .lchk-dot { display: none; }
+    .lchk-scope-warning { grid-template-columns: auto minmax(0, 1fr); }
+    .lchk-scope-warning .v3-btn { grid-column: 1 / -1; width: 100%; justify-content: center; }
     .lchk-live-top { grid-template-columns: 1fr; }
     .lchk-history-main,
     .lchk-upnp-row,
@@ -1087,7 +1258,7 @@
         order: -1;
     }
 
-    .lchk-open-ports-card .np-table { min-width: 760px; }
+    .lchk-open-ports-card .np-table { min-width: 640px; }
 }
 
 /* ═══ Dark Theme ═══

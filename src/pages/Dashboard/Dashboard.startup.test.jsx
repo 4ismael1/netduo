@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Dashboard from './Dashboard.jsx'
+import { resetDashboardSessionForTests } from './dashboardSession.js'
 
 const mocks = vi.hoisted(() => ({
     network: { current: null },
@@ -61,8 +62,88 @@ function network(overrides = {}) {
 describe('Dashboard startup presentation', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        resetDashboardSessionForTests()
         mocks.visibilityListeners.clear()
+        mocks.bridge.pingSingle.mockResolvedValue({ time: 12 })
         mocks.network.current = network()
+    })
+
+    it('restores a warm Dashboard with its route animation but without probing before the interval is due', async () => {
+        mocks.network.current = network({
+            loading: false,
+            enrichmentStatus: 'ready',
+            networkEpoch: 50,
+            gateway: '192.168.1.1',
+            publicIP: '203.0.113.10',
+            dns: ['192.168.1.1'],
+        })
+
+        const firstView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        await waitFor(() => expect(mocks.bridge.pingSingle).toHaveBeenCalledTimes(4))
+        await waitFor(() => expect(screen.getByText('Excellent')).toBeInTheDocument())
+        firstView.unmount()
+
+        const secondView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        expect(screen.getByText('Excellent')).toBeInTheDocument()
+        expect(secondView.container.querySelector('.dash')).toHaveClass('page-enter')
+
+        await new Promise(resolve => setTimeout(resolve, 180))
+        expect(mocks.bridge.pingSingle).toHaveBeenCalledTimes(4)
+        secondView.unmount()
+    })
+
+    it('does not append a duplicate Wi-Fi signal sample on a warm remount', async () => {
+        mocks.network.current = network({
+            loading: false,
+            enrichmentStatus: 'ready',
+            networkEpoch: 51,
+            underlayIdentityKey: 'wifi:warm-remount',
+            linkType: 'wifi',
+            ifaceName: 'Wi-Fi',
+            gateway: '192.168.1.1',
+            wifi: { ssid: 'Office', signal: '80%' },
+            publicIP: '203.0.113.10',
+        })
+
+        const readSignal = container => JSON.parse(
+            container.querySelector('.dash-card-signal [data-testid="area-chart"]')?.dataset.series || '[]'
+        )
+        const firstView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        await waitFor(() => expect(readSignal(firstView.container)).toEqual([-60, -60]))
+        firstView.unmount()
+
+        const secondView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        expect(readSignal(secondView.container)).toEqual([-60, -60])
+        await new Promise(resolve => setTimeout(resolve, 180))
+        expect(readSignal(secondView.container)).toEqual([-60, -60])
+        secondView.unmount()
+    })
+
+    it('reuses an in-flight latency round when navigation remounts the Dashboard', async () => {
+        const resolvers = []
+        mocks.bridge.pingSingle.mockImplementation(() => new Promise(resolve => resolvers.push(resolve)))
+        mocks.network.current = network({
+            loading: false,
+            enrichmentStatus: 'ready',
+            networkEpoch: 52,
+            gateway: '192.168.1.1',
+            publicIP: '203.0.113.10',
+        })
+
+        const firstView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        await waitFor(() => expect(mocks.bridge.pingSingle).toHaveBeenCalledTimes(4))
+        firstView.unmount()
+
+        const secondView = render(<MemoryRouter><Dashboard /></MemoryRouter>)
+        await new Promise(resolve => setTimeout(resolve, 120))
+        expect(mocks.bridge.pingSingle).toHaveBeenCalledTimes(4)
+
+        await act(async () => resolvers.forEach(resolve => resolve({ time: 18 })))
+        await waitFor(() => {
+            const values = Array.from(secondView.container.querySelectorAll('.chart-ms'), node => node.textContent.trim())
+            expect(values).toEqual(['18 ms', '18 ms', '18 ms'])
+        })
+        secondView.unmount()
     })
 
     it('keeps the synchronized sampler active after the Strict Mode effect cycle', async () => {
@@ -233,7 +314,7 @@ describe('Dashboard startup presentation', () => {
 
         mocks.network.current = wifi('60%', { networkEpoch: 302 })
         view.rerender(<MemoryRouter><Dashboard /></MemoryRouter>)
-        await waitFor(() => expect(signalSeries()).toEqual([-60, -60, -70]))
+        await waitFor(() => expect(signalSeries()).toEqual([-60, -70]))
 
         mocks.network.current = wifi('90%', {
             networkEpoch: 303,
