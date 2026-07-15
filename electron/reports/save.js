@@ -21,17 +21,26 @@ const path = require('path')
 // arbitrary filesystem paths (cmd.exe, user docs, etc.), which is a
 // limited but real info-leak vector.
 const exportedPaths = new Set()
+const MAX_EXPORTED_PATHS = 256
+
+function addExportedPath(filePath) {
+    exportedPaths.delete(filePath)
+    exportedPaths.add(filePath)
+    while (exportedPaths.size > MAX_EXPORTED_PATHS) {
+        exportedPaths.delete(exportedPaths.values().next().value)
+    }
+}
 
 function rememberExported(filePath) {
     if (!filePath) return
     try {
         const canonical = fsSync.realpathSync(path.resolve(filePath))
-        exportedPaths.add(canonical)
+        addExportedPath(canonical)
     } catch {
         // File may no longer exist by the time we canonicalise — the
         // caller still just wrote it so add the resolved literal path
         // too as a fallback key.
-        exportedPaths.add(path.resolve(filePath))
+        addExportedPath(path.resolve(filePath))
     }
 }
 
@@ -124,4 +133,11 @@ function revealInFolder(filePath) {
     return true
 }
 
-module.exports = { saveReport, defaultFilename, revealInFolder, rememberExported, _exportedPaths: exportedPaths }
+module.exports = {
+    saveReport,
+    defaultFilename,
+    revealInFolder,
+    rememberExported,
+    _exportedPaths: exportedPaths,
+    _maxExportedPaths: MAX_EXPORTED_PATHS,
+}

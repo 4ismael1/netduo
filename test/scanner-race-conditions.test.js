@@ -42,7 +42,7 @@ describe('Scanner race-condition guards', () => {
         expect(scanBlock).toContain('const scanId = beginScannerSession({')
         expect(scanBlock).toContain('safeMode,')
         expect(scanBlock).toContain('discoveryMode,')
-        expect(scanBlock).toContain('const scanGatewayIp = validated.gatewayIp || net.gateway || null')
+        expect(scanBlock).toContain('const scanGatewayIp = validated.gatewayIp || underlayGateway || null')
         expect(scanBlock).toContain('bridge.lanScan(segment.baseIP, s, e, {')
         expect(scanBlock).toContain('scanId,')
         expect(scanBlock).toContain('isLastBatch,')

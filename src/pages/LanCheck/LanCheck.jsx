@@ -36,6 +36,7 @@ import { validateLanScanInputs } from '../../lib/validation'
 import useNetworkStatus from '../../lib/useNetworkStatus'
 import { evaluateLanAssessment } from '../../lib/lanRisk'
 import { buildContextScanSegments } from '../../lib/ipv4Scope'
+import { runWithConcurrency } from '../../lib/runWithConcurrency.js'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
 import './LanCheck.css'
 
@@ -227,23 +228,6 @@ function chooseGateway(devices, gatewayIp = null) {
     const gateways = devices.filter(d => d.isGateway)
     return gateways.find(d => d.ip.endsWith('.1')) || gateways.find(d => d.ip.endsWith('.254')) || gateways[0] || null
 }
-async function runWithConcurrency(tasks, limit, onEach) {
-    const outputs = new Array(tasks.length)
-    let cursor = 0
-    let completed = 0
-    async function worker() {
-        while (cursor < tasks.length) {
-            const index = cursor
-            cursor += 1
-            try { outputs[index] = await tasks[index]() } catch { outputs[index] = null }
-            completed += 1
-            onEach?.(completed, tasks.length)
-        }
-    }
-    const size = Math.max(1, Math.min(limit, tasks.length || 1))
-    await Promise.all(Array.from({ length: size }, () => worker()))
-    return outputs
-}
 function finding(id, severity, title, evidence, recommendation, category) {
     return { id, severity, title, evidence, recommendation, category }
 }
@@ -368,6 +352,12 @@ function PaginatedDeviceList({ devices }) {
 
 export default function LanCheck() {
     const net = useNetworkStatus()
+    const underlayContext = net.underlay?.context || net.networkContext || null
+    const underlayGateway = net.underlayGateway
+        || net.underlay?.gateway
+        || underlayContext?.gateway
+        || (!net.isVpn ? net.gateway : null)
+    const underlayLocalIP = net.underlay?.localIp || underlayContext?.address || net.localIP || null
     const [profile, setProfile] = useState('standard')
     const [enableDiscovery, setEnableDiscovery] = useState(true)
     const [extendedSweep, setExtendedSweep] = useState(true)
@@ -394,12 +384,14 @@ export default function LanCheck() {
     const [historyRows, setHistoryRows] = useState([])
     const [historyLoading, setHistoryLoading] = useState(false)
     const [historyQuery, setHistoryQuery] = useState('')
+    const [settingsLoaded, setSettingsLoaded] = useState(false)
     const autoBaseResolvedRef = useRef(false)
     const scanRunRef = getSessionRef('lan-check', 'scanRun', 0)
+    const scanControlRef = getSessionRef('lan-check', 'scanControl', null)
     const selectedNetworkContext = useMemo(() => {
         const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
-        return contexts.find(item => item.address === selectedInterfaceAddress) || net.networkContext || null
-    }, [net.networkContexts, net.networkContext, selectedInterfaceAddress])
+        return contexts.find(item => item.address === selectedInterfaceAddress) || underlayContext
+    }, [net.networkContexts, selectedInterfaceAddress, underlayContext])
 
     const preset = PROFILE_PRESETS[profile]
     const selectedPorts = useMemo(
@@ -439,7 +431,7 @@ export default function LanCheck() {
             if (typeof saved.selectedInterfaceAddress === 'string') setSelectedInterfaceAddress(saved.selectedInterfaceAddress)
         }).catch(error => {
             logBridgeWarning('lancheck:settings-bootstrap', error)
-        })
+        }).finally(() => setSettingsLoaded(true))
         // Shared with Scanner — reusing the same "safeScanDefault" preference.
         bridge.configGet('safeScanDefault').then(v => {
             if (v === true || v === 'true') setSafeMode(true)
@@ -470,10 +462,22 @@ export default function LanCheck() {
     }
 
     useEffect(() => {
+        if (!settingsLoaded || scopeMode !== 'auto') return undefined
         let disposed = false
 
         async function syncAutoBaseIP() {
             try {
+                const selectedBase = resolveAutoBaseFromInterfaces([{
+                    ...selectedNetworkContext,
+                    address: selectedNetworkContext?.address || underlayLocalIP,
+                    family: 'IPv4',
+                    internal: false,
+                }])
+                if (selectedBase) {
+                    autoBaseResolvedRef.current = true
+                    setBaseIP(prev => (prev === selectedBase ? prev : selectedBase))
+                    return
+                }
                 const list = await bridge.getNetworkInterfaces()
                 if (disposed) return
                 const autoBase = resolveAutoBaseFromInterfaces(list)
@@ -505,7 +509,7 @@ export default function LanCheck() {
             if (typeof offChanged === 'function') offChanged()
             window.removeEventListener('online', onOnline)
         }
-    }, [])
+    }, [scopeMode, settingsLoaded, selectedNetworkContext, underlayLocalIP, net.underlayIdentityKey])
     const severityCounts = useMemo(() => {
         const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 }
         for (const item of report?.findings || []) counts[item.severity] = (counts[item.severity] || 0) + 1
@@ -759,7 +763,7 @@ export default function LanCheck() {
         return findings
     }
 
-    async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit, segments = null, gatewayIp = null }) {
+    async function buildTargetsWithoutDiscovery({ safeBase, start, end, hostLimit, segments = null, gatewayIp = null, isCurrent = () => true }) {
         const map = new Map()
         const addHost = (ip, extra = {}) => {
             if (segments?.length ? !isIpInSegments(ip, segments) : !isIpInScope(ip, safeBase, start, end)) return
@@ -789,8 +793,10 @@ export default function LanCheck() {
             addHost(`${safeBase}.254`, { isGateway: true, displayName: 'Gateway candidate' })
         }
 
+        if (!isCurrent()) return []
         try {
             const ifaces = await bridge.getNetworkInterfaces()
+            if (!isCurrent()) return []
             const localIpv4 = (ifaces || []).find(item => item?.family === 'IPv4' && !item?.internal && (segments?.length ? isIpInSegments(item?.address, segments) : isIpInScope(item?.address, safeBase, start, end)))
             if (localIpv4?.address) {
                 addHost(localIpv4.address, {
@@ -803,8 +809,10 @@ export default function LanCheck() {
             // ignore local interface resolution failures
         }
 
+        if (!isCurrent()) return []
         try {
             const arpRows = await bridge.getArpTable()
+            if (!isCurrent()) return []
             for (const row of arpRows || []) {
                 if (segments?.length ? !isIpInSegments(row?.ip, segments) : !isIpInScope(row?.ip, safeBase, start, end)) continue
                 addHost(row.ip, {
@@ -847,7 +855,7 @@ export default function LanCheck() {
                     ...manual,
                     scopeKey: `${manual.baseIP}.${manual.start}-${manual.end}`,
                     hostCount: manual.end - manual.start + 1,
-                    gatewayIp: net.gateway || null,
+                    gatewayIp: underlayGateway || null,
                     segments: [{ baseIP: manual.baseIP, start: manual.start, end: manual.end }],
                 } : manual
             })()
@@ -861,8 +869,24 @@ export default function LanCheck() {
         // which could hold the click for 200-500 ms while netsh / ip /
         // ifconfig spawned and resolved — the user perceived the button
         // as unresponsive ("tarda varios segs en reaccionar").
+        const previousControl = scanControlRef.current
+        previousControl?.abortController?.abort()
+        if (previousControl?.operationToken) {
+            endOperation('lan-check', previousControl.operationToken, 'cancelled', { label: 'LAN security check restarted' })
+        }
         const scanId = scanRunRef.current + 1
         scanRunRef.current = scanId
+        const runControl = {
+            runId: scanId,
+            abortController: new AbortController(),
+            operationToken: null,
+        }
+        scanControlRef.current = runControl
+        const isCurrentRun = () => (
+            scanControlRef.current === runControl
+            && scanRunRef.current === scanId
+            && !runControl.abortController.signal.aborted
+        )
         setInputError('')
         setStage('scan')
         setRunning(true)
@@ -879,54 +903,17 @@ export default function LanCheck() {
             services: 'idle',
             analysis: 'idle',
         })
-        beginOperation('lan-check', {
+        runControl.operationToken = beginOperation('lan-check', {
             path: '/lan-check',
             kind: 'check',
             label: 'LAN security check in progress',
             progress: 0,
         })
 
-        // NOW refresh the interface list in the background. If the
-        // active subnet has drifted since the last auto-base sync, we
-        // pick up the new base before kicking off the discovery sweep.
-        // The view is already in 'scan' state, so this is invisible to
-        // the user.
-        let effectiveBaseIP = baseIP
-        try {
-            if (scopeMode === 'auto') throw new Error('auto-context-already-resolved')
-            const ifaces = await bridge.getNetworkInterfaces()
-            const autoBase = resolveAutoBaseFromInterfaces(ifaces)
-            if (autoBase) {
-                effectiveBaseIP = autoBase
-                if (autoBase !== baseIP) setBaseIP(autoBase)
-            }
-        } catch {
-            // keep current base IP when interface refresh is not available
-        }
-
-        // Re-validate with the (possibly updated) effective base. This
-        // is cheap; it's the IPC call above that was slow.
-        const refreshedManual = scopeMode === 'manual' && effectiveBaseIP !== baseIP
-            ? validateLanScanInputs(effectiveBaseIP, rangeStart, rangeEnd)
-            : null
-        const finalValidated = !refreshedManual
-            ? validated
-            : (refreshedManual.ok ? {
-                ...refreshedManual,
-                scopeKey: `${refreshedManual.baseIP}.${refreshedManual.start}-${refreshedManual.end}`,
-                hostCount: refreshedManual.end - refreshedManual.start + 1,
-                gatewayIp: net.gateway || null,
-                segments: [{ baseIP: refreshedManual.baseIP, start: refreshedManual.start, end: refreshedManual.end }],
-            } : refreshedManual)
-        if (!finalValidated.ok) {
-            // Extremely rare: auto-base resolved to an invalid prefix.
-            // Roll back the view + show the error.
-            setInputError(finalValidated.error)
-            setRunning(false)
-            setStage('setup')
-            endOperation('lan-check', 'error', { label: 'LAN security check could not start' })
-            return
-        }
+        // The selected scope is the authoritative execution scope. Automatic
+        // mode was already resolved above from the active network context;
+        // manual mode must never be replaced by a freshly detected adapter.
+        const finalValidated = validated
 
         const cfg = PROFILE_PRESETS[profile]
         const portsToScan = selectedPorts
@@ -962,6 +949,7 @@ export default function LanCheck() {
                 for (let segmentIndex = 0; segmentIndex < scanSegments.length; segmentIndex += 1) {
                     const segment = scanSegments[segmentIndex]
                     for (let cursor = segment.start; cursor <= segment.end; cursor += cfg.batchSize) {
+                        if (!isCurrentRun()) return
                         const chunkStart = cursor
                         const chunkEnd = Math.min(cursor + cfg.batchSize - 1, segment.end)
                         const isLastBatch = segmentIndex === scanSegments.length - 1 && chunkEnd >= segment.end
@@ -969,19 +957,19 @@ export default function LanCheck() {
                         const chunk = await bridge.lanScan(segment.baseIP, chunkStart, chunkEnd, {
                             safeMode,
                             gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
-                            localIp: selectedNetworkContext?.address || net.localIP || null,
+                            localIp: selectedNetworkContext?.address || underlayLocalIP || null,
                             localMac: selectedNetworkContext?.mac || null,
                             scanId,
                             isLastBatch,
                             layer2Expected: scopeMode === 'auto',
                         })
-                        if (scanRunRef.current !== scanId) return
+                        if (!isCurrentRun()) return
                         discoveredHosts = mergeDevices(discoveredHosts, chunk || [])
                         setDiscovered(discoveredHosts)
                         completedHosts += chunkEnd - chunkStart + 1
                         const nextProgress = clamp(Math.round((completedHosts / span) * 34), 1, 34)
                         setProgress(nextProgress)
-                        updateOperation('lan-check', { progress: nextProgress })
+                        updateOperation('lan-check', runControl.operationToken, { progress: nextProgress })
                     }
                 }
                 pushActivity(`Discovery completed: ${discoveredHosts.length} hosts detected`, 'ok')
@@ -995,7 +983,9 @@ export default function LanCheck() {
                     hostLimit: scanAllHosts ? 4096 : fallbackHostLimit,
                     segments: scanSegments,
                     gatewayIp: finalValidated.gatewayIp || selectedNetworkContext?.gateway || null,
+                    isCurrent: isCurrentRun,
                 })
+                if (!isCurrentRun()) return
                 setDiscovered(discoveredHosts)
                 setProgress(20)
                 pushActivity(`Discovery disabled: using focused target set (${discoveredHosts.length} hosts)`, discoveredHosts.length ? 'info' : 'warn')
@@ -1012,7 +1002,9 @@ export default function LanCheck() {
             } else {
                 const upnpDevices = []
                 for (const segment of scanSegments) {
+                    if (!isCurrentRun()) return
                     const segmentIntel = await bridge.lanUpnpScan(segment.baseIP, segment.start, segment.end).catch(() => ({ ok: false, devices: [] }))
+                    if (!isCurrentRun()) return
                     for (const item of segmentIntel?.devices || []) {
                         if (!upnpDevices.some(existing => existing.ip === item.ip && existing.location === item.location)) upnpDevices.push(item)
                     }
@@ -1027,7 +1019,7 @@ export default function LanCheck() {
                         gatewayIgdCount: upnpDevices.filter(item => item.isIgd && item.ip === (finalValidated.gatewayIp || selectedNetworkContext?.gateway)).length,
                     },
                 }
-                if (scanRunRef.current !== scanId) return
+                if (!isCurrentRun()) return
                 const upnpResponders = upnpIntel?.summary?.ssdpResponders || 0
                 pushActivity(upnpResponders > 0 ? `UPnP/SSDP responders detected: ${upnpResponders}` : 'No UPnP/SSDP responders detected in selected scope', upnpResponders > 0 ? 'warn' : 'ok')
             }
@@ -1073,19 +1065,22 @@ export default function LanCheck() {
                 const safeTcpAttempts = safeMode ? 1 : (profile === 'quick' ? 1 : 2)
                 const safeUdpAttempts = safeMode ? 1 : (profile === 'deep' ? 2 : 1)
 
-                const scanTasks = targetHosts.map(host => async () => bridge.lanSecurityScan({
-                    scanId,
-                    targets: [{ ip: host.ip }],
-                    tcpPorts: portsToScan,
-                    udpPorts: udpPortsToScan,
-                    timeoutMs: safeTimeoutMs,
-                    tcpAttempts: safeTcpAttempts,
-                    udpAttempts: safeUdpAttempts,
-                    includeServiceProbe: true,
-                    hostConcurrency: 1,
-                    tcpConcurrency: safeTcpConcurrency,
-                    udpConcurrency: safeUdpConcurrency,
-                }))
+                const scanTasks = targetHosts.map(host => async () => {
+                    if (!isCurrentRun()) return null
+                    return bridge.lanSecurityScan({
+                        scanId,
+                        targets: [{ ip: host.ip }],
+                        tcpPorts: portsToScan,
+                        udpPorts: udpPortsToScan,
+                        timeoutMs: safeTimeoutMs,
+                        tcpAttempts: safeTcpAttempts,
+                        udpAttempts: safeUdpAttempts,
+                        includeServiceProbe: true,
+                        hostConcurrency: 1,
+                        tcpConcurrency: safeTcpConcurrency,
+                        udpConcurrency: safeUdpConcurrency,
+                    })
+                })
 
                 // Across hosts: cut the parallelism in half when in
                 // Safe Scan so we never have more than a couple of
@@ -1098,11 +1093,13 @@ export default function LanCheck() {
                     scanTasks,
                     hostParallelism,
                     (completed, total) => {
+                        if (!isCurrentRun()) return
                         const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
                         setProgress(clamp(p, 50, 92))
-                    }
+                    },
+                    runControl.abortController.signal,
                 )
-                if (scanRunRef.current !== scanId) return
+                if (!isCurrentRun()) return
 
                 for (let i = 0; i < hostResponses.length; i += 1) {
                     const response = hostResponses[i]
@@ -1135,6 +1132,7 @@ export default function LanCheck() {
                 for (const host of targetHosts) {
                     for (const port of portsToScan) {
                         tasks.push(async () => {
+                            if (!isCurrentRun()) return null
                             const res = await bridge.checkPort(host.ip, port, cfg.timeoutMs)
                             if (!res?.open) return null
                             return {
@@ -1153,9 +1151,11 @@ export default function LanCheck() {
                     }
                 }
                 const checked = await runWithConcurrency(tasks, cfg.concurrency, (completed, total) => {
+                    if (!isCurrentRun()) return
                     const p = 50 + Math.round((completed / Math.max(total, 1)) * 42)
                     setProgress(clamp(p, 50, 92))
-                })
+                }, runControl.abortController.signal)
+                if (!isCurrentRun()) return
                 for (const row of checked) if (row) openPortRows.push(row)
             }
 
@@ -1242,35 +1242,41 @@ export default function LanCheck() {
             setRunning(false)
             setScanFinishedAt(finishedAt)
             setStage('report')
-            endOperation('lan-check', 'done', { label: 'LAN security check completed', progress: 100 })
+            endOperation('lan-check', runControl.operationToken, 'done', { label: 'LAN security check completed', progress: 100 })
             pushActivity(`Analysis completed: risk ${riskBand.label} (${riskScore}/100)`, riskScore >= 51 ? 'warn' : 'ok')
 
             const savedRows = await bridge.lanCheckHistoryAdd({ report: reportPayload }).catch(() => null)
-            if (scanRunRef.current !== scanId) return
+            if (!isCurrentRun()) return
             if (Array.isArray(savedRows)) {
                 setHistoryRows(normalizeHistoryRows(savedRows))
             } else {
                 await loadHistory()
             }
         } catch (error) {
+            if (!isCurrentRun()) return
             setRunning(false)
             setInputError(error?.message || 'LAN security scan failed unexpectedly')
             setStage('setup')
             pushActivity(`Scan failed: ${error?.message || 'unexpected error'}`, 'error')
-            endOperation('lan-check', 'error', { label: 'LAN security check failed' })
+            endOperation('lan-check', runControl.operationToken, 'error', { label: 'LAN security check failed' })
         }
     }
 
     function cancelLanSecurityScan() {
+        const activeControl = scanControlRef.current
         const activeScanId = scanRunRef.current
+        activeControl?.abortController?.abort()
         bridge.lanScanCancel?.(activeScanId)
         bridge.lanSecurityScanCancel?.(activeScanId)
         scanRunRef.current += 1
+        scanControlRef.current = null
         setRunning(false)
         setInputError('')
         setStage('setup')
         setStepState({ discovery: 'idle', upnp: 'idle', services: 'idle', analysis: 'idle' })
-        endOperation('lan-check', 'cancelled', { label: 'LAN security check cancelled' })
+        if (activeControl?.operationToken) {
+            endOperation('lan-check', activeControl.operationToken, 'cancelled', { label: 'LAN security check cancelled' })
+        }
     }
 
     const progressRingStyle = useMemo(() => ({

@@ -19,6 +19,7 @@ import { resolveVendorKey, resolveHostnameHint, cleanVendorName } from '../../li
 import {
     abortScannerSession,
     beginScannerSession,
+    failScannerSession,
     finishScannerSession,
     scannerRunRef,
     setScannerDevices,
@@ -591,7 +592,16 @@ async function notifyNewDevicesIfAllowed(newKeys, foundDevices) {
 export default function Scanner() {
     const net = useNetworkStatus()
     const { scanning, devices, runDevices, progress, newDeviceKeys, scanMeta, completedMeta } = useScannerSession()
-    const [baseIP, setBaseIP] = useState(() => extractSubnet(net.gateway) || extractSubnet(net.localIP) || '192.168.1')
+    const underlayContext = net.underlay?.context || net.networkContext || null
+    const underlayGateway = net.underlayGateway
+        || net.underlay?.gateway
+        || underlayContext?.gateway
+        || (!net.isVpn ? net.gateway : null)
+    const underlayLocalIP = net.underlay?.localIp || underlayContext?.address || net.localIP || null
+    const underlayIdentityKey = typeof net.underlayIdentityKey === 'string'
+        ? net.underlayIdentityKey.trim()
+        : ''
+    const [baseIP, setBaseIP] = useState(() => extractSubnet(underlayGateway) || extractSubnet(underlayLocalIP) || '192.168.1')
     const [rangeStart, setRangeStart] = useState(1)
     const [rangeEnd, setRangeEnd] = useState(254)
     const [scopeMode, setScopeMode] = useState('auto')
@@ -638,12 +648,12 @@ export default function Scanner() {
     //   scanner pinned to the old subnet and the new network's
     //   inventory could never load.
     const lastAutoBaseRef = useRef(null)
-    // Tracks the last gateway IP we observed. Used by the
+    // Tracks the last physical-underlay identity we observed. Used by the
     // "network-changed" effect below to clear stale per-network state
     // (last scan results, NEW badges, the open detail drawer) without
     // touching values we want to preserve across the switch (config,
     // toggles, etc.).
-    const prevGatewayRef = useRef(undefined)
+    const prevUnderlayIdentityRef = useRef(undefined)
     const showOfflineInitRef = useRef(false)
     const safeModeInitRef = useRef(false)
     // Tracks whether the user has interacted with the Safe Scan or
@@ -657,8 +667,8 @@ export default function Scanner() {
     const previousSelectedScopeRef = useRef(null)
     const selectedNetworkContext = useMemo(() => {
         const contexts = Array.isArray(net.networkContexts) ? net.networkContexts : []
-        return contexts.find(item => item.address === selectedInterfaceAddress) || net.networkContext || null
-    }, [net.networkContexts, net.networkContext, selectedInterfaceAddress])
+        return contexts.find(item => item.address === selectedInterfaceAddress) || underlayContext
+    }, [net.networkContexts, selectedInterfaceAddress, underlayContext])
 
     useEffect(() => {
         if (scopeMode !== 'auto' || !selectedNetworkContext?.cidr) return
@@ -752,8 +762,8 @@ export default function Scanner() {
             : prev))
     }
 
-    // When the active gateway changes (Wi-Fi switch, VPN connect,
-    // ethernet plug/unplug), wipe the in-memory scan artefacts that
+    // When the physical link changes (Wi-Fi switch or Ethernet
+    // plug/unplug), wipe the in-memory scan artefacts that
     // belong to the OLD network: last-scan device list, NEW badges,
     // and the open detail drawer. We deliberately DON'T touch the
     // persisted inventory or networkId here — the resolveKey effect
@@ -764,15 +774,17 @@ export default function Scanner() {
     // mixed in (because `devices` and `newDeviceKeys` were still
     // populated from the previous scan).
     useEffect(() => {
-        const currentGw = (net?.gateway || '').trim() || null
-        if (prevGatewayRef.current === undefined) {
+        // Route-only changes (for example VPN on/off) retain the same key.
+        // A physical switch changes it even when both LANs use the same CIDR.
+        if (!underlayIdentityKey) return
+        if (prevUnderlayIdentityRef.current === undefined) {
             // First mount — seed the ref, don't wipe anything (the
             // sessionStorage hydration is what we want to keep showing).
-            prevGatewayRef.current = currentGw
+            prevUnderlayIdentityRef.current = underlayIdentityKey
             return
         }
-        if (prevGatewayRef.current === currentGw) return
-        prevGatewayRef.current = currentGw
+        if (prevUnderlayIdentityRef.current === underlayIdentityKey) return
+        prevUnderlayIdentityRef.current = underlayIdentityKey
         // If a scan is in flight when the user switches Wi-Fi networks,
         // abort it. The scan was sweeping the OLD network's subnet and
         // any results that come back (devices, ARP enrichment, mDNS/
@@ -801,7 +813,7 @@ export default function Scanner() {
         // network). Setting it to null here makes the resolve effect's
         // ARP-first path the authoritative one for the next round.
         setNetworkId(null)
-    }, [net?.gateway])
+    }, [underlayIdentityKey])
 
     // Auto-update baseIP whenever the active network changes. We track
     // the last subnet WE auto-chose; if the current baseIP still matches,
@@ -812,7 +824,7 @@ export default function Scanner() {
     // baseIP pinned to the old network's prefix, which broke the
     // per-network inventory lookup downstream.
     useEffect(() => {
-        const subnet = extractSubnet(net.gateway) || extractSubnet(net.localIP)
+        const subnet = extractSubnet(underlayGateway) || extractSubnet(underlayLocalIP)
         if (!subnet) return
         if (lastAutoBaseRef.current === null) {
             // First detection — seed the auto-base ref. The useState
@@ -836,7 +848,7 @@ export default function Scanner() {
             // looks like for the next change.
             lastAutoBaseRef.current = subnet
         }
-    }, [net.gateway, net.localIP, baseIP])
+    }, [underlayGateway, underlayLocalIP, baseIP])
 
     // Keep the persistent inventory in sync with the currently-selected
     // network. Before the first scan we don't know the gateway's MAC yet,
@@ -872,7 +884,7 @@ export default function Scanner() {
         //      identity-wise but mixes networks with same subnet, so
         //      we only land here when (1)-(3) all fail.
         const resolveKey = async () => {
-            const candidateGateway = scopeMode === 'auto' ? selectedNetworkContext?.gateway : net?.gateway
+            const candidateGateway = scopeMode === 'auto' ? selectedNetworkContext?.gateway : underlayGateway
             const gatewayIp = String(candidateGateway || '').trim()
             if (gatewayIp && bridge.getArpTable) {
                 try {
@@ -915,9 +927,9 @@ export default function Scanner() {
             logBridgeWarning('scanner:inventory-load', error)
         })
         return () => { cancelled = true }
-        // `net.gateway` is included so changing networks (Wi-Fi switch,
-        // VPN connect/disconnect) re-resolves the inventory immediately.
-    }, [baseIP, net?.gateway, scopeMode, selectedNetworkContext?.cidr, selectedNetworkContext?.gateway])
+        // Physical identity is included so same-subnet Wi-Fi switches
+        // re-resolve immediately, while VPN route epochs do not reload LAN data.
+    }, [baseIP, scopeMode, selectedNetworkContext?.cidr, selectedNetworkContext?.gateway, underlayGateway, underlayIdentityKey])
 
     // Auto-scroll inside device diagnostics when checks are done.
     useEffect(() => {
@@ -950,7 +962,7 @@ export default function Scanner() {
         return {
             ...validated,
             scopeKey: validated.baseIP,
-            gatewayIp: net.gateway || null,
+            gatewayIp: underlayGateway || null,
             hostCount: validated.end - validated.start + 1,
             segments: [{ baseIP: validated.baseIP, start: validated.start, end: validated.end }],
         }
@@ -1060,7 +1072,7 @@ export default function Scanner() {
         const validated = validateInputs()
         if (!validated) return
         const scanScopeKey = validated.scopeKey
-        const scanGatewayIp = validated.gatewayIp || net.gateway || null
+        const scanGatewayIp = validated.gatewayIp || underlayGateway || null
         const scanSegments = validated.segments
         if (scopeMode === 'manual') setBaseIP(validated.baseIP)
         // Clear newDeviceKeys at the start of every scan so devices
@@ -1076,6 +1088,9 @@ export default function Scanner() {
             segments: scanSegments,
         })
         setSelected(null); setDetailData(null); setNewOnly(false)
+        let sessionCompleted = false
+
+        try {
 
         // We still want to know whether this is the user's first-ever scan
         // of this subnet — if so, we skip "new device" notifications to avoid
@@ -1098,7 +1113,7 @@ export default function Scanner() {
                     safeMode,
                     discoveryMode,
                     gatewayIp: scanGatewayIp,
-                    localIp: selectedNetworkContext?.address || net.localIP || null,
+                    localIp: selectedNetworkContext?.address || underlayLocalIP || null,
                     localMac: selectedNetworkContext?.mac || null,
                     scanId,
                     isLastBatch,
@@ -1119,7 +1134,7 @@ export default function Scanner() {
         // (alive && !mac → ghost). No post-processing needed here.
         const found = foundRaw
 
-        finishScannerSession(scanId)
+        sessionCompleted = finishScannerSession(scanId)
         bridge.historyAdd({ module: 'LAN Scanner', type: 'Scan', detail: validated.cidr || `${scanScopeKey}.0/24`, results: { found: found.length } })
 
         // Derive a stable network identity. Prefer the scanned gateway
@@ -1212,6 +1227,26 @@ export default function Scanner() {
                 notifyNewDevicesIfAllowed(newKeys, found)
             }
         } catch { /* tracking is best-effort */ }
+        } catch (error) {
+            if (scannerRunRef.current !== scanId) return
+            if (sessionCompleted) {
+                // Discovery already reached a valid terminal result. A later
+                // inventory/history enrichment failure must not downgrade a
+                // completed scan or hide the devices the user just found.
+                logBridgeWarning('scanner:post-process', error)
+                return
+            }
+            failScannerSession(scanId)
+            setInputError(error?.message || 'Network scan failed unexpectedly. Please try again.')
+            logBridgeWarning('scanner:scan', error)
+        } finally {
+            // Every current execution leaves the session in a terminal state.
+            // Stale executions are ignored because their id was already
+            // invalidated by Stop, a retry, or a network transition.
+            if (!sessionCompleted && scannerRunRef.current === scanId) {
+                failScannerSession(scanId)
+            }
+        }
     }
 
     function stopScan() {
@@ -1300,9 +1335,9 @@ export default function Scanner() {
         const presenceInput = scanning
             ? buildScanPresenceInput(devices, runDevices, scanOnlySubnet, scanMeta?.segments)
             : buildCompletedPresenceInput(devices, scanOnlySubnet, completedMeta?.segments)
-        const base = mergeScanWithInventory(presenceInput, scanOnlySubnet, newDeviceKeys, { gatewayIp: net.gateway || null })
+        const base = mergeScanWithInventory(presenceInput, scanOnlySubnet, newDeviceKeys, { gatewayIp: underlayGateway || null })
         return base.map(d => enrichForView(d))
-    }, [devices, runDevices, scanning, scanMeta?.segments, completedMeta?.segments, inventory, newDeviceKeys, baseIP, net.gateway, selectedNetworkContext?.cidr, scopeMode])
+    }, [devices, runDevices, scanning, scanMeta?.segments, completedMeta?.segments, inventory, newDeviceKeys, baseIP, underlayGateway, selectedNetworkContext?.cidr, scopeMode])
 
     const visibleDevices = useMemo(() => {
         let pool = mergedDevices

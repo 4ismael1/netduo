@@ -39,6 +39,10 @@ vi.mock('../../lib/electronBridge', () => ({
         wanProbeConfigGet: vi.fn(),
         wanProbeConfigSet: vi.fn(),
         wanProbeRequest: vi.fn(),
+        wanProbeHistoryAdd: vi.fn(),
+        wanProbeHistoryGet: vi.fn(),
+        wanProbeHistoryDelete: vi.fn(),
+        wanProbeHistoryClear: vi.fn(),
         openExternal: vi.fn(() => Promise.resolve({ ok: true })),
     },
 }))
@@ -190,6 +194,10 @@ describe('WanProbe scan flow', () => {
         vi.clearAllMocks()
         resetPersistentSessionsForTests()
         resetOperationsForTests()
+        bridge.wanProbeHistoryAdd.mockResolvedValue([])
+        bridge.wanProbeHistoryGet.mockResolvedValue([])
+        bridge.wanProbeHistoryDelete.mockResolvedValue([])
+        bridge.wanProbeHistoryClear.mockResolvedValue([])
     })
 
     it('sends identical deep port scope to every selected probe', async () => {
@@ -651,5 +659,27 @@ describe('WanProbe scan flow', () => {
         await waitFor(() => expect(screen.getByText('Scan Profile')).toBeInTheDocument())
         expect(screen.queryByText('Probe Reports')).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Clear Results/i })).toBeDisabled()
+    })
+
+    it('persists two intentional scans even when their probes and target are identical', async () => {
+        const probes = [makeProbe(0, 'http://129.153.20.145:9443')]
+        const { startPayloads } = setupWanProbeMocks({
+            probes,
+            mode: 'quick',
+            profile: 'balanced',
+        })
+
+        render(<WanProbe />)
+        await waitFor(() => expect(screen.getByText('1 shown / 1 total')).toBeInTheDocument())
+
+        fireEvent.click(screen.getByRole('button', { name: /Start Multi-Probe Scan/i }))
+        await waitFor(() => expect(bridge.wanProbeHistoryAdd).toHaveBeenCalledTimes(1))
+
+        fireEvent.click(screen.getByRole('button', { name: /New Scan/i }))
+        fireEvent.click(await screen.findByRole('button', { name: /Start Multi-Probe Scan/i }))
+
+        await waitFor(() => expect(startPayloads).toHaveLength(2))
+        await waitFor(() => expect(bridge.wanProbeHistoryAdd).toHaveBeenCalledTimes(2))
+        expect(startPayloads[0]).toEqual(startPayloads[1])
     })
 })

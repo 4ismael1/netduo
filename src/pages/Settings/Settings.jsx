@@ -143,9 +143,13 @@ export default function Settings() {
     }
 
     function openGithub() {
-        bridge.openExternal('https://github.com/4ismael1/netduo').catch(error => {
+        const versionTag = /^\d+\.\d+\.\d+$/.test(appVersion) ? `v${appVersion}` : null
+        const sourceUrl = versionTag
+            ? `https://github.com/4ismael1/netduo/tree/${versionTag}`
+            : 'https://github.com/4ismael1/netduo'
+        bridge.openExternal(sourceUrl).catch(error => {
             logBridgeWarning('settings:open-github', error)
-            window.open('https://github.com/4ismael1/netduo', '_blank', 'noopener,noreferrer')
+            window.open(sourceUrl, '_blank', 'noopener,noreferrer')
         })
     }
 

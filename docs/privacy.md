@@ -46,10 +46,12 @@ NetDuo automatically performs stateless HTTPS lookups for the public IP used by 
 | Service | Host | Activation | What is sent | What is received |
 |---|---|---|---|---|
 | Public IP lookup | `api.ipify.org`, with `icanhazip.com` as fallback | Automatic | Standard HTTPS GET (no payload) | Your public IP address |
-| IP geolocation | `ip-api.com` | Automatic when enabled (default on) | Your public IP as a URL path parameter | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
+| IP geolocation | `ipwho.is` | Automatic when enabled (default on), cached by public IP | Your public IP as a URL path parameter over HTTPS | Country, city, ISP, organization, approximate latitude/longitude, timezone, ASN |
 | MAC vendor lookup | `api.macvendors.com` | Automatic when enabled (default on) | First three bytes of the MAC address (OUI prefix) when the local table has no match | Vendor name |
 
-These are standard, stateless HTTP requests. We send no identifiers, no cookies, no headers beyond a `User-Agent: NetDuo/1.x`. These services are operated by independent third parties and are governed by their own privacy policies.
+These are standard, stateless HTTPS requests. We send no account identifiers, cookies, analytics payloads, or headers beyond a `User-Agent: NetDuo/1.x`. These services are operated by independent third parties and are governed by their own privacy policies.
+
+The application interface does not download fonts, stylesheets, scripts, analytics, or other presentation assets at runtime. Its Space Grotesk and Space Mono fonts are bundled locally with the application.
 
 You can disable geolocation and online vendor lookup at any time. The public-IP request remains part of the Dashboard connection diagnostics; NetDuo does not attach an account identifier, telemetry payload, or analytics token to it.
 

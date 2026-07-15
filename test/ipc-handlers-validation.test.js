@@ -13,13 +13,13 @@ const mainPath = path.join(process.cwd(), 'electron', 'main.js')
 const source = fs.readFileSync(mainPath, 'utf8')
 
 function handlerBody(channel) {
-    const marker = `ipcMain.handle('${channel}'`
-    const start = source.indexOf(marker)
-    if (start < 0) return ''
-    const next = source.indexOf('\nipcMain.handle(', start + marker.length)
-    const nextOn = source.indexOf('\nipcMain.on(', start + marker.length)
-    const candidates = [next, nextOn].filter(i => i > start)
-    const end = candidates.length ? Math.min(...candidates) : source.length
+    const markers = [`trustedIpc.handle('${channel}'`, `ipcMain.handle('${channel}'`]
+    const starts = markers.map(marker => source.indexOf(marker)).filter(index => index >= 0)
+    if (!starts.length) return ''
+    const start = Math.min(...starts)
+    const tail = source.slice(start + 1)
+    const nextOffset = tail.search(/\n(?:trustedIpc|ipcMain)\.(?:handle|on)\(/)
+    const end = nextOffset >= 0 ? start + 1 + nextOffset : source.length
     return source.slice(start, end)
 }
 

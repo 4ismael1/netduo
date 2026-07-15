@@ -25,6 +25,10 @@ const canUseNativeSqlite = (() => {
     }
 })()
 
+if (process.env.NETDUO_REQUIRE_NATIVE_SQLITE_TESTS === '1' && !canUseNativeSqlite) {
+    throw new Error('Native SQLite audit was required, but better-sqlite3 is not built for this Node.js runtime')
+}
+
 function insertInventory(row) {
     db.prepare(`
         INSERT INTO device_inventory

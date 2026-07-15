@@ -74,6 +74,20 @@ export function finishScannerSession(scanId) {
     return true
 }
 
+export function failScannerSession(scanId) {
+    if (scannerRunRef.current !== scanId) return false
+    // Invalidate every callback belonging to the failed sweep while keeping
+    // the last completed device list visible. A retry receives a fresh id.
+    scannerRunRef.current += 1
+    emit({
+        scanning: false,
+        runDevices: [],
+        progress: 0,
+        scanMeta: null,
+    })
+    return true
+}
+
 export function abortScannerSession({ clearDevices = false } = {}) {
     const cancelledScanId = scannerRunRef.current
     scannerRunRef.current += 1

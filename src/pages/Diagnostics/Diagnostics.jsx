@@ -35,29 +35,42 @@ function TraceroutePanel() {
     const [running, setRunning] = useSessionState('diagnostics-traceroute', 'running', false)
     const [done, setDone] = useSessionState('diagnostics-traceroute', 'done', false)
     const [error, setError] = useSessionState('diagnostics-traceroute', 'error', null)
+    const operationTokenRef = getSessionRef('diagnostics-traceroute', 'operationToken', null)
 
     function start() {
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 8.8.8.8 or google.com)'); return }
         setError(null); setHops([]); setDone(false); setRunning(true)
-        beginOperation('diagnostics-traceroute', { path: '/diagnostics', kind: 'route', label: `Tracing route to ${h}` })
+        const operationToken = beginOperation('diagnostics-traceroute', { path: '/diagnostics', kind: 'route', label: `Tracing route to ${h}` })
+        operationTokenRef.current = operationToken
         bridge.startTraceroute(
             h,
-            hop => setHops(prev => {
+            hop => {
+                if (operationTokenRef.current !== operationToken) return
+                setHops(prev => {
                 const updated = [...prev]
                 const idx = updated.findIndex(h => h.hop === hop.hop)
                 if (idx >= 0) updated[idx] = hop; else updated.push(hop)
                 return updated.sort((a, b) => a.hop - b.hop)
-            }),
-            () => { setRunning(false); setDone(true); endOperation('diagnostics-traceroute', 'done', { label: `Traceroute to ${h} completed` }) }
+                })
+            },
+            () => {
+                if (operationTokenRef.current !== operationToken) return
+                operationTokenRef.current = null
+                setRunning(false)
+                setDone(true)
+                endOperation('diagnostics-traceroute', operationToken, 'done', { label: `Traceroute to ${h} completed` })
+            }
         )
     }
 
     function stop() {
         bridge.offTraceroute()
+        const operationToken = operationTokenRef.current
+        operationTokenRef.current = null
         setRunning(false)
         setDone(true)
-        endOperation('diagnostics-traceroute', 'cancelled', { label: 'Traceroute stopped' })
+        if (operationToken) endOperation('diagnostics-traceroute', operationToken, 'cancelled', { label: 'Traceroute stopped' })
     }
 
     function latencyColor(avg) {
@@ -151,6 +164,7 @@ function PingPanel() {
     const [stats, setStats] = useSessionState('diagnostics-ping', 'stats', null)
     const [error, setError] = useSessionState('diagnostics-ping', 'error', null)
     const replyRef = useRef(null)
+    const operationTokenRef = getSessionRef('diagnostics-ping', 'operationToken', null)
 
     useEffect(() => {
         if (replyRef.current) replyRef.current.scrollTop = replyRef.current.scrollHeight
@@ -158,21 +172,29 @@ function PingPanel() {
 
     function stop() {
         bridge.offPingLive()
+        const operationToken = operationTokenRef.current
+        operationTokenRef.current = null
         setRunning(false)
-        endOperation('diagnostics-ping', 'cancelled', { label: 'Live ping stopped' })
+        if (operationToken) endOperation('diagnostics-ping', operationToken, 'cancelled', { label: 'Live ping stopped' })
     }
 
     function start() {
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 1.1.1.1 or google.com)'); return }
         setError(null); setReplies([]); setStats(null); setRunning(true)
-        beginOperation('diagnostics-ping', { path: '/diagnostics', kind: 'ping', label: `Pinging ${h}` })
+        const operationToken = beginOperation('diagnostics-ping', { path: '/diagnostics', kind: 'ping', label: `Pinging ${h}` })
+        operationTokenRef.current = operationToken
         bridge.startPingLive(
             h, count,
-            reply => setReplies(prev => [...prev, reply]),
+            reply => {
+                if (operationTokenRef.current !== operationToken) return
+                setReplies(prev => [...prev, reply])
+            },
             ({ seqNum }) => {
+                if (operationTokenRef.current !== operationToken) return
+                operationTokenRef.current = null
                 setRunning(false)
-                endOperation('diagnostics-ping', 'done', { label: `Ping to ${h} completed` })
+                endOperation('diagnostics-ping', operationToken, 'done', { label: `Ping to ${h} completed` })
                 setReplies(prev => {
                     const times = prev.filter(r => r.time != null).map(r => r.time)
                     if (times.length) {
@@ -266,6 +288,30 @@ function DnsPanel() {
     const [loading, setLoading] = useState({})
     const [ran, setRan] = useState(false)
     const [error, setError] = useState(null)
+    const [networkEpoch] = useSessionState('network-runtime', 'epoch', 0)
+    const runRef = useRef(0)
+    const activeRunRef = useRef(null)
+    const lastEpochRef = useRef(networkEpoch)
+    const hasLookupRef = useRef(false)
+
+    useEffect(() => {
+        if (lastEpochRef.current === networkEpoch) return
+        lastEpochRef.current = networkEpoch
+        runRef.current += 1
+        activeRunRef.current = null
+        if (hasLookupRef.current) {
+            hasLookupRef.current = false
+            setResults({})
+            setLoading({})
+            setRan(false)
+            setError('The network route changed, so the previous DNS results were cleared. Resolve again on the current connection.')
+        }
+    }, [networkEpoch])
+
+    useEffect(() => () => {
+        runRef.current += 1
+        activeRunRef.current = null
+    }, [])
 
     function lookup() {
         const h = normalizeTargetInput(host)
@@ -274,14 +320,26 @@ function DnsPanel() {
         const loadingState = {}
         DNS_TYPES.forEach(t => { loadingState[t] = true })
         setLoading(loadingState)
+        const runId = runRef.current + 1
+        runRef.current = runId
+        activeRunRef.current = { runId, remaining: DNS_TYPES.length }
+        hasLookupRef.current = true
+
+        const commitResult = (type, result) => {
+            if (runRef.current !== runId) return
+            setResults(prev => ({ ...prev, [type]: result }))
+            setLoading(prev => ({ ...prev, [type]: false }))
+            const activeRun = activeRunRef.current
+            if (activeRun?.runId !== runId) return
+            activeRun.remaining -= 1
+            if (activeRun.remaining <= 0) activeRunRef.current = null
+        }
 
         DNS_TYPES.forEach(type => {
             bridge.dnsLookup(h, type).then(res => {
-                setResults(prev => ({ ...prev, [type]: res }))
-                setLoading(prev => ({ ...prev, [type]: false }))
+                commitResult(type, res)
             }).catch(err => {
-                setResults(prev => ({ ...prev, [type]: { type, addresses: [], error: err.message, time: 0 } }))
-                setLoading(prev => ({ ...prev, [type]: false }))
+                commitResult(type, { type, addresses: [], error: err.message, time: 0 })
             })
         })
     }
@@ -381,25 +439,27 @@ function PortScanPanel() {
         setError(null); setResults([]); setLoading(true)
         const control = { id: scanControlRef.current.id + 1, cancelled: false }
         scanControlRef.current = control
-        beginOperation('diagnostics-ports', { path: '/diagnostics', kind: 'ports', label: `Scanning ports ${start}-${end} on ${h}` })
+        control.operationToken = beginOperation('diagnostics-ports', { path: '/diagnostics', kind: 'ports', label: `Scanning ports ${start}-${end} on ${h}` })
         try {
             const r = await bridge.scanPorts(h, start, end)
             if (scanControlRef.current !== control || control.cancelled) return
             setResults(r)
             setLoading(false)
-            endOperation('diagnostics-ports', 'done', { label: `Port scan on ${h} completed` })
+            endOperation('diagnostics-ports', control.operationToken, 'done', { label: `Port scan on ${h} completed` })
         } catch (scanError) {
+            if (scanControlRef.current !== control || control.cancelled) return
             setError(scanError?.message || 'Port scan failed')
             setLoading(false)
-            endOperation('diagnostics-ports', 'error', { label: `Port scan on ${h} failed` })
+            endOperation('diagnostics-ports', control.operationToken, 'error', { label: `Port scan on ${h} failed` })
         }
     }
 
     function stopScan() {
-        scanControlRef.current.cancelled = true
+        const control = scanControlRef.current
+        control.cancelled = true
         bridge.stopPortScan?.()
         setLoading(false)
-        endOperation('diagnostics-ports', 'cancelled', { label: 'Port scan stopped' })
+        if (control.operationToken) endOperation('diagnostics-ports', control.operationToken, 'cancelled', { label: 'Port scan stopped' })
     }
 
     return (
@@ -415,7 +475,7 @@ function PortScanPanel() {
                     <input className="v3-input mono" type="number" value={endP} onChange={e => setEndP(+e.target.value)} style={{ width: 80, paddingLeft: 12 }} min={1} max={65535} />
                 </div>
                 {loading ? (
-                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => { updateOperation('diagnostics-ports', { status: 'cancelling', label: 'Stopping port scan' }); stopScan() }}>
+                    <button className="v3-btn v3-btn-secondary" style={{ color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => { updateOperation('diagnostics-ports', scanControlRef.current.operationToken, { status: 'cancelling', label: 'Stopping port scan' }); stopScan() }}>
                         <XCircle size={16} /> Stop Scan
                     </button>
                 ) : (
@@ -470,18 +530,35 @@ function MtrPanel() {
     const [session, setSession] = useSessionState('diagnostics-mtr', 'session', null)
     const [loading, setLoading] = useSessionState('diagnostics-mtr', 'loading', false)
     const [error, setError] = useSessionState('diagnostics-mtr', 'error', null)
+    const operationTokenRef = getSessionRef('diagnostics-mtr', 'operationToken', null)
 
     function start() {
-        if (session) { bridge.stopMtr(session); setSession(null); endOperation('diagnostics-mtr', 'done', { label: 'Hop monitor stopped' }); return }
+        if (session) {
+            bridge.stopMtr(session)
+            setSession(null)
+            const operationToken = operationTokenRef.current
+            operationTokenRef.current = null
+            if (operationToken) endOperation('diagnostics-mtr', operationToken, 'done', { label: 'Hop monitor stopped' })
+            return
+        }
         const h = normalizeTargetInput(host)
         if (!isValidTarget(h)) { setError('Enter a valid IP or domain (e.g. 8.8.8.8)'); return }
         setError(null); setHops([]); setLoading(true)
-        beginOperation('diagnostics-mtr', { path: '/diagnostics', kind: 'route', label: `Monitoring route to ${h}` })
+        const operationToken = beginOperation('diagnostics-mtr', { path: '/diagnostics', kind: 'route', label: `Monitoring route to ${h}` })
+        operationTokenRef.current = operationToken
         bridge.startMtr(
             h, 1000,
-            initialHops => { setHops(initialHops); setLoading(false) },
-            updatedHops => setHops(updatedHops),
-            sid => setSession(sid)
+            initialHops => {
+                if (operationTokenRef.current !== operationToken) return
+                setHops(initialHops); setLoading(false)
+            },
+            updatedHops => {
+                if (operationTokenRef.current === operationToken) setHops(updatedHops)
+            },
+            sid => {
+                if (operationTokenRef.current === operationToken) setSession(sid)
+                else bridge.stopMtr(sid)
+            }
         )
     }
 
@@ -553,6 +630,30 @@ function PortCheckPanel() {
     const [result, setResult] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
+    const [networkEpoch] = useSessionState('network-runtime', 'epoch', 0)
+    const runRef = useRef(0)
+    const activeRef = useRef(false)
+    const hasResultRef = useRef(false)
+    const lastEpochRef = useRef(networkEpoch)
+
+    useEffect(() => {
+        if (lastEpochRef.current === networkEpoch) return
+        lastEpochRef.current = networkEpoch
+        runRef.current += 1
+        const hadNetworkResult = activeRef.current || hasResultRef.current
+        activeRef.current = false
+        hasResultRef.current = false
+        setLoading(false)
+        setResult(null)
+        if (hadNetworkResult) {
+            setError('The network route changed, so the previous port result was cleared. Check again on the current connection.')
+        }
+    }, [networkEpoch])
+
+    useEffect(() => () => {
+        runRef.current += 1
+        activeRef.current = false
+    }, [])
 
     async function check() {
         const pureHost = normalizeTargetInput(host)
@@ -560,12 +661,21 @@ function PortCheckPanel() {
         if (!isValidTarget(pureHost)) { setError('Enter a valid host or IP'); return }
         if (!portNum || portNum < 1 || portNum > 65535) { setError('Enter a valid port (1-65535)'); return }
         setError(null); setLoading(true); setResult(null)
+        const runId = runRef.current + 1
+        runRef.current = runId
+        activeRef.current = true
+        hasResultRef.current = false
         try {
             const res = await bridge.checkPort(pureHost, portNum, 5000)
+            if (runRef.current !== runId) return
             setResult({ host: pureHost, port: portNum, ...res })
         } catch (err) {
+            if (runRef.current !== runId) return
             setResult({ host: pureHost, port: portNum, open: false, error: err?.message })
         }
+        if (runRef.current !== runId) return
+        activeRef.current = false
+        hasResultRef.current = true
         setLoading(false)
     }
 

@@ -7,9 +7,9 @@
  * schema against actual SQLite files.
  *
  * NOTE on skip behaviour: better-sqlite3 ships with native bindings
- * compiled against Electron's NODE_MODULE_VERSION (143 for Electron 40),
- * not the system Node ABI (137 for Node 24). The IIFE below detects this
- * mismatch and skips the suite. Re-enabling these tests requires
+ * compiled against Electron's NODE_MODULE_VERSION rather than the active
+ * system Node ABI. The IIFE below detects this mismatch and skips the suite
+ * for ordinary local runs. Re-enabling these tests requires
  * rebuilding the binding for system Node:
  *
  *     npm rebuild better-sqlite3 --build-from-source --runtime=node
@@ -40,6 +40,10 @@ const canUseNativeSqlite = (() => {
         return false
     }
 })()
+
+if (process.env.NETDUO_REQUIRE_NATIVE_SQLITE_TESTS === '1' && !canUseNativeSqlite) {
+    throw new Error('Native SQLite audit was required, but better-sqlite3 is not built for this Node.js runtime')
+}
 
 function makeTempDir() {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'netduo-migration-'))

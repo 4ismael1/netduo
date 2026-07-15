@@ -443,20 +443,26 @@ const BENCH_DOMAINS = ['google.com', 'cloudflare.com', 'github.com', 'amazon.com
 function DnsBenchmark() {
     const [running, setRunning] = useSessionState('tools-dns-benchmark', 'running', false)
     const [results, setResults] = useSessionState('tools-dns-benchmark', 'results', null)
+    const [error, setError] = useSessionState('tools-dns-benchmark', 'error', null)
     const runRef = getSessionRef('tools-dns-benchmark', 'run', 0)
+    const operationTokenRef = getSessionRef('tools-dns-benchmark', 'operationToken', null)
 
     const stopBench = useCallback(() => {
         runRef.current += 1
+        const operationToken = operationTokenRef.current
+        operationTokenRef.current = null
         setRunning(false)
-        endOperation('tools-dns-benchmark', 'cancelled', { label: 'DNS benchmark stopped' })
-    }, [runRef, setRunning])
+        if (operationToken) endOperation('tools-dns-benchmark', operationToken, 'cancelled', { label: 'DNS benchmark stopped' })
+    }, [operationTokenRef, runRef, setRunning])
 
     const runBench = useCallback(async () => {
         setRunning(true)
         setResults(null)
+        setError(null)
         const runId = ++runRef.current
         const out = []
-        beginOperation('tools-dns-benchmark', { path: '/tools', kind: 'benchmark', label: 'Benchmarking DNS resolvers', progress: 0 })
+        const operationToken = beginOperation('tools-dns-benchmark', { path: '/tools', kind: 'benchmark', label: 'Benchmarking DNS resolvers', progress: 0 })
+        operationTokenRef.current = operationToken
 
         for (const server of DNS_SERVERS) {
             const times = []
@@ -478,15 +484,16 @@ function DnsBenchmark() {
 
             // Update progressively
             if (runRef.current === runId) setResults([...out])
-            updateOperation('tools-dns-benchmark', { progress: Math.round((out.length / DNS_SERVERS.length) * 100) })
+            updateOperation('tools-dns-benchmark', operationToken, { progress: Math.round((out.length / DNS_SERVERS.length) * 100) })
         }
 
         if (runRef.current === runId) {
+            operationTokenRef.current = null
             setRunning(false)
-            endOperation('tools-dns-benchmark', 'done', { label: 'DNS benchmark completed', progress: 100 })
+            endOperation('tools-dns-benchmark', operationToken, 'done', { label: 'DNS benchmark completed', progress: 100 })
             bridge.historyAdd({ module: 'Tools', type: 'DNS Benchmark', detail: `${DNS_SERVERS.length} resolvers`, results: { servers: out.map(s => ({ label: s.label, avg: s.avg })) } })
         }
-    }, [runRef, setResults, setRunning])
+    }, [operationTokenRef, runRef, setError, setResults, setRunning])
 
     const sorted = results ? [...results].sort((a, b) => (a.avg ?? 9999) - (b.avg ?? 9999)) : null
     const bestAvg = sorted?.[0]?.avg
@@ -504,6 +511,12 @@ function DnsBenchmark() {
                     </button>
                 )}
             </div>
+
+            {error && (
+                <div style={{ color: 'var(--color-danger)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16 }}>
+                    <AlertCircle size={14} />{error}
+                </div>
+            )}
 
             {sorted && (
                 <div style={{ border: '1px solid var(--border-light)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>

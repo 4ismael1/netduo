@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
     Gauge, Play, RotateCcw, ArrowDown, ArrowUp, Clock,
     Waves, Loader2, CheckCircle, Zap, Server, Activity,
@@ -8,6 +8,7 @@ import {
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
 import { deriveProgressMbps, isStalePhaseEvent } from '../../lib/speedMetrics'
+import { useSmoothValue } from '../../lib/useSmoothValue.js'
 import { getSessionRef, useSessionState } from '../../lib/persistentSession.js'
 import { beginOperation, endOperation, updateOperation } from '../../lib/operationRegistry.js'
 import ExportMenu from '../../components/ExportMenu/ExportMenu'
@@ -51,34 +52,6 @@ function getGrade(mbps) {
 }
 
 /* ── Smooth RAF hook (stable loop, no restart on value change) ── */
-function useSmooth(target, lerp = 0.15) {
-    const cur = useRef(0)
-    const tRef = useRef(target)
-    const [v, setV] = useState(0)
-    useEffect(() => {
-        tRef.current = target
-    }, [target])
-    useEffect(() => {
-        let go = true
-        function tick() {
-            if (!go) return
-            const t = tRef.current
-            const d = t - cur.current
-            if (Math.abs(d) < 0.05) {
-                cur.current = t
-            } else {
-                // Proportional step with reasonable cap
-                cur.current += d * lerp
-            }
-            setV(cur.current)
-            requestAnimationFrame(tick)
-        }
-        requestAnimationFrame(tick)
-        return () => { go = false }
-    }, [lerp])
-    return v
-}
-
 /* ══════════════════════════════════
    SPEEDTEST — MAIN
    ══════════════════════════════════ */
@@ -108,6 +81,7 @@ export default function SpeedTest() {
     const cleanupRef = getSessionRef('speed-test', 'cleanup', null)
     const phaseRef = getSessionRef('speed-test', 'phaseRef', 'idle')
     const networkChangedRef = getSessionRef('speed-test', 'networkChanged', false)
+    const operationTokenRef = getSessionRef('speed-test', 'operationToken', null)
 
     // Server selector state. Hydrate synchronously from the module-
     // level cache so re-entering the SpeedTest route paints with the
@@ -137,9 +111,14 @@ export default function SpeedTest() {
         })
     }, [setHistory])
 
-    const onProgress = useCallback((d) => {
+    const onProgress = useCallback((d, operationToken) => {
+        if (operationTokenRef.current !== operationToken) return
         const p = d?.phase
         if (!p) return
+        // Once a progress stream reaches a terminal phase, any queued event
+        // from that same native stream is stale even if its nominal phase
+        // order would otherwise look newer (for example done -> error).
+        if (phaseRef.current === 'done' || phaseRef.current === 'error') return
         if (isStalePhaseEvent(phaseRef.current, p)) return
 
         const progressVal = Math.max(0, Math.min(100, Math.round(Number(d.progress) || 0)))
@@ -183,7 +162,7 @@ export default function SpeedTest() {
             setLiveSpeed(displayMbps)
             setAvgSpeed(displayMbps)
             setProgress(progressVal)
-            updateOperation('speed-test', { progress: progressVal, label: 'Testing download speed' })
+            updateOperation('speed-test', operationToken, { progress: progressVal, label: 'Testing download speed' })
             return
         }
         if (p === 'download-done') {
@@ -210,7 +189,7 @@ export default function SpeedTest() {
             setLiveSpeed(displayMbps)
             setAvgSpeed(displayMbps)
             setProgress(progressVal)
-            updateOperation('speed-test', { progress: progressVal, label: 'Testing upload speed' })
+            updateOperation('speed-test', operationToken, { progress: progressVal, label: 'Testing upload speed' })
             return
         }
         if (p === 'upload-done') {
@@ -226,7 +205,7 @@ export default function SpeedTest() {
             phaseRef.current = 'done'
             setPhase('done')
             setProgress(100)
-            endOperation('speed-test', 'done', { label: 'Speed test completed', progress: 100 })
+            endOperation('speed-test', operationToken, 'done', { label: 'Speed test completed', progress: 100 })
             if (d.result) {
                 setDlSpeed(d.result.download)
                 setUlSpeed(d.result.upload)
@@ -243,7 +222,8 @@ export default function SpeedTest() {
                 setPhase('error')
                 setCancelling(false)
                 setError('The connection changed during the test. Run it again on the current network.')
-                endOperation('speed-test', 'error', { label: 'Speed test stopped because the network changed' })
+                endOperation('speed-test', operationToken, 'error', { label: 'Speed test stopped because the network changed' })
+                operationTokenRef.current = null
                 return
             }
             phaseRef.current = 'idle'
@@ -254,16 +234,19 @@ export default function SpeedTest() {
             setLatency(null); setJitter(null)
             setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
             setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
-            endOperation('speed-test', 'cancelled', { label: 'Speed test cancelled' })
+            endOperation('speed-test', operationToken, 'cancelled', { label: 'Speed test cancelled' })
+            operationTokenRef.current = null
             return
         }
         if (p === 'error') {
             phaseRef.current = 'error'
             setPhase('error')
+            setCancelling(false)
             setError(d.message || 'Failed')
-            endOperation('speed-test', 'error', { label: 'Speed test failed' })
+            endOperation('speed-test', operationToken, 'error', { label: 'Speed test failed' })
+            operationTokenRef.current = null
         }
-    }, [networkChangedRef, phaseRef, setAvgSpeed, setCancelling, setDlSpeed, setError, setJitter, setLatency, setLiveSpeed, setPhase, setProgress, setServer, setTestInfo, setUlSpeed])
+    }, [networkChangedRef, operationTokenRef, phaseRef, setAvgSpeed, setCancelling, setDlSpeed, setError, setJitter, setLatency, setLiveSpeed, setPhase, setProgress, setServer, setTestInfo, setUlSpeed])
 
     async function runTest() {
         // Clean up any previous listener first
@@ -276,20 +259,37 @@ export default function SpeedTest() {
         setPhase('init'); setError(null); setServer(null); setCancelling(false)
         setLatency(null); setJitter(null); setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
         setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
-        beginOperation('speed-test', {
+        const operationToken = beginOperation('speed-test', {
             path: '/speedtest',
             kind: 'speed',
             label: 'Preparing speed test',
             progress: 0,
         })
+        operationTokenRef.current = operationToken
 
-        const unsub = bridge.onSpeedProgress(onProgress)
+        const unsub = bridge.onSpeedProgress(event => onProgress(event, operationToken))
         cleanupRef.current = unsub
         try {
             const r = await bridge.speedTestFull(selectedServerId)
+            if (operationTokenRef.current !== operationToken) return
             // Only apply result if listener hasn't already pushed us to 'done'
-            if (r?.error === 'cancelled') { /* cancellation handled via 'cancelled' progress event */ }
-            else if (r?.error) { phaseRef.current = 'error'; setError('Speed test failed — check your connection.'); setPhase('error') }
+            if (r?.error === 'cancelled') {
+                phaseRef.current = 'idle'
+                setPhase('idle')
+                setCancelling(false)
+                setError(null)
+                setServer(null)
+                setLatency(null); setJitter(null)
+                setLiveSpeed(0); setAvgSpeed(0); setProgress(0)
+                setDlSpeed(null); setUlSpeed(null); setTestInfo(null)
+                endOperation('speed-test', operationToken, 'cancelled', { label: 'Speed test cancelled' })
+            }
+            else if (r?.error) {
+                phaseRef.current = 'error'
+                setError('Speed test failed — check your connection.')
+                setPhase('error')
+                endOperation('speed-test', operationToken, 'error', { label: 'Speed test failed' })
+            }
             else if (r) {
                 phaseRef.current = 'done'
                 setPhase('done')
@@ -299,7 +299,7 @@ export default function SpeedTest() {
                 setJitter(prev => prev ?? r.jitter)
                 setServer(prev => prev ?? r.server)
                 setProgress(100)
-                endOperation('speed-test', 'done', { label: 'Speed test completed', progress: 100 })
+                endOperation('speed-test', operationToken, 'done', { label: 'Speed test completed', progress: 100 })
                 const h = {
                     download: r.download, upload: r.upload, latency: r.latency, jitter: r.jitter,
                     server: r.server?.name || selectedServerId,
@@ -312,19 +312,22 @@ export default function SpeedTest() {
                     logBridgeWarning('speedtest:history-add', error)
                     setHistory(prev => [h, ...prev].slice(0, 50))
                 })
-                bridge.historyAdd({ module: 'Speed Test', type: 'Full Test', detail: `↓${r.download} ↑${r.upload} Mbps`, results: h })
             }
         } catch (error) {
+            if (operationTokenRef.current !== operationToken) return
             logBridgeWarning('speedtest:run', error)
             phaseRef.current = 'error'
             setError('An error occurred.')
             setPhase('error')
-            endOperation('speed-test', 'error', { label: 'Speed test failed' })
+            endOperation('speed-test', operationToken, 'error', { label: 'Speed test failed' })
         }
         finally {
             if (typeof unsub === 'function') unsub()
-            cleanupRef.current = null
-            setCancelling(false)
+            if (cleanupRef.current === unsub) cleanupRef.current = null
+            if (operationTokenRef.current === operationToken) {
+                operationTokenRef.current = null
+                setCancelling(false)
+            }
         }
     }
 
@@ -464,7 +467,7 @@ export default function SpeedTest() {
                                 <button className="st-btn st-btn-testing" disabled>
                                     <Loader2 size={16} className="st-spin" />{cancelling ? 'Cancelling…' : phaseText(phase)}
                                 </button>
-                                <button className="st-btn-icon" onClick={() => { setCancelling(true); updateOperation('speed-test', { status: 'cancelling', label: 'Cancelling speed test' }); bridge.stopSpeedTest?.() }} disabled={cancelling} title="Cancel test" style={{ color: 'var(--color-danger)' }}>
+                                <button className="st-btn-icon" onClick={() => { setCancelling(true); updateOperation('speed-test', operationTokenRef.current, { status: 'cancelling', label: 'Cancelling speed test' }); bridge.stopSpeedTest?.() }} disabled={cancelling} title="Cancel test" style={{ color: 'var(--color-danger)' }}>
                                     <XCircle size={14} />
                                 </button>
                             </>
@@ -624,7 +627,7 @@ function StatCard({ icon, label, val, live, unit, color, active, small }) {
    Like a real car speedometer
    ══════════════════════════════════ */
 function Speedometer({ value, phase, isDl, isUl, isDone, running, avgSpeed }) {
-    const smooth = useSmooth(value, 0.13)
+    const smooth = useSmoothValue(value, 0.13)
     const gaugeMax = gaugeMaxFor(smooth, value, avgSpeed)
     const pct = Math.min(1, Math.max(0, smooth / gaugeMax))
 

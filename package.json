@@ -1,17 +1,25 @@
 {
   "name": "netduo",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Network diagnostics, LAN discovery and connection monitoring for Windows.",
   "private": true,
   "author": "Ismael Paulino",
   "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10.9.0"
+  },
+  "packageManager": "npm@11.13.0",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite --port 5173\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
-    "electron:build": "vite build && electron-builder",
+    "clean:electron-output": "node scripts/clean-electron-output.js",
+    "rebuild:electron-native": "node scripts/rebuild-electron-native.js",
+    "verify:electron-native": "electron scripts/verify-electron-native.js",
+    "electron:build": "npm run clean:electron-output && npm run rebuild:electron-native && npm run verify:electron-native && vite build && electron-builder",
     "appx:assets": "node scripts/generate-appx-assets.js",
-    "appx:build": "npm run appx:assets && vite build && electron-builder --win appx --x64",
+    "appx:build": "npm run clean:electron-output && npm run appx:assets && npm run rebuild:electron-native && npm run verify:electron-native && vite build && electron-builder --win appx --x64",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,15 +31,10 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
-    "framer-motion": "^12.34.3",
-    "lucide-react": "^0.575.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-router-dom": "^7.18.1",
-    "recharts": "^3.7.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "4.2.0",
     "@eslint/js": "^9.39.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -40,13 +43,19 @@
     "@vitejs/plugin-react": "^5.1.1",
     "@vitest/coverage-v8": "^4.1.10",
     "concurrently": "^9.2.3",
-    "electron": "^40.10.6",
+    "electron": "^42.7.0",
     "electron-builder": "^26.15.3",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
+    "framer-motion": "^12.34.3",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
+    "lucide-react": "^0.575.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.18.1",
+    "recharts": "^3.7.0",
     "sharp": "^0.34.5",
     "vite": "^7.3.6",
     "vitest": "^4.1.10",
@@ -59,9 +68,33 @@
     "directories": {
       "output": "dist-electron"
     },
+    "electronLanguages": [
+      "en-US",
+      "es"
+    ],
     "files": [
       "dist/**",
-      "electron/**"
+      "electron/**",
+      "!electron/**/*.test.js",
+      "!node_modules/better-sqlite3/deps/**",
+      "!node_modules/better-sqlite3/src/**"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICE",
+        "to": "NOTICE"
+      },
+      {
+        "from": "public/fonts",
+        "to": "THIRD-PARTY-LICENSES",
+        "filter": [
+          "OFL-*.txt"
+        ]
+      }
     ],
     "win": {
       "target": [

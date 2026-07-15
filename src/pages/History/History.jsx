@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { History as HistoryIcon, Trash2, RefreshCw, Clock, Activity, Gauge, Radar, Wrench, Network, ChevronLeft, ChevronRight } from 'lucide-react'
 import bridge from '../../lib/electronBridge'
 import { logBridgeWarning } from '../../lib/devLog.js'
+import { normalizeSpecializedHistory } from './historyNormalization.js'
 
 const MODULE_META = {
     Dashboard: { color: 'var(--color-accent)', Icon: Activity },
@@ -16,38 +17,6 @@ const MODULE_META = {
 }
 
 const PER_PAGE = 10
-
-function normalizeSpecializedHistory({ general, speed, lan, wan }) {
-    const rows = [...(general || []).map(item => ({ ...item, id: `general-${item.id}` }))]
-    for (const item of speed || []) {
-        rows.push({
-            id: `speed-${item.id}`,
-            timestamp: item.timestamp,
-            module: 'Speed Test',
-            type: 'Saved Result',
-            detail: `↓${item.download ?? '-'} ↑${item.upload ?? '-'} Mbps · ${item.latency ?? '-'} ms`,
-        })
-    }
-    for (const item of lan || []) {
-        rows.push({
-            id: `lan-${item.id}`,
-            timestamp: item.timestamp,
-            module: 'LAN Check',
-            type: String(item.profile || 'standard').toUpperCase(),
-            detail: `${item.scope || '-'} · risk ${item.risk_score ?? item.report?.summary?.riskScore ?? 0}`,
-        })
-    }
-    for (const item of wan || []) {
-        rows.push({
-            id: `wan-${item.id}`,
-            timestamp: item.timestamp,
-            module: 'WAN Check',
-            type: String(item.mode || item.report?.mode || 'scan').toUpperCase(),
-            detail: `${item.target || item.report?.target || '-'} · risk ${item.risk_score ?? item.report?.summary?.riskScore ?? 0}`,
-        })
-    }
-    return rows.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
-}
 
 async function loadUnifiedHistory() {
     const [general, speed, lan, wan] = await Promise.all([

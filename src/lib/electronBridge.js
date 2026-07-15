@@ -14,6 +14,27 @@ function mockInterfaces() {
     ]
 }
 
+function mockNetworkSnapshot() {
+    const interfaces = mockInterfaces()
+    const active = {
+        address: '192.168.1.105', prefixLength: 24, netmask: '255.255.255.0',
+        networkAddress: '192.168.1.0', broadcastAddress: '192.168.1.255',
+        firstHost: '192.168.1.1', lastHost: '192.168.1.254', hostCount: 254,
+        cidr: '192.168.1.0/24', gateway: '192.168.1.1', interfaceName: 'Ethernet',
+        mac: 'a4:83:e7:1c:22:fa', source: 'mock',
+    }
+    return {
+        revision: 1, generation: 0, phase: 'ready', coreStatus: 'ready', enrichmentStatus: 'ready',
+        linkState: 'connected', updatedAt: Date.now(), reason: 'mock', interfaces,
+        networkContext: active, networkContexts: [active],
+        wifi: { connected: true, ssid: 'HomeNetwork_5G', signal: '78%', bssid: 'c4:e9:84:1c:22:fa', channel: '6', band: '802.11ac (5 GHz)', speed: '300 Mbps' },
+        dns: ['8.8.8.8', '8.8.4.4'],
+        vpnStatus: { active: false, source: 'mock', tunnel: null, details: { defaultRouteViaTunnel: false, routeCount: 0 } },
+        sysInfo: { hostname: 'DESKTOP-NETDUO', platform: 'win32', arch: 'x64', uptime: 86400 * 3 + 7200, cpus: 8, cpuModel: 'Intel Core i7-12700H', totalmem: 16 * 1e9, freemem: 6.2 * 1e9 },
+        errors: [],
+    }
+}
+
 function mockPingResult(host) {
     const times = Array.from({ length: 4 }, () => rndInt(12, 80))
     return {
@@ -106,6 +127,9 @@ const bridge = {
     minimize: () => API?.minimize(),
     maximize: () => API?.maximize(),
     close: () => API?.close(),
+    onWindowVisibilityChanged: callback => API?.onWindowVisibilityChanged
+        ? API.onWindowVisibilityChanged(callback)
+        : () => {},
     openExternal: (url) => {
         if (API?.openExternal) return API.openExternal(url)
         try {
@@ -117,6 +141,8 @@ const bridge = {
     },
 
     // Network info
+    getNetworkSnapshot: () => API?.getNetworkSnapshot ? API.getNetworkSnapshot() : Promise.resolve(mockNetworkSnapshot()),
+    refreshNetworkSnapshot: () => API?.refreshNetworkSnapshot ? API.refreshNetworkSnapshot() : Promise.resolve(mockNetworkSnapshot()),
     getNetworkInterfaces: () => API ? API.getNetworkInterfaces() : Promise.resolve(mockInterfaces()),
     getNetworkContext: () => API?.getNetworkContext
         ? API.getNetworkContext()
@@ -167,7 +193,7 @@ const bridge = {
 
     // Network change events
     onNetworkChanged: (cb) => API?.onNetworkChanged?.(cb) || (() => {}),
-    onNetworkSignal: (cb) => API?.onNetworkSignal?.(cb) || (() => {}),
+    onNetworkSnapshot: (cb) => API?.onNetworkSnapshot?.(cb) || (() => {}),
     offNetworkEvents: () => API?.offNetworkEvents?.(),
 
     // Ping
@@ -270,6 +296,7 @@ const bridge = {
                 { hop: 3, ip: '72.14.192.1', sent: 0, lost: 0, times: [], min: Infinity, max: 0, avg: null, loss: '0' },
                 { hop: 4, ip: host, sent: 0, lost: 0, times: [], min: Infinity, max: 0, avg: null, loss: '0' },
             ]
+            const accumulators = new Map(mockHops.map(hop => [hop.hop, { received: 0, total: 0 }]))
             const sessionId = `mock-${Date.now()}`
             setTimeout(() => { onSession(sessionId); onHops([...mockHops]) }, 200)
             let running = true
@@ -282,10 +309,15 @@ const bridge = {
                     const time = timeout ? null : rnd(h.hop * 3 + 1, h.hop * 10 + 20)
                     h.sent++
                     if (time == null) { h.lost++ } else {
-                        h.times.push(time)
+                        const accumulator = accumulators.get(h.hop)
+                        accumulator.received++
+                        accumulator.total += time
+                        // The UI only needs the latest point. Aggregate counters keep
+                        // the long-running average exact without retaining history.
+                        h.times = [time]
                         if (time < h.min) h.min = time
                         if (time > h.max) h.max = time
-                        h.avg = (h.times.reduce((a, b) => a + b, 0) / h.times.length).toFixed(1)
+                        h.avg = (accumulator.total / accumulator.received).toFixed(1)
                     }
                     h.loss = ((h.lost / h.sent) * 100).toFixed(0)
                 })

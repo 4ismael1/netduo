@@ -11,8 +11,11 @@ import bridge from '../../lib/electronBridge'
 import useNetworkStatus from '../../lib/useNetworkStatus.jsx'
 import { canProbeGateway } from '../../lib/gatewayProbe'
 import { DEFAULT_POLL_INTERVAL_SECONDS, normalizePollIntervalMs } from '../../lib/polling.js'
+import { measureProbeRound } from '../../lib/probeRound.js'
 import { persistPublicIpVisible, readPublicIpVisible } from '../../lib/publicIpPrivacy.js'
+import useAppVisibility from '../../lib/useAppVisibility.js'
 import DashboardSkeleton from './DashboardSkeleton.jsx'
+import { appendDashboardChartSample } from './presentationSeries.js'
 import './Dashboard.css'
 
 const MAX_PTS = 30
@@ -26,16 +29,49 @@ const GEN_COLORS = { 7: '#a855f7', 6: '#3b82f6', 5: '#10b981', 4: '#f59e0b' }
 const healthConfig = {
     good:    { Icon: CheckCircle2,  label: 'Excellent',   sub: 'Low latency - stable connection',   pill: 'Connected' },
     warning: { Icon: AlertTriangle, label: 'Degraded',    sub: 'Elevated latency detected',        pill: 'Degraded' },
-    bad:     { Icon: XCircle,       label: 'Poor',        sub: 'High latency or packet loss',      pill: 'Offline' },
+    bad:     { Icon: AlertTriangle, label: 'Poor',        sub: 'High latency or packet loss',      pill: 'Poor' },
+    offline: { Icon: XCircle,       label: 'Offline',     sub: 'No active local network link',      pill: 'Disconnected' },
     unknown: { Icon: AlertTriangle, label: 'Unverified',  sub: 'External probes did not reply; ICMP may be blocked', pill: 'Check' },
-    loading: { Icon: Loader2,       label: 'Connecting...', sub: 'Gathering network data',          pill: 'Loading' },
+    loading: { Icon: Loader2,       label: 'Detecting...', sub: 'Verifying internet reachability', pill: 'Checking' },
 }
 
-/* Module-level ping state so it persists across navigations */
-let _pingCache = null
-let _pingInterval = null
-let _signalHistory = []
+/* Session-only telemetry persists across navigation, but never across networks. */
+const _pingCacheByEpoch = new Map()
+const _signalHistoryByUnderlay = new Map()
+const MAX_CACHED_NETWORK_KEYS = 4
 const MAX_SIGNAL_PTS = 60
+
+function normalizedEpoch(value) {
+    const epoch = Number(value)
+    return Number.isInteger(epoch) && epoch >= 0 ? epoch : 0
+}
+
+function normalizedUnderlayIdentity(value, routeEpoch) {
+    const identity = typeof value === 'string' ? value.trim() : ''
+    // Old/mock snapshots may not expose an underlay identity. Keeping the
+    // former route-epoch behaviour in that compatibility case is safer than
+    // allowing unrelated physical links to share one anonymous history.
+    return identity || `route:${routeEpoch}`
+}
+
+function emptyPingState() {
+    return {
+        pingData: Object.fromEntries(HOSTS.map(host => [host, []])),
+        pingLatest: {},
+        gwPing: null,
+        gwPingState: 'idle',
+    }
+}
+
+function boundedSet(map, key, value) {
+    map.delete(key)
+    map.set(key, value)
+    while (map.size > MAX_CACHED_NETWORK_KEYS) map.delete(map.keys().next().value)
+}
+
+function cachedPingState(epoch) {
+    return _pingCacheByEpoch.get(epoch) || emptyPingState()
+}
 
 /** Convert "76%" to approximate dBm */
 function pctToDbm(sig) {
@@ -74,18 +110,28 @@ function StatTile({ icon, label, value, sub, accent }) {
 export default function Dashboard() {
     const navigate = useNavigate()
     const net = useNetworkStatus()
+    const appVisible = useAppVisibility()
+    const networkEpoch = normalizedEpoch(net.networkEpoch)
+    const underlayIdentityKey = normalizedUnderlayIdentity(net.underlayIdentityKey, networkEpoch)
     const dashRef = useRef(null)
-    const [pingData, setPingData] = useState(_pingCache?.pingData ?? Object.fromEntries(HOSTS.map(h => [h, []])))
-    const [pingLatest, setPingLatest] = useState(_pingCache?.pingLatest ?? {})
-    const [gwPing, setGwPing] = useState(_pingCache?.gwPing ?? null)
-    const [gwPingState, setGwPingState] = useState(_pingCache?.gwPingState ?? 'idle')
-    const [health, setHealth] = useState(net.loading ? 'loading' : 'good')
-    const [signalPts, setSignalPts] = useState(() => [..._signalHistory])
+    const [pingData, setPingData] = useState(() => cachedPingState(networkEpoch).pingData)
+    const [pingLatest, setPingLatest] = useState(() => cachedPingState(networkEpoch).pingLatest)
+    const [gwPing, setGwPing] = useState(() => cachedPingState(networkEpoch).gwPing)
+    const [gwPingState, setGwPingState] = useState(() => cachedPingState(networkEpoch).gwPingState)
+    // Never claim an excellent Internet path before the first external probe.
+    // The core snapshot establishes the local link; probe results establish health.
+    const [health, setHealth] = useState('loading')
+    const [signalPts, setSignalPts] = useState(() => [...(_signalHistoryByUnderlay.get(underlayIdentityKey) || [])])
     const [copiedLocalIP, setCopiedLocalIP] = useState(false)
     const [copiedIP, setCopiedIP] = useState(false)
     const [showPublicIP, setShowPublicIP] = useState(readPublicIpVisible)
     const [showExtraDeviceInfo, setShowExtraDeviceInfo] = useState(false)
     const stateRef = useRef({})
+    const networkEpochRef = useRef(networkEpoch)
+    const underlayIdentityRef = useRef(underlayIdentityKey)
+    const probeGenerationRef = useRef(0)
+    const samplingVisibleRef = useRef(appVisible)
+    const pingTimerRef = useRef(null)
     const [ready, setReady] = useState(!net.loading)
     const [pollMs, setPollMs] = useState(DEFAULT_POLL_INTERVAL_SECONDS * 1000)
     const [latencyThr, setLatencyThr] = useState(150)
@@ -130,131 +176,177 @@ export default function Dashboard() {
 
     const shouldProbeGateway = canProbeGateway(net)
 
+    useEffect(() => {
+        const previous = stateRef.current
+        if (Number.isInteger(previous.epoch) && previous.epoch !== networkEpoch) {
+            boundedSet(_pingCacheByEpoch, previous.epoch, {
+                pingData: previous.pingData,
+                pingLatest: previous.pingLatest,
+                gwPing: previous.gwPing,
+                gwPingState: previous.gwPingState,
+            })
+        }
+
+        networkEpochRef.current = networkEpoch
+        probeGenerationRef.current += 1
+        const cached = cachedPingState(networkEpoch)
+        setPingData(cached.pingData)
+        setPingLatest(cached.pingLatest)
+        setGwPing(cached.gwPing)
+        setGwPingState(cached.gwPingState)
+        setHealth('loading')
+        stateRef.current = { epoch: networkEpoch, ...cached }
+    }, [networkEpoch])
+
+    // Wi-Fi signal belongs to the physical underlay, not to the active route.
+    // A VPN route epoch therefore keeps the existing series, while a genuine
+    // Wi-Fi/Ethernet switch selects a separate bounded history.
+    useEffect(() => {
+        underlayIdentityRef.current = underlayIdentityKey
+        setSignalPts([...(_signalHistoryByUnderlay.get(underlayIdentityKey) || [])])
+    }, [underlayIdentityKey])
+
+    useEffect(() => {
+        probeGenerationRef.current += 1
+        if (net.transitioning) return
+        if (net.isVpn) {
+            setGwPing(null)
+            setGwPingState('vpn')
+        } else if (!net.gateway || !net.connected) {
+            setGwPing(null)
+            setGwPingState('unavailable')
+        } else setGwPingState('probing')
+    }, [net.connected, net.gateway, net.isVpn, net.transitioning, networkEpoch])
+
     // Keep stateRef in sync for caching on unmount
     useEffect(() => {
-        stateRef.current = { pingData, pingLatest, gwPing, gwPingState }
+        stateRef.current = { epoch: networkEpoch, pingData, pingLatest, gwPing, gwPingState }
     })
+
+    useEffect(() => () => {
+        const current = stateRef.current
+        if (!Number.isInteger(current.epoch)) return
+        boundedSet(_pingCacheByEpoch, current.epoch, {
+            pingData: current.pingData,
+            pingLatest: current.pingLatest,
+            gwPing: current.gwPing,
+            gwPingState: current.gwPingState,
+        })
+    }, [])
 
     // Update health when connection state changes
     useEffect(() => {
         if (net.loading) { setHealth('loading'); return }
-        if (!net.connected) { setHealth('bad'); return }
+        if (!net.connected) { setHealth('offline'); return }
+        setHealth(current => current === 'offline' ? 'loading' : current)
     }, [net.loading, net.connected])
 
-    // Sample WiFi signal dBm at the same rate as latency polling
-    const signalRef = useRef(null)
+    // A time series needs samples even when the value is unchanged: repeated
+    // values are what make a stable signal visible instead of an empty chart.
     useEffect(() => {
-        function sampleSignal() {
+        if (!appVisible) return undefined
+        const identity = underlayIdentityKey
+        const sampleSignal = () => {
+            if (!samplingVisibleRef.current || underlayIdentityRef.current !== identity) return
             const dbm = pctToDbm(net.wifi?.signal)
             if (dbm == null) return
-            const next = [..._signalHistory, { t: Date.now(), dbm }].slice(-MAX_SIGNAL_PTS)
-            _signalHistory = next
+            const next = appendDashboardChartSample(
+                _signalHistoryByUnderlay.get(identity) || [],
+                { t: Date.now(), dbm },
+                { valueKey: 'dbm', maxPoints: MAX_SIGNAL_PTS },
+            )
+            boundedSet(_signalHistoryByUnderlay, identity, next)
             setSignalPts(next)
         }
         sampleSignal()
-        signalRef.current = setInterval(sampleSignal, pollMs)
-        return () => clearInterval(signalRef.current)
-    }, [net.wifi?.signal, pollMs])
+        const timer = setInterval(sampleSignal, pollMs)
+        return () => clearInterval(timer)
+    }, [appVisible, net.wifi?.signal, underlayIdentityKey, pollMs])
 
-    // Restart gateway probe when network mode changes
-    useEffect(() => {
-        if (net.isVpn) {
-            setGwPing(null)
-            setGwPingState('vpn')
-            return
-        }
-        if (!net.gateway || !net.connected) {
-            setGwPing(null)
-            setGwPingState('unavailable')
-            return
-        }
-
-        setGwPingState('probing')
-        bridge.pingSingle(net.gateway).then(r => {
-            if (r?.time != null) {
-                setGwPing(r.time)
-                setGwPingState('ok')
-            } else {
-                setGwPing(null)
-                setGwPingState('unreachable')
-            }
-        }).catch(() => {
-            setGwPing(null)
-            setGwPingState('unreachable')
-        })
-    }, [net.connected, net.gateway, net.isVpn])
-
-    /** Single round of pings; seeds 5 initial points on first call so charts render instantly. */
+    // Every configured tick is one coherent round. All external targets and
+    // the gateway start together, then publish atomically with one timestamp.
     const doPingRound = useCallback(async () => {
-        const results = {}
-        await Promise.all(HOSTS.map(async host => {
-            try {
-                const r = await bridge.pingSingle(host)
-                results[host] = r?.time ?? null
-            } catch { results[host] = null }
-        }))
-        // Also ping gateway when no VPN tunnel is active
-        if (shouldProbeGateway) {
-            try {
-                const gr = await bridge.pingSingle(net.gateway)
-                if (gr?.time != null) {
-                    setGwPing(gr.time)
-                    setGwPingState('ok')
-                } else {
-                    setGwPing(null)
-                    setGwPingState('unreachable')
-                }
-            } catch {
-                setGwPing(null)
-                setGwPingState('unreachable')
-            }
+        if (!samplingVisibleRef.current || net.loading || net.transitioning || !net.connected) return
+        const generation = probeGenerationRef.current
+        const roundEpoch = networkEpoch
+        const round = await measureProbeRound({
+            externalTargets: HOSTS,
+            gateway: net.gateway,
+            includeGateway: shouldProbeGateway,
+            ping: target => bridge.pingSingle(target),
+        })
+        if (
+            generation !== probeGenerationRef.current
+            || roundEpoch !== networkEpochRef.current
+            || !samplingVisibleRef.current
+        ) return
+
+        if (round.gatewayMeasured) {
+            setGwPing(round.gateway)
+            setGwPingState(round.gateway == null ? 'unreachable' : 'ok')
         } else {
             setGwPing(null)
             setGwPingState(net.isVpn ? 'vpn' : 'unavailable')
         }
 
-        setPingLatest(results)
-        setPingData(prev => {
-            const now = Date.now()
-            const next = { ...prev }
-            for (const h of HOSTS) {
-                const arr = [...(prev[h] || []), { t: now, ms: results[h] }]
-                next[h] = arr.slice(-MAX_PTS)
-            }
-            return next
-        })
+        setPingLatest(round.external)
+        setPingData(previous => ({
+            ...Object.fromEntries(HOSTS.map(target => [
+                target,
+                appendDashboardChartSample(
+                    previous[target] || [],
+                    { t: round.sampledAt, ms: round.external[target] },
+                    { valueKey: 'ms', maxPoints: MAX_PTS },
+                ),
+            ])),
+        }))
 
-        const vals = Object.values(results).filter(v => v !== null)
-        if (!vals.length) setHealth(net.connected ? 'unknown' : 'bad')
+        const values = Object.values(round.external).filter(Number.isFinite)
+        if (!values.length) setHealth('unknown')
         else {
-            const avg = vals.reduce((a, b) => a + b, 0) / vals.length
-            const warnAt = latencyThr * 0.4    // e.g. 200 * 0.4 = 80ms
+            const avg = values.reduce((sum, current) => sum + current, 0) / values.length
+            const warnAt = latencyThr * 0.4
             setHealth(avg < warnAt ? 'good' : avg < latencyThr ? 'warning' : 'bad')
         }
-    }, [net.connected, net.gateway, net.isVpn, shouldProbeGateway, latencyThr])
+    }, [net.connected, net.gateway, net.isVpn, net.loading, net.transitioning, networkEpoch, shouldProbeGateway, latencyThr])
 
     const startPingLoop = useCallback(() => {
-        if (_pingInterval) clearTimeout(_pingInterval)
+        if (pingTimerRef.current) clearTimeout(pingTimerRef.current)
         let stopped = false
         const tick = async () => {
             await doPingRound()
-            if (!stopped) _pingInterval = setTimeout(tick, pollMs)
+            if (!stopped) pingTimerRef.current = setTimeout(tick, pollMs)
         }
-        tick()
+        // Defer the first tick by one task so React Strict Mode can discard its
+        // probe effect without starting a duplicate real round in development.
+        pingTimerRef.current = setTimeout(tick, 0)
         return () => { stopped = true }
     }, [doPingRound, pollMs])
 
     useEffect(() => {
+        samplingVisibleRef.current = appVisible
+        probeGenerationRef.current += 1
+        if (!appVisible) {
+            if (pingTimerRef.current) clearTimeout(pingTimerRef.current)
+            pingTimerRef.current = null
+            return undefined
+        }
         const stopLoop = startPingLoop()
         return () => {
             stopLoop?.()
-            _pingCache = stateRef.current
-            clearTimeout(_pingInterval)
-            _pingInterval = null
+            clearTimeout(pingTimerRef.current)
+            pingTimerRef.current = null
         }
-    }, [doPingRound, startPingLoop])
+    }, [appVisible, startPingLoop])
 
     const hc = healthConfig[health]
+    const networkUpdating = net.transitioning === true && net.transitionStatus !== 'degraded'
+    const networkDegraded = net.transitionStatus === 'degraded'
+        || (net.presentationStale === true && net.transitioning !== true)
+    const networkStateMessage = networkDegraded ? 'Network data unavailable' : 'Updating network...'
+    const tunnelDataTrusted = !networkUpdating
+        && !networkDegraded
+        && net.overlay?.authoritative !== false
     const linkType = net.linkType || (net.wifi?.ssid ? 'wifi' : (net.connected ? 'other' : 'other'))
     const isWifiLink = linkType === 'wifi'
     const linkLabel = linkType === 'ethernet' ? 'Ethernet' : (isWifiLink ? 'Wi-Fi' : 'Network')
@@ -262,12 +354,19 @@ export default function Dashboard() {
     const bannerBaseLabel = isWifiLink && net.wifi?.ssid
         ? `${net.wifi.ssid} (${net.wifi.signal || '-'})`
         : (net.connected ? `${linkLabel}${net.ifaceName ? ` - ${net.ifaceName}` : ''}` : 'No network connection')
-    const bannerNetworkLabel = net.isVpn ? `${bannerBaseLabel} - VPN active` : bannerBaseLabel
-    const bannerHint = net.connected
+    const bannerNetworkLabel = net.isVpn && !networkUpdating && !networkDegraded ? `${bannerBaseLabel} - VPN active` : bannerBaseLabel
+    const bannerHint = networkUpdating || networkDegraded
+        ? networkStateMessage
+        : net.connected
         ? (net.isVpn ? 'VPN tunnel detected - gateway latency probe paused' : hc.sub)
         : 'Check your Wi-Fi/Ethernet adapter and link status'
-    const vpnTunnelInterface = net.vpnStatus?.tunnel?.interfaceName || net.ifaceName || 'Unknown'
-    const vpnTunnelLocalIp = net.vpnStatus?.tunnel?.localIp || net.localIP || '-'
+    const vpnTunnelInterface = tunnelDataTrusted
+        ? (net.overlay?.tunnel?.interfaceName || net.vpnStatus?.tunnel?.interfaceName || 'Unknown')
+        : (networkDegraded ? 'Unavailable' : 'Updating...')
+    const vpnTunnelLocalIp = tunnelDataTrusted
+        ? (net.overlay?.tunnel?.localIp || net.vpnStatus?.tunnel?.localIp || '-')
+        : '-'
+    const gatewayPending = ['pending', 'loading'].includes(net.enrichmentStatus)
 
     const quickActions = [
         { icon: Radar,       label: 'Network Scan',  desc: 'Discover LAN devices',   path: '/scanner',     color: '#3b82f6' },
@@ -351,9 +450,9 @@ export default function Dashboard() {
                         {net.sysInfo?.hostname || 'Network'} - {net.wifi?.ssid || net.ifaceName || 'Loading...'}
                     </p>
                 </div>
-                <span className={`status-pill ${health}`}>
+                <span className={`status-pill ${networkDegraded ? 'warning' : (networkUpdating ? 'loading' : health)}`}>
                     <span className="status-dot" />
-                    {hc.pill}
+                    {networkDegraded ? 'Unavailable' : (networkUpdating ? 'Updating' : hc.pill)}
                 </span>
             </div>
 
@@ -364,7 +463,7 @@ export default function Dashboard() {
                         <hc.Icon size={22} className={health === 'loading' ? 'spin-icon' : ''} />
                     </div>
                     <div>
-                        <div className="banner-status">{hc.label}</div>
+                        <div className="banner-status">{networkUpdating || networkDegraded ? networkStateMessage : hc.label}</div>
                         <div className="banner-detail">
                             {bannerNetworkLabel}
                             {' - '}{bannerHint}
@@ -372,7 +471,12 @@ export default function Dashboard() {
                     </div>
                 </div>
                 <div className="banner-right">
-                    {net.isVpn ? (
+                    {networkUpdating || networkDegraded ? (
+                        <div className="banner-ping">
+                            <Loader2 size={18} className={networkUpdating ? 'spin-icon' : ''} />
+                            <span className="ping-unit">{networkDegraded ? 'last coherent snapshot retained' : 'coherent refresh in progress'}</span>
+                        </div>
+                    ) : net.isVpn ? (
                         <div className="banner-ping">
                             <span className="ping-val mono">VPN</span>
                             <span className="ping-unit">gateway probe paused</span>
@@ -387,7 +491,7 @@ export default function Dashboard() {
                     ) : (
                         <div className="banner-ping">
                             <span className="ping-val mono">--</span>
-                            <span className="ping-unit">{net.gateway ? 'gateway unavailable' : 'no gateway'}</span>
+                            <span className="ping-unit">{net.gateway ? 'gateway unavailable' : (gatewayPending ? 'detecting gateway' : 'no gateway')}</span>
                         </div>
                     )}
                 </div>
@@ -514,7 +618,7 @@ export default function Dashboard() {
                     </div>
                 </div>
                 <StatTile icon={<Router size={18} />} label="Gateway" value={net.gateway}
-                    sub={net.isVpn ? 'VPN tunnel active' : (isWifiLink ? (net.wifi?.band || null) : (net.ifaceName ? `via ${net.ifaceName}` : null))} accent="#10b981" />
+                    sub={networkUpdating || networkDegraded ? networkStateMessage : (net.isVpn ? 'VPN tunnel active' : (gatewayPending ? 'Detecting route...' : (isWifiLink ? (net.wifi?.band || null) : (net.ifaceName ? `via ${net.ifaceName}` : null))))} accent="#10b981" />
                 <StatTile icon={<Shield size={18} />} label="DNS Server" value={net.dns[0]}
                     sub={net.dns.length > 1 ? `+${net.dns.length - 1} more` : null} accent="#f59e0b" />
             </div>
@@ -533,7 +637,7 @@ export default function Dashboard() {
                 )}
                 {net.connected && net.isVpn && (
                     <span className="detail-chip">
-                        <Shield size={13} />VPN tunnel active
+                        <Shield size={13} />{networkUpdating || networkDegraded ? networkStateMessage : 'VPN tunnel active'}
                     </span>
                 )}
                 {isWifiLink && net.wifi?.wifiGen && (
@@ -563,7 +667,7 @@ export default function Dashboard() {
                     <span className="dash-card-meta">
                         {net.isVpn ? (
                             <span className="signal-badge" data-quality={net.connected ? 'good' : 'weak'}>
-                                Active
+                                {networkUpdating || networkDegraded ? (networkDegraded ? 'Unavailable' : 'Updating') : 'Active'}
                             </span>
                         ) : isWifiLink ? (
                             net.wifi?.signal ? (
@@ -581,10 +685,10 @@ export default function Dashboard() {
                 <div className="signal-chart-wrap">
                     {net.isVpn ? (
                         <div className="link-status-panel">
-                            <div className="link-status-row"><span>Tunnel</span><strong>VPN active</strong></div>
+                            <div className="link-status-row"><span>Tunnel</span><strong>{networkUpdating || networkDegraded ? networkStateMessage : 'VPN active'}</strong></div>
                             <div className="link-status-row"><span>Interface</span><strong>{vpnTunnelInterface}</strong></div>
                             <div className="link-status-row"><span>Tunnel IP</span><strong className="mono">{vpnTunnelLocalIp}</strong></div>
-                            <div className="link-status-row"><span>VPN Public IP</span><strong className="mono">{net.publicIP && net.publicIP !== 'Unavailable' ? net.publicIP : '-'}</strong></div>
+                            <div className="link-status-row"><span>VPN Public IP</span><strong className="mono">{tunnelDataTrusted && net.publicIP && net.publicIP !== 'Unavailable' ? net.publicIP : '-'}</strong></div>
                             <div className="link-status-row"><span>Gateway Probe</span><strong>Paused</strong></div>
                         </div>
                     ) : isWifiLink ? (
@@ -637,7 +741,7 @@ export default function Dashboard() {
                             <div className="link-status-row"><span>Transport</span><strong>{linkLabel}</strong></div>
                             <div className="link-status-row"><span>Interface</span><strong>{net.ifaceName || 'Unknown'}</strong></div>
                             <div className="link-status-row"><span>Local IP</span><strong className="mono">{net.localIP || '-'}</strong></div>
-                            <div className="link-status-row"><span>Gateway</span><strong className="mono">{net.gateway || '-'}</strong></div>
+                            <div className="link-status-row"><span>Gateway</span><strong className="mono">{net.gateway || (gatewayPending ? 'Detecting...' : '-')}</strong></div>
                         </div>
                     )}
                 </div>
@@ -652,7 +756,7 @@ export default function Dashboard() {
                     </div>
                     <span className="dash-card-meta">
                         {health !== 'loading' && <span className={`live-dot ${health}`} />}
-                        every {pollMs / 1000}s - {MAX_PTS} samples
+                        every {pollMs / 1000}s - {MAX_PTS} synchronized samples
                     </span>
                 </div>
                 <div className="chart-grid">

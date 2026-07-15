@@ -13,9 +13,13 @@ describe('privacy-sensitive network lookups', () => {
 
         expect(settings).toMatch(/\[onlineNetworkInfo, setOnlineNetworkInfo\] = useState\(true\)/)
         expect(settings).toMatch(/\[macVendorOnline, setMacVendorOnline\] = useState\(true\)/)
-        expect(networkStatus).toMatch(/onlineNetworkInfoRef = useRef\(true\)/)
-        expect(networkStatus).toContain('Public IP is a core diagnostic value.')
-        expect(networkStatus).toMatch(/onlineNetworkInfoRef\.current && includeGeo/)
+        // Start privacy-sensitive enrichment disabled until persisted config is
+        // known, then preserve the product default (enabled unless explicitly
+        // disabled). Public IP remains a separate core diagnostic request.
+        expect(networkStatus).toMatch(/onlineNetworkInfoRef = useRef\(false\)/)
+        expect(networkStatus).toMatch(/cfg\?\.onlineNetworkInfo !== false/)
+        expect(networkStatus).toMatch(/includeGeo:\s*false/)
+        expect(networkStatus).toMatch(/onlineNetworkInfoRef\.current[\s\S]*request\.includeGeo/)
         expect(main).toContain('https://api.ipify.org?format=json')
         expect(main).toContain('https://icanhazip.com')
         expect(main).toMatch(/onlineAllowed === false/)

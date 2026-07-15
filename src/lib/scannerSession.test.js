@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     abortScannerSession,
     beginScannerSession,
+    failScannerSession,
     finishScannerSession,
     getScannerSessionSnapshot,
     resetScannerSessionForTests,
@@ -57,5 +58,21 @@ describe('scanner session store', () => {
 
         expect(getScannerSessionSnapshot().devices).toEqual(completed)
         expect(getScannerSessionSnapshot().runDevices).toEqual([])
+    })
+
+    it('releases a rejected scan without replacing the last completed result', () => {
+        const completed = [{ ip: '192.168.1.20', alive: true }]
+        setScannerDevices(completed)
+        const scanId = beginScannerSession({ scopeLabel: '192.168.1.0/24' })
+        setScannerRunDevices([{ ip: '192.168.1.10', alive: true }])
+
+        expect(failScannerSession(scanId)).toBe(true)
+        expect(finishScannerSession(scanId)).toBe(false)
+        expect(getScannerSessionSnapshot()).toMatchObject({
+            scanning: false,
+            progress: 0,
+            devices: completed,
+            runDevices: [],
+        })
     })
 })

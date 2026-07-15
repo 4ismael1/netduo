@@ -23,6 +23,11 @@ export default defineConfig({
         // slower.
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // React is needed by the first renderer commit. Keep its runtime
+            // separate so Rollup cannot place it inside the Framer Motion
+            // chunk and accidentally make that lazy-only library an eager
+            // startup dependency.
+            if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react-vendor'
             if (id.includes('recharts')) return 'recharts'
             if (id.includes('victory-vendor')) return 'recharts'
             if (id.includes('d3-')) return 'recharts'

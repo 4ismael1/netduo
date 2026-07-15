@@ -41,6 +41,19 @@ describe('electronBridge.getNetworkInterfaces', () => {
     })
 })
 
+describe('electronBridge.getNetworkSnapshot', () => {
+    it('returns one coherent versioned snapshot with the legacy fields preserved', async () => {
+        const snapshot = await bridge.getNetworkSnapshot()
+        expect(snapshot.coreStatus).toBe('ready')
+        expect(snapshot.linkState).toBe('connected')
+        expect(snapshot.revision).toBeGreaterThan(0)
+        expect(snapshot.interfaces.length).toBeGreaterThan(0)
+        expect(snapshot.networkContext?.address).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
+        expect(snapshot.dns.length).toBeGreaterThan(0)
+        expect(snapshot.sysInfo?.hostname).toBeTruthy()
+    })
+})
+
 // ── getSystemInfo ─────────────────────────────────────────────────────────
 describe('electronBridge.getSystemInfo', () => {
     it('resolves with required system fields', async () => {

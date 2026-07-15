@@ -18,13 +18,13 @@ import { describe, expect, it } from 'vitest'
 const mainSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.js'), 'utf8')
 
 function handlerBody(channel) {
-    const marker = `ipcMain.handle('${channel}'`
-    const start = mainSource.indexOf(marker)
-    if (start < 0) return ''
-    const next = mainSource.indexOf('\nipcMain.handle(', start + marker.length)
-    const nextOn = mainSource.indexOf('\nipcMain.on(', start + marker.length)
-    const ends = [next, nextOn].filter(i => i > start)
-    const end = ends.length ? Math.min(...ends) : mainSource.length
+    const markers = [`trustedIpc.handle('${channel}'`, `ipcMain.handle('${channel}'`]
+    const starts = markers.map(marker => mainSource.indexOf(marker)).filter(index => index >= 0)
+    if (!starts.length) return ''
+    const start = Math.min(...starts)
+    const tail = mainSource.slice(start + 1)
+    const nextOffset = tail.search(/\n(?:trustedIpc|ipcMain)\.(?:handle|on)\(/)
+    const end = nextOffset >= 0 ? start + 1 + nextOffset : mainSource.length
     return mainSource.slice(start, end)
 }
 

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.4.1-3b82f6" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.2-3b82f6" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Electron-0f172a" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-334155" />
   <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-475569" />
@@ -178,8 +178,8 @@ Project layout:
 
 ### Requirements
 
-- Node.js 18+ (20+ recommended)
-- npm
+- Node.js 22.12 or newer
+- npm 10.9 or newer (the repository pins npm 11.13.0 through `packageManager`)
 - Windows recommended (current command integrations are Windows-first)
 
 ### Development

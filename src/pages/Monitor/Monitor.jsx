@@ -60,12 +60,18 @@ export default function Monitor() {
     const intervalRef = getSessionRef('monitor', 'intervalTimer', null)
     const runningRef = getSessionRef('monitor', 'runningRef', false)
     const hostsRef = getSessionRef('monitor', 'hostsRef', hosts)
+    const runRef = getSessionRef('monitor', 'runControl', { id: 0, operationToken: null })
+    const networkEpochRef = getSessionRef('network-runtime', 'epoch', 0)
+    const alertThresholdRef = getSessionRef('monitor', 'alertThresholdRef', alertThreshold)
+    const notificationsEnabledRef = getSessionRef('monitor', 'notificationsEnabledRef', notificationsEnabled)
     const alertedHostsRef = getSessionRef('monitor', 'alertedHosts', new Set())
     const breachStreakRef = getSessionRef('monitor', 'breachStreak', new Map())
     const sessionStartRef = getSessionRef('monitor', 'sessionStart', null)
 
     // Keep ref in sync so the interval callback always sees current hosts
     useEffect(() => { hostsRef.current = hosts }, [hosts, hostsRef])
+    useEffect(() => { alertThresholdRef.current = alertThreshold }, [alertThreshold, alertThresholdRef])
+    useEffect(() => { notificationsEnabledRef.current = notificationsEnabled }, [notificationsEnabled, notificationsEnabledRef])
     useEffect(() => {
         let mounted = true
 
@@ -110,7 +116,7 @@ export default function Monitor() {
     }, [alertedHostsRef, setHosts])
 
     function sendMonitorNotification(host, message) {
-        if (!notificationsEnabled || typeof Notification === 'undefined') return
+        if (!notificationsEnabledRef.current || typeof Notification === 'undefined') return
         if (Notification.permission === 'granted') {
             new Notification('NetDuo latency alert', {
                 body: `${host}: ${message}`,
@@ -130,9 +136,21 @@ export default function Monitor() {
         })
     }
 
-    function startMonitor() {
+    function startMonitor(nextHosts = hostsRef.current, nextInterval = interval) {
+        const previousRun = runRef.current
         runningRef.current = false
         clearTimeout(intervalRef.current)
+        if (previousRun?.operationToken) {
+            endOperation('monitor', previousRun.operationToken, 'cancelled', { label: 'Live monitoring restarted' })
+        }
+
+        const run = {
+            id: (previousRun?.id || 0) + 1,
+            hosts: [...nextHosts],
+            intervalMs: nextInterval,
+            operationToken: null,
+        }
+        runRef.current = run
         runningRef.current = true
         setRunning(true)
         setData([])
@@ -140,23 +158,25 @@ export default function Monitor() {
         alertedHostsRef.current.clear()
         breachStreakRef.current.clear()
         sessionStartRef.current = new Date().toISOString()
-        beginOperation('monitor', {
+        run.operationToken = beginOperation('monitor', {
             path: '/monitor',
             kind: 'monitor',
-            label: `Live monitoring ${hostsRef.current.length} target${hostsRef.current.length === 1 ? '' : 's'}`,
+            label: `Live monitoring ${run.hosts.length} target${run.hosts.length === 1 ? '' : 's'}`,
         })
+        const isCurrentRun = () => runningRef.current && runRef.current === run
         const tick = async () => {
+            const tickEpoch = networkEpochRef.current
             try {
-                const currentHosts = [...hostsRef.current]
-                const rows = await Promise.all(currentHosts.map(async h => {
+                const rows = await Promise.all(run.hosts.map(async h => {
                     const r = await bridge.pingSingle(h)
                     return [h, r?.time ?? null]
                 }))
-                if (!runningRef.current) return
+                if (!isCurrentRun() || networkEpochRef.current !== tickEpoch) return
                 const results = Object.fromEntries(rows)
-                for (const h of hostsRef.current) {
+                for (const h of run.hosts) {
                     const latency = results[h]
-                    const isBreached = latency == null || latency >= alertThreshold
+                    const threshold = alertThresholdRef.current
+                    const isBreached = latency == null || latency >= threshold
                     const wasBreached = alertedHostsRef.current.has(h)
                     const streak = isBreached ? (breachStreakRef.current.get(h) || 0) + 1 : 0
                     breachStreakRef.current.set(h, streak)
@@ -164,7 +184,7 @@ export default function Monitor() {
                         alertedHostsRef.current.add(h)
                         sendMonitorNotification(h, latency == null
                             ? 'failed three consecutive probes.'
-                            : `exceeded ${alertThreshold} ms for three consecutive probes (latest: ${latency} ms).`)
+                            : `exceeded ${threshold} ms for three consecutive probes (latest: ${latency} ms).`)
                     } else if (!isBreached && wasBreached) {
                         alertedHostsRef.current.delete(h)
                     }
@@ -173,7 +193,7 @@ export default function Monitor() {
                 setData(prev => [...prev, { t, ...results }].slice(-MAX_PTS))
                 setStats(prev => {
                     const next = { ...prev }
-                    for (const h of hostsRef.current) {
+                    for (const h of run.hosts) {
                         const old = prev[h] || { min: Infinity, max: -Infinity, total: 0, count: 0, loss: 0 }
                         if (results[h] != null) {
                             next[h] = { min: Math.min(old.min, results[h]), max: Math.max(old.max, results[h]), total: old.total + results[h], count: old.count + 1, loss: old.loss, last: results[h] }
@@ -185,19 +205,24 @@ export default function Monitor() {
                 })
             } catch (e) { console.warn('Monitor tick error:', e) }
             finally {
-                if (runningRef.current) intervalRef.current = setTimeout(tick, interval)
+                if (isCurrentRun()) intervalRef.current = setTimeout(tick, run.intervalMs)
             }
         }
         tick()
     }
 
     function stopMonitor() {
+        const activeRun = runRef.current
         runningRef.current = false
         clearTimeout(intervalRef.current)
+        intervalRef.current = null
+        runRef.current = { id: (activeRun?.id || 0) + 1, operationToken: null }
         alertedHostsRef.current.clear()
         breachStreakRef.current.clear()
         setRunning(false)
-        endOperation('monitor', 'cancelled', { label: 'Live monitoring stopped' })
+        if (activeRun?.operationToken) {
+            endOperation('monitor', activeRun.operationToken, 'cancelled', { label: 'Live monitoring stopped' })
+        }
     }
 
     function addHost() {
@@ -208,26 +233,24 @@ export default function Monitor() {
         if (hosts.length >= 5) { setInputError('Maximum 5 hosts'); return }
 
         setInputError(null)
-        setHosts(p => {
-            const next = [...p, h]
-            bridge.configSet('monitor.settings', { hosts: next, interval }).catch(() => { /* best effort */ })
-            return next
-        })
+        const nextHosts = [...hosts, h]
+        hostsRef.current = nextHosts
+        setHosts(nextHosts)
+        bridge.configSet('monitor.settings', { hosts: nextHosts, interval }).catch(() => { /* best effort */ })
         setNewHost('')
-        if (running) {
-            runningRef.current = false
-            clearTimeout(intervalRef.current)
-            startMonitor()
-        }
+        if (runningRef.current) startMonitor(nextHosts, interval)
     }
 
     function removeHost(h) {
-        setHosts(p => {
-            const next = p.filter(x => x !== h)
-            bridge.configSet('monitor.settings', { hosts: next, interval }).catch(() => { /* best effort */ })
-            return next
-        })
+        const nextHosts = hosts.filter(x => x !== h)
+        hostsRef.current = nextHosts
+        setHosts(nextHosts)
+        bridge.configSet('monitor.settings', { hosts: nextHosts, interval }).catch(() => { /* best effort */ })
         setStats(p => { const n = { ...p }; delete n[h]; return n })
+        if (runningRef.current) {
+            if (nextHosts.length) startMonitor(nextHosts, interval)
+            else stopMonitor()
+        }
     }
 
     return (
@@ -278,6 +301,7 @@ export default function Monitor() {
                             const next = Number(e.target.value)
                             setIntervalMs(next)
                             bridge.configSet('monitor.settings', { hosts, interval: next }).catch(() => { /* best effort */ })
+                            if (runningRef.current) startMonitor(hostsRef.current, next)
                         }}>
                         <option value={1000}>1 sec tick</option>
                         <option value={2000}>2 sec tick</option>
@@ -285,7 +309,7 @@ export default function Monitor() {
                         <option value={10000}>10s tick</option>
                     </select>
                     {!running
-                        ? <button className="v3-btn v3-btn-primary" onClick={startMonitor}><Play size={16} />Start Monitor</button>
+                        ? <button className="v3-btn v3-btn-primary" onClick={() => startMonitor()}><Play size={16} />Start Monitor</button>
                         : <button className="v3-btn" style={{ background: 'rgba(239, 68, 68, 0.1)', color: 'var(--color-danger)', border: '1px solid rgba(239, 68, 68, 0.3)' }} onClick={stopMonitor}><Square size={16} />Stop</button>}
                 </div>
                 {inputError && (

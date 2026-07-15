@@ -1,6 +1,7 @@
-﻿const { app, BrowserWindow, ipcMain, nativeTheme, session, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, nativeTheme, session, shell } = require('electron')
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) app.quit()
 const path = require('path')
-const fs = require('fs')
 const { execFile, spawn } = require('child_process')
 const validators = require('./validators')
 const { filterGhosts } = require('./scanner/ghostFilter')
@@ -24,6 +25,18 @@ const database = require('./database')
 const reports = require('./reports')
 const { normalizeContexts, contextsFromOsInterfaces } = require('./networkContext')
 const { isActiveVpnCandidate } = require('./vpnDetection')
+const { NetworkRuntime, shouldCollectWifiTelemetry } = require('./networkRuntime')
+const { createIpGeoResolver, normalizeIpWhoResponse } = require('./ipGeo')
+const { createGenerationCache, invalidateGenerationCache, readGenerationCache } = require('./generationCache')
+const { fingerprintNetworkInterfaces } = require('./networkFingerprint')
+const { createRotatingLogger } = require('./rotatingLogger')
+const { createTrustedRendererPolicy, createTrustedIpc } = require('./trustedRenderer')
+const {
+    createHopStats,
+    recordHopSample,
+    mapWithConcurrency,
+    publicHopStats,
+} = require('./mtrRuntime')
 
 // Use Electron packaging state instead of NODE_ENV.
 // In installed builds NODE_ENV is often undefined, and relying on it can
@@ -31,6 +44,8 @@ const { isActiveVpnCandidate } = require('./vpnDetection')
 const isDev = !app.isPackaged
 const appIconPath = path.join(__dirname, 'assets', 'icon.ico')
 const startupLogName = 'netduo-startup.log'
+const productionRendererEntryPath = path.resolve(__dirname, '../dist/index.html')
+const devRendererUrl = 'http://localhost:5173/'
 
 // Stability fallback for GPUs/drivers that can cause blank renderer windows.
 app.disableHardwareAcceleration()
@@ -44,15 +59,28 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;')
 }
 
+const startupLogger = createRotatingLogger({
+    resolveFilePath: () => path.join(app.getPath('userData'), startupLogName),
+})
+
 function appendStartupLog(message) {
-    try {
-        const line = `[${new Date().toISOString()}] ${message}\n`
-        const userDataPath = app.getPath('userData')
-        fs.appendFileSync(path.join(userDataPath, startupLogName), line, 'utf8')
-    } catch {
-        // keep silent, logging must never crash startup
-    }
+    startupLogger.log(message)
 }
+
+const trustedRendererPolicy = createTrustedRendererPolicy({
+    isDev,
+    productionEntryPath: productionRendererEntryPath,
+    devServerUrl: devRendererUrl,
+})
+let lastRejectedIpcLogAt = 0
+const trustedIpc = createTrustedIpc(ipcMain, trustedRendererPolicy, {
+    onRejected: ({ channel, source }) => {
+        const now = Date.now()
+        if ((now - lastRejectedIpcLogAt) < 5000) return
+        lastRejectedIpcLogAt = now
+        appendStartupLog(`rejected-ipc channel=${channel} source=${source}`)
+    },
+})
 
 function renderBootErrorHtml(title, details = '') {
     const safeTitle = escapeHtml(title || 'NetDuo startup error')
@@ -154,11 +182,13 @@ function stripControlChars(text) {
 const WINDOWS_NATIVE_SNAPSHOT_TTL_MS = 60000
 const DNS_SERVER_CACHE_TTL_MS = 300000
 const WIFI_SNAPSHOT_TTL_MS = 4000
+const PUBLIC_IP_CACHE_TTL_MS = 5 * 60 * 1000
+const IP_GEO_CACHE_TTL_MS = 6 * 60 * 60 * 1000
 
 let _windowsNativeSnapshotCache = { value: null, ts: 0, pending: null, generation: 0 }
 let _dnsServersCache = { value: null, ts: 0, pending: null, generation: 0 }
-let _wifiSnapshotCache = { value: null, ts: 0, pending: null }
-let _lastInterfaceFingerprint = null
+const _wifiSnapshotCache = createGenerationCache()
+let _publicIpCache = { value: null, ts: 0, pending: null, generation: 0 }
 
 function buildWindowsNativeSnapshotScript() {
     return [
@@ -185,14 +215,7 @@ function buildWindowsNativeSnapshotScript() {
 }
 
 function currentInterfaceFingerprint() {
-    const rows = []
-    for (const [name, addresses] of Object.entries(os.networkInterfaces())) {
-        for (const address of addresses || []) {
-            if (address?.family !== 'IPv4' || address?.internal) continue
-            rows.push(`${name}|${address.address}|${address.netmask || ''}|${address.mac || ''}`)
-        }
-    }
-    return rows.sort().join(';')
+    return fingerprintNetworkInterfaces(os.networkInterfaces(), fastDnsServers())
 }
 
 function invalidateNativeNetworkCaches() {
@@ -206,24 +229,17 @@ function invalidateNativeNetworkCaches() {
     _vpnStatusCache.ts = 0
     _vpnStatusCache.pending = null
     _vpnStatusCache.generation += 1
-}
-
-function observeInterfaceFingerprint() {
-    const next = currentInterfaceFingerprint()
-    if (_lastInterfaceFingerprint == null) {
-        _lastInterfaceFingerprint = next
-        return false
-    }
-    if (_lastInterfaceFingerprint === next) return false
-    _lastInterfaceFingerprint = next
-    invalidateNativeNetworkCaches()
-    return true
+    invalidateGenerationCache(_wifiSnapshotCache)
+    _publicIpCache.value = null
+    _publicIpCache.ts = 0
+    _publicIpCache.generation += 1
 }
 
 async function getWindowsNativeSnapshot() {
     if (process.platform !== 'win32') return null
     const now = Date.now()
-    if (_windowsNativeSnapshotCache.value && (now - _windowsNativeSnapshotCache.ts) < WINDOWS_NATIVE_SNAPSHOT_TTL_MS) {
+    const cacheTtl = _windowsNativeSnapshotCache.value?.error ? 15000 : WINDOWS_NATIVE_SNAPSHOT_TTL_MS
+    if (_windowsNativeSnapshotCache.value && (now - _windowsNativeSnapshotCache.ts) < cacheTtl) {
         return _windowsNativeSnapshotCache.value
     }
     if (_windowsNativeSnapshotCache.pending) return _windowsNativeSnapshotCache.pending
@@ -254,24 +270,6 @@ async function getWindowsNativeSnapshot() {
     } finally {
         if (_windowsNativeSnapshotCache.pending === pending) _windowsNativeSnapshotCache.pending = null
     }
-}
-
-async function getWindowsAdapterHints() {
-    if (process.platform !== 'win32') return {}
-    let parsed
-    try { parsed = await getWindowsNativeSnapshot() } catch { return {} }
-    const rows = asArray(parsed?.adapters)
-    const map = {}
-    for (const row of rows) {
-        const name = String(row?.Name || '').trim()
-        if (!name) continue
-        map[name] = {
-            interfaceDescription: row?.InterfaceDescription || null,
-            status: row?.Status || null,
-            interfaceType: row?.InterfaceType || null,
-        }
-    }
-    return map
 }
 
 const VPN_INTERFACE_RE = /(vpn|openvpn|wireguard|wintun|nordlynx|tailscale|zerotier|hamachi|ppp|ikev2|l2tp|sstp|pptp|utun\d*|tun\d*|tap\d*)/i
@@ -379,6 +377,19 @@ async function detectWindowsVpnStatus() {
             source: 'windows-netstack',
             checkedAt: now,
             error: 'invalid-netstack-json',
+            tunnel: null,
+            details: {
+                defaultRouteViaTunnel: false,
+                routeCount: 0,
+            },
+        }
+    }
+    if (parsed.error) {
+        return {
+            active: false,
+            source: 'windows-netstack',
+            checkedAt: now,
+            error: String(parsed.error),
             tunnel: null,
             details: {
                 defaultRouteViaTunnel: false,
@@ -559,17 +570,54 @@ async function getVpnStatus() {
     return pending
 }
 
-function runProgram(cmd, args = [], timeout = 15000) {
+const nativeProcessMetrics = {
+    starts: 0,
+    active: 0,
+    maxConcurrent: 0,
+    totalDurationMs: 0,
+    outputLimitTerminations: 0,
+    byCommand: {},
+}
+const nativeChildProcesses = new Set()
+const NATIVE_PROCESS_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
+
+function nativeProcessMetricsSnapshot() {
+    return { ...nativeProcessMetrics, byCommand: { ...nativeProcessMetrics.byCommand } }
+}
+
+function stopAllNativeProcesses() {
+    for (const child of [...nativeChildProcesses]) {
+        try { child.kill() } catch { /* child may already be gone */ }
+    }
+    nativeChildProcesses.clear()
+}
+
+function runProgram(cmd, args = [], timeout = 15000, controller = null) {
     return new Promise(resolve => {
+        if (controller?.cancelled) {
+            resolve({ err: new Error(`${cmd} cancelled`), out: '' })
+            return
+        }
+        const startedAt = Date.now()
+        nativeProcessMetrics.starts += 1
+        nativeProcessMetrics.active += 1
+        nativeProcessMetrics.maxConcurrent = Math.max(nativeProcessMetrics.maxConcurrent, nativeProcessMetrics.active)
+        nativeProcessMetrics.byCommand[cmd] = (nativeProcessMetrics.byCommand[cmd] || 0) + 1
         let stdout = ''
         let stderr = ''
         let finished = false
 
         const child = spawn(cmd, args, { shell: false, windowsHide: true })
+        nativeChildProcesses.add(child)
+        controller?.children?.add(child)
         const done = (err) => {
             if (finished) return
             finished = true
             clearTimeout(timer)
+            nativeChildProcesses.delete(child)
+            controller?.children?.delete(child)
+            nativeProcessMetrics.active = Math.max(0, nativeProcessMetrics.active - 1)
+            nativeProcessMetrics.totalDurationMs += Math.max(0, Date.now() - startedAt)
             resolve({ err, out: stdout + stderr })
         }
 
@@ -578,13 +626,31 @@ function runProgram(cmd, args = [], timeout = 15000) {
             done(new Error(`${cmd} timed out`))
         }, timeout)
 
-        if (child.stdout) child.stdout.on('data', data => { stdout += data.toString() })
-        if (child.stderr) child.stderr.on('data', data => { stderr += data.toString() })
+        let outputBytes = 0
+        const appendOutput = (stream, data) => {
+            if (finished) return
+            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data))
+            const remaining = Math.max(0, NATIVE_PROCESS_OUTPUT_LIMIT_BYTES - outputBytes)
+            const accepted = chunk.subarray(0, remaining)
+            outputBytes += accepted.length
+            if (stream === 'stdout') stdout += accepted.toString()
+            else stderr += accepted.toString()
+            if (chunk.length <= remaining) return
+            nativeProcessMetrics.outputLimitTerminations += 1
+            try { child.kill() } catch { /* noop */ }
+            done(new Error(`${cmd} output exceeded ${NATIVE_PROCESS_OUTPUT_LIMIT_BYTES} bytes`))
+        }
+
+        if (child.stdout) child.stdout.on('data', data => appendOutput('stdout', data))
+        if (child.stderr) child.stderr.on('data', data => appendOutput('stderr', data))
         child.on('error', err => done(err))
         child.on('close', code => {
             if (code === 0) done(null)
             else done(new Error(`${cmd} exited with code ${code}`))
         })
+        if (controller?.cancelled) {
+            try { child.kill() } catch { /* noop */ }
+        }
     })
 }
 
@@ -607,6 +673,7 @@ function parseLoss(output, hadError) {
 
 // ─── Window ───────────────────────────────────────────────────────────────
 let mainWin = null
+let quitRequested = false
 
 function createWindow() {
     // Pick the BrowserWindow's native backgroundColor to match the
@@ -692,19 +759,8 @@ function createWindow() {
     // external link, opened in the user's default browser instead. This
     // prevents an attacker from replacing the renderer's origin to slip
     // past contextIsolation boundaries.
-    const isTrustedInternalURL = (rawUrl) => {
-        if (!rawUrl) return false
-        try {
-            const u = new URL(rawUrl)
-            if (u.protocol === 'file:') return true
-            if (isDev && u.protocol === 'http:' && u.hostname === 'localhost') return true
-            return false
-        } catch {
-            return false
-        }
-    }
     win.webContents.on('will-navigate', (event, targetUrl) => {
-        if (isTrustedInternalURL(targetUrl)) return
+        if (trustedRendererPolicy.isTrustedUrl(targetUrl)) return
         event.preventDefault()
         // Forward the click to the OS default browser (validators +
         // shell.openExternal already filter dangerous schemes elsewhere).
@@ -734,9 +790,12 @@ function createWindow() {
     }
 
     if (isDev) {
-        win.loadURL(`http://localhost:5173/?bootTheme=${bootTheme}`)
+        win.loadURL(`${devRendererUrl}?bootTheme=${bootTheme}#/dashboard`)
     } else {
-        win.loadFile(path.join(__dirname, '../dist/index.html'), { query: { bootTheme } })
+        win.loadFile(productionRendererEntryPath, {
+            query: { bootTheme },
+            hash: '/dashboard',
+        })
     }
     win.once('ready-to-show', () => {
         appendStartupLog('ready-to-show')
@@ -745,6 +804,7 @@ function createWindow() {
     win.webContents.on('did-finish-load', () => {
         appendStartupLog('did-finish-load')
         if (!win.isVisible()) win.show()
+        setImmediate(() => publishWindowVisibility(win.isVisible() && !win.isMinimized()))
     })
 
     const onMinimize = () => {
@@ -767,15 +827,59 @@ function createWindow() {
         })
     }
 
-    ipcMain.on('window-minimize', onMinimize)
-    ipcMain.on('window-maximize', onMaximize)
-    ipcMain.on('window-close', onClose)
+    // Wi-Fi signal telemetry is useful while the app is visible, but polling
+    // `netsh` while the window is minimized/hidden is pure background work.
+    // Keep the observer global (so VPN transitions and every route share one
+    // authoritative Wi-Fi state), pause it with the native window lifecycle,
+    // and refresh immediately when the user brings NetDuo back.
+    const publishWindowVisibility = visible => {
+        try {
+            if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+                win.webContents.send('window:visibility', { visible: visible === true })
+            }
+        } catch { /* renderer may be shutting down */ }
+    }
+    const resumeNetworkTelemetry = () => {
+        if (!win.isDestroyed() && win.isVisible() && !win.isMinimized()) {
+            networkRuntime.setTelemetryActive(true)
+            publishWindowVisibility(true)
+        }
+    }
+    const pauseNetworkTelemetry = () => {
+        networkRuntime.setTelemetryActive(false)
+        publishWindowVisibility(false)
+    }
+
+    win.on('show', resumeNetworkTelemetry)
+    win.on('restore', resumeNetworkTelemetry)
+    win.on('minimize', pauseNetworkTelemetry)
+    win.on('hide', pauseNetworkTelemetry)
+
+    trustedIpc.on('window-minimize', onMinimize)
+    trustedIpc.on('window-maximize', onMaximize)
+    trustedIpc.on('window-close', onClose)
 
     win.on('closed', () => {
-        ipcMain.removeListener('window-minimize', onMinimize)
-        ipcMain.removeListener('window-maximize', onMaximize)
-        ipcMain.removeListener('window-close', onClose)
+        pauseNetworkTelemetry()
+        trustedIpc.removeListener('window-minimize', onMinimize)
+        trustedIpc.removeListener('window-maximize', onMaximize)
+        trustedIpc.removeListener('window-close', onClose)
     })
+}
+
+function focusPrimaryWindow() {
+    if (quitRequested) return
+    if (!mainWin || mainWin.isDestroyed()) {
+        if (app.isReady()) createWindow()
+        return
+    }
+    if (mainWin.isMinimized()) mainWin.restore()
+    if (!mainWin.isVisible()) mainWin.show()
+    mainWin.focus()
+}
+
+if (hasSingleInstanceLock) {
+    app.on('second-instance', focusPrimaryWindow)
 }
 function normalizeExternalUrl(rawUrl) {
     const input = String(rawUrl || '').trim()
@@ -789,7 +893,7 @@ function normalizeExternalUrl(rawUrl) {
     }
 }
 
-ipcMain.handle('open-external', async (_, rawUrl) => {
+trustedIpc.handle('open-external', async (_, rawUrl) => {
     const target = normalizeExternalUrl(rawUrl)
     if (!target) return { ok: false, error: 'invalid-url' }
     try {
@@ -799,14 +903,6 @@ ipcMain.handle('open-external', async (_, rawUrl) => {
         return { ok: false, error: error?.message || 'open-failed' }
     }
 })
-
-// -- Network Change Watcher ---------------------------------------
-let _lastSSID = null
-let _lastBSSID = null
-let _lastSignal = null
-let _lastChannel = null
-let _netWatchTimer = null
-let _wifiConnected = null  // true/false/null
 
 async function loadWifiSnapshot() {
     if (process.platform !== 'win32') return null
@@ -882,92 +978,347 @@ async function loadWifiSnapshot() {
 }
 
 async function getWifiSnapshot() {
-    const now = Date.now()
-    if (_wifiSnapshotCache.value && (now - _wifiSnapshotCache.ts) < WIFI_SNAPSHOT_TTL_MS) {
-        return _wifiSnapshotCache.value
-    }
-    if (_wifiSnapshotCache.pending) return _wifiSnapshotCache.pending
-    const pending = loadWifiSnapshot().then(value => {
-        _wifiSnapshotCache.value = value
-        _wifiSnapshotCache.ts = Date.now()
-        return value
-    }).finally(() => {
-        if (_wifiSnapshotCache.pending === pending) _wifiSnapshotCache.pending = null
+    return readGenerationCache(_wifiSnapshotCache, loadWifiSnapshot, {
+        ttlMs: WIFI_SNAPSHOT_TTL_MS,
+        isCacheable: value => value != null,
     })
-    _wifiSnapshotCache.pending = pending
-    return pending
 }
 
-function startNetworkWatcher() {
-    _netWatchTimer = setInterval(async () => {
+function getSystemInfoSnapshot() {
+    return {
+        hostname: os.hostname(),
+        platform: os.platform(),
+        arch: os.arch(),
+        uptime: os.uptime(),
+        cpus: os.cpus().length,
+        cpuModel: os.cpus()[0]?.model || '—',
+        totalmem: os.totalmem(),
+        freemem: os.freemem(),
+    }
+}
+
+function collectInterfaceRows(adapterHints = {}) {
+    const result = []
+    for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+        if (!addrs) continue
+        const hint = adapterHints[name] || {}
+        for (const addr of addrs) {
+            result.push({
+                name,
+                ...addr,
+                interfaceDescription: hint.interfaceDescription || null,
+                interfaceStatus: hint.status || null,
+                interfaceType: hint.interfaceType || null,
+            })
+        }
+    }
+    return result
+}
+
+function fastDnsServers() {
+    try { return dns.getServers() || [] } catch { return [] }
+}
+
+function collectFastNetworkCore() {
+    const contexts = contextsFromOsInterfaces()
+    return {
+        interfaces: collectInterfaceRows(),
+        networkContext: contexts[0] || null,
+        networkContexts: contexts,
+        dns: fastDnsServers(),
+        sysInfo: getSystemInfoSnapshot(),
+    }
+}
+
+const WIFI_INTERFACE_RE = /(wi-?fi|wlan|wireless|802\.11)/i
+const ETHERNET_INTERFACE_RE = /(ethernet|local area connection|lan|eth\d*|enp\d+|eno\d+|realtek|gigabit)/i
+
+function contextProbe(context) {
+    return `${String(context?.interfaceName || '')} ${String(context?.interfaceDescription || '')}`.trim()
+}
+
+function isWifiContext(context, wifi) {
+    if (!context) return false
+    const probe = contextProbe(context).toLowerCase()
+    const wifiAdapter = String(wifi?.adapter || '').trim().toLowerCase()
+    return WIFI_INTERFACE_RE.test(probe) || Boolean(wifiAdapter && probe.includes(wifiAdapter))
+}
+
+function chooseUnderlayContext(contexts, wifi) {
+    const physical = (contexts || []).filter(context => !isVpnTagged(context?.interfaceName, context?.interfaceDescription))
+    if (!physical.length) return null
+    if (wifi?.connected) {
+        const exactWifi = physical.find(context => isWifiContext(context, wifi))
+        if (exactWifi) return exactWifi
+    }
+    return physical.find(context => context?.gateway) || physical[0]
+}
+
+function inferUnderlayType(context, wifiIsUnderlay) {
+    if (wifiIsUnderlay) return 'wifi'
+    const probe = contextProbe(context)
+    if (WIFI_INTERFACE_RE.test(probe)) return 'wifi'
+    if (ETHERNET_INTERFACE_RE.test(probe)) return 'ethernet'
+    return context ? 'other' : 'none'
+}
+
+function buildNetworkLayers(contexts, wifi, vpnStatus, { vpnAuthoritative = true } = {}) {
+    const underlayContext = chooseUnderlayContext(contexts, wifi)
+    const wifiIsUnderlay = Boolean(wifi?.connected && (!underlayContext || isWifiContext(underlayContext, wifi)))
+    const underlayType = inferUnderlayType(underlayContext, wifiIsUnderlay)
+    const vpnActive = vpnStatus?.active === true
+    const authoritativeTunnel = vpnActive && vpnStatus?.tunnel && typeof vpnStatus.tunnel === 'object'
+        ? { ...vpnStatus.tunnel }
+        : null
+    return {
+        underlayContext,
+        underlay: (underlayContext || wifiIsUnderlay) ? {
+            type: underlayType,
+            connected: true,
+            interfaceName: underlayContext?.interfaceName || null,
+            interfaceDescription: underlayContext?.interfaceDescription || wifi?.adapter || null,
+            localIp: underlayContext?.address || null,
+            gateway: underlayContext?.gateway || null,
+            context: underlayContext,
+            wifi: wifiIsUnderlay ? wifi : null,
+        } : null,
+        overlay: {
+            type: 'vpn',
+            active: vpnActive,
+            tunnel: authoritativeTunnel,
+            status: vpnStatus || null,
+            authoritative: vpnAuthoritative,
+        },
+    }
+}
+
+function networkLayerIdentity(layers) {
+    const underlay = layers?.underlay || null
+    const tunnel = layers?.overlay?.active ? layers.overlay.tunnel : null
+    return JSON.stringify([
+        underlay?.type || 'none',
+        String(underlay?.localIp || '').toLowerCase(),
+        String(underlay?.gateway || '').toLowerCase(),
+        String(underlay?.wifi?.bssid || '').toLowerCase(),
+        layers?.overlay?.active === true,
+        String(tunnel?.interfaceName || '').toLowerCase(),
+        String(tunnel?.localIp || '').toLowerCase(),
+    ])
+}
+
+function underlayLayerIdentity(underlay) {
+    return JSON.stringify([
+        underlay?.type || 'none',
+        String(underlay?.localIp || '').toLowerCase(),
+        String(underlay?.gateway || '').toLowerCase(),
+        String(underlay?.wifi?.bssid || '').toLowerCase(),
+        String(underlay?.interfaceName || '').toLowerCase(),
+    ])
+}
+
+function preserveKnownUnderlayRoute(layers, previousUnderlay) {
+    const current = layers?.underlay
+    if (!current || !previousUnderlay || current.gateway) return layers
+    const currentBssid = String(current.wifi?.bssid || '').toLowerCase()
+    const previousBssid = String(previousUnderlay.wifi?.bssid || '').toLowerCase()
+    const sameWifi = Boolean(currentBssid && previousBssid && currentBssid === previousBssid)
+    const sameWiredLink = !currentBssid && !previousBssid
+        && current.type === previousUnderlay.type
+        && String(current.localIp || '') === String(previousUnderlay.localIp || '')
+        && String(current.interfaceName || '').toLowerCase() === String(previousUnderlay.interfaceName || '').toLowerCase()
+    if ((!sameWifi && !sameWiredLink) || !previousUnderlay.gateway) return layers
+
+    const context = current.context
+        ? { ...current.context, gateway: previousUnderlay.gateway }
+        : current.context
+    const underlay = { ...current, gateway: previousUnderlay.gateway, context }
+    return {
+        ...layers,
+        underlay,
+        underlayContext: context || layers.underlayContext,
+    }
+}
+
+async function collectNetworkEnrichment({ generation, reason } = {}) {
+    const errors = []
+    let nativeSnapshot = null
+    if (reason === 'critical-retry' && _windowsNativeSnapshotCache.value?.error) {
+        _windowsNativeSnapshotCache.value = null
+        _windowsNativeSnapshotCache.ts = 0
+        _windowsNativeSnapshotCache.generation += 1
+    }
+    try {
+        nativeSnapshot = await getWindowsNativeSnapshot()
+        if (nativeSnapshot?.error) {
+            errors.push({ source: 'windows-native', code: 'snapshot-failed', message: nativeSnapshot.error })
+        }
+    } catch (error) {
+        errors.push({ source: 'windows-native', code: 'snapshot-failed', message: error?.message || String(error) })
+    }
+
+    // A network change can happen while the native snapshot is running.
+    // Do not launch follow-up OS commands for a generation that the runtime
+    // will discard; the queued refresh will collect the new network once.
+    if (Number.isInteger(generation) && generation !== networkRuntime.generation) return {}
+
+    // VPN classification is derived from this exact route snapshot. Recompute
+    // it without another native process instead of carrying a prior TTL value.
+    _vpnStatusCache.value = null
+    _vpnStatusCache.ts = 0
+    _vpnStatusCache.pending = null
+    _vpnStatusCache.generation += 1
+
+    const hints = {}
+    for (const row of asArray(nativeSnapshot?.adapters)) {
+        const name = String(row?.Name || '').trim()
+        if (!name) continue
+        hints[name] = {
+            interfaceDescription: row?.InterfaceDescription || null,
+            status: row?.Status || null,
+            interfaceType: row?.InterfaceType || null,
+        }
+    }
+
+    const nativeContexts = normalizeContexts(asArray(nativeSnapshot?.contexts), 'windows-default-route')
+    const fallbackContexts = contextsFromOsInterfaces()
+    const contexts = nativeContexts.length
+        ? [...nativeContexts, ...fallbackContexts.filter(item => !nativeContexts.some(native => native.address === item.address))]
+        : fallbackContexts
+
+    // Native collectors are intentionally staged. The PowerShell route snapshot
+    // is the expensive operation; Wi-Fi and DNS run only after it completes so
+    // app startup never creates three competing OS processes at once.
+    const [wifiResult, dnsResult, vpnResult] = await Promise.allSettled([
+        getWifiSnapshot(),
+        getDnsServersCached(),
+        getVpnStatus(),
+    ])
+
+    if (wifiResult.status === 'rejected') errors.push({ source: 'wifi', code: 'read-failed', message: wifiResult.reason?.message || String(wifiResult.reason) })
+    if (dnsResult.status === 'rejected') errors.push({ source: 'dns', code: 'read-failed', message: dnsResult.reason?.message || String(dnsResult.reason) })
+    if (vpnResult.status === 'rejected') errors.push({ source: 'vpn', code: 'read-failed', message: vpnResult.reason?.message || String(vpnResult.reason) })
+
+    const previousSnapshot = networkRuntime.getSnapshot()
+    let wifi = null
+    if (wifiResult.status === 'fulfilled' && wifiResult.value == null) {
+        errors.push({ source: 'wifi', code: 'read-unavailable', message: 'Wi-Fi collector returned no authoritative result' })
+        wifi = previousSnapshot.wifi || null
+    } else if (wifiResult.status === 'fulfilled' && wifiResult.value?.connected !== false) {
+        wifi = wifiResult.value
+    }
+    const vpnRead = vpnResult.status === 'fulfilled' ? vpnResult.value : null
+    const vpnAuthoritative = Boolean(vpnRead && !vpnRead.error)
+    if (vpnRead?.error) errors.push({ source: 'vpn', code: 'read-unavailable', message: String(vpnRead.error) })
+    const vpnStatus = vpnAuthoritative ? vpnRead : (previousSnapshot.vpnStatus || vpnRead)
+    const layers = preserveKnownUnderlayRoute(
+        buildNetworkLayers(contexts, wifi, vpnStatus, { vpnAuthoritative }),
+        previousSnapshot.underlay,
+    )
+    const wifiExpected = previousSnapshot.underlay?.type === 'wifi' || layers.underlay?.type === 'wifi'
+    const wifiAuthoritative = !wifiExpected || (wifiResult.status === 'fulfilled' && wifiResult.value != null)
+    const authoritative = vpnAuthoritative && wifiAuthoritative
+    const orderedContexts = layers.underlayContext
+        ? [
+            layers.underlayContext,
+            ...contexts.filter(context => !(
+                context?.address === layers.underlayContext?.address
+                && context?.interfaceName === layers.underlayContext?.interfaceName
+            )),
+        ]
+        : contexts
+
+    return {
+        interfaces: collectInterfaceRows(hints),
+        networkContext: layers.underlayContext || null,
+        networkContexts: orderedContexts,
+        underlay: layers.underlay,
+        underlayGateway: layers.underlay?.gateway || null,
+        overlay: layers.overlay,
+        identityKey: networkLayerIdentity(layers),
+        underlayIdentityKey: underlayLayerIdentity(layers.underlay),
+        authoritative,
+        wifi,
+        dns: dnsResult.status === 'fulfilled' ? (dnsResult.value || []) : fastDnsServers(),
+        vpnStatus,
+        sysInfo: getSystemInfoSnapshot(),
+        errors,
+    }
+}
+
+const NETWORK_CHANGE_REASONS = new Set([
+    'interface-change',
+    'network-switch',
+    'connected',
+    'disconnected',
+    'vpn-connected',
+    'vpn-disconnected',
+    'network-identity-change',
+])
+let lastNetworkChangedEpochSent = -1
+
+const networkRuntime = new NetworkRuntime({
+    readCore: collectFastNetworkCore,
+    readEnrichment: collectNetworkEnrichment,
+    readFingerprint: currentInterfaceFingerprint,
+    readTelemetry: async ({ generation } = {}) => {
+        const currentSnapshot = networkRuntime.getSnapshot()
+        if (!shouldCollectWifiTelemetry(currentSnapshot)) return null
+        const wifi = await getWifiSnapshot()
+        if (Number.isInteger(generation) && generation !== networkRuntime.generation) return null
+        if (wifi == null) return null
+        const nextWifi = wifi?.connected ? wifi : null
+        const previousWifi = currentSnapshot.wifi
+        const fields = ['ssid', 'bssid', 'signal', 'channel', 'rxSpeed', 'txSpeed']
+        const changed = fields.some(field => (previousWifi?.[field] || null) !== (nextWifi?.[field] || null))
+        const switchedNetwork = Boolean(previousWifi?.bssid && nextWifi?.bssid && previousWifi.bssid !== nextWifi.bssid)
+        const connectionChanged = Boolean(previousWifi) !== Boolean(nextWifi)
+        if (switchedNetwork || connectionChanged) {
+            const reason = switchedNetwork ? 'network-switch' : (nextWifi ? 'connected' : 'disconnected')
+            const transitionKey = `wifi:${String(nextWifi?.bssid || nextWifi?.ssid || (nextWifi ? 'connected' : 'disconnected')).toLowerCase()}`
+            networkRuntime.notifyNetworkChange(reason, { wifi: nextWifi }, { transitionKey })
+            return null
+        }
+        if (!changed) return null
+        const underlay = currentSnapshot.underlay?.type === 'wifi'
+            ? { ...currentSnapshot.underlay, wifi: nextWifi }
+            : currentSnapshot.underlay
+        return { wifi: nextWifi, underlay }
+    },
+    // The BrowserWindow lifecycle enables this observer only while NetDuo is
+    // visible. Restoring the window triggers an immediate telemetry refresh.
+    telemetryAlwaysActive: false,
+    onFingerprintChange: invalidateNativeNetworkCaches,
+    emit: snapshot => {
         if (!mainWin || mainWin.isDestroyed()) return
-        const interfaceChanged = observeInterfaceFingerprint()
-        const snap = await getWifiSnapshot()
-        if (!snap) {
-            if (interfaceChanged) mainWin.webContents.send('network:changed', { event: 'interface-change', wifi: null })
-            return
+        mainWin.webContents.send('network:snapshot', snapshot)
+        const eventEpoch = Number(snapshot.pendingNetworkEpoch ?? snapshot.networkEpoch)
+        if (
+            NETWORK_CHANGE_REASONS.has(snapshot.reason)
+            && Number.isInteger(eventEpoch)
+            && eventEpoch > lastNetworkChangedEpochSent
+        ) {
+            lastNetworkChangedEpochSent = eventEpoch
+            mainWin.webContents.send('network:changed', { event: snapshot.reason, snapshot })
         }
-
-        const nowConnected = snap.connected
-        if (_wifiConnected === null) {
-            _lastSSID = snap.ssid || null
-            _lastBSSID = snap.bssid || null
-            _lastSignal = snap.signal || null
-            _lastChannel = snap.channel || null
-            _wifiConnected = nowConnected
-            return
-        }
-        const ssidChanged = snap.ssid !== _lastSSID
-        const bssidChanged = snap.bssid !== _lastBSSID
-        const channelChanged = snap.channel !== _lastChannel
-        const disconnected = _wifiConnected === true && !nowConnected
-        const reconnected = _wifiConnected === false && nowConnected
-
-        if (disconnected) {
-            invalidateNativeNetworkCaches()
-            mainWin.webContents.send('network:changed', { event: 'disconnected', wifi: null })
-        } else if (reconnected) {
-            invalidateNativeNetworkCaches()
-            mainWin.webContents.send('network:changed', { event: 'connected', wifi: snap })
-        } else if (nowConnected && (ssidChanged || bssidChanged || channelChanged)) {
-            invalidateNativeNetworkCaches()
-            mainWin.webContents.send('network:changed', { event: 'network-switch', wifi: snap })
-        } else if (interfaceChanged) {
-            mainWin.webContents.send('network:changed', { event: 'interface-change', wifi: snap })
-        } else if (nowConnected && snap.signal !== _lastSignal) {
-            mainWin.webContents.send('network:signal', { signal: snap.signal })
-        }
-
-        _lastSSID = snap.ssid || null
-        _lastBSSID = snap.bssid || null
-        _lastSignal = snap.signal || null
-        _lastChannel = snap.channel || null
-        _wifiConnected = nowConnected
-    }, 10000)
-}
-
-function stopNetworkWatcher() {
-    if (_netWatchTimer) { clearInterval(_netWatchTimer); _netWatchTimer = null }
-}
+    },
+    log: (event, details) => {
+        const fields = Object.entries(details || {}).map(([key, value]) => `${key}=${String(value)}`).join(' ')
+        appendStartupLog(`network-runtime event=${event}${fields ? ` ${fields}` : ''}`)
+    },
+})
 
 /**
  * Apply Content-Security-Policy via HTTP response header for the
- * default session. Header-based CSP supersedes any meta-tag CSP and
- * lets us swap policies between dev (Vite needs `unsafe-inline` +
- * `localhost` + websocket for HMR) and production (no localhost, no
- * websocket — only `'self'` with the inline-style allowance that
- * Recharts / Framer Motion legitimately require for animation
- * keyframes injected at runtime).
+ * default session. The header and the early meta policy are both enforced;
+ * this layer removes development origins from packaged builds.
  *
  * Notes:
  *   - `'unsafe-inline'` for `style-src` is intentional: removing it
  *     would break Recharts (inline SVG styles) and the boot-theme
  *     <style> block in index.html. Removing it would need every chart
  *     to migrate to CSS-in-JS with hashed selectors.
- *   - `'unsafe-inline'` for `script-src` covers the boot-theme
- *     <script> in index.html. We keep it scoped to `'self'` plus
- *     inline because the renderer also runs Vite's own runtime which
- *     emits inline initializer fragments.
+ *   - The pre-paint boot code is an external local script, so production
+ *     never needs `unsafe-inline` for scripts.
  *   - `frame-ancestors 'none'` only takes effect via header (meta-tag
  *     CSP ignores this directive).
  */
@@ -975,9 +1326,9 @@ function installContentSecurityPolicy() {
     const cspDev = [
         `default-src 'self'`,
         `script-src 'self' 'unsafe-inline' http://localhost:5173`,
-        `style-src 'self' 'unsafe-inline' http://localhost:5173 https://fonts.googleapis.com`,
+        `style-src 'self' 'unsafe-inline' http://localhost:5173`,
         `img-src 'self' data: blob:`,
-        `font-src 'self' data: https://fonts.gstatic.com`,
+        `font-src 'self' data:`,
         `connect-src 'self' http://localhost:5173 ws://localhost:5173`,
         `object-src 'none'`,
         `base-uri 'self'`,
@@ -985,10 +1336,10 @@ function installContentSecurityPolicy() {
     ].join('; ')
     const cspProd = [
         `default-src 'self'`,
-        `script-src 'self' 'unsafe-inline'`,
-        `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
+        `script-src 'self'`,
+        `style-src 'self' 'unsafe-inline'`,
         `img-src 'self' data: blob:`,
-        `font-src 'self' data: https://fonts.gstatic.com`,
+        `font-src 'self' data:`,
         `connect-src 'self'`,
         `object-src 'none'`,
         `base-uri 'self'`,
@@ -1007,16 +1358,18 @@ function installContentSecurityPolicy() {
     })
 }
 
-app.whenReady().then(() => {
-    appendStartupLog('app.whenReady')
-    database.init(app.getPath('userData'))
-    installContentSecurityPolicy()
-    createWindow()
-    startNetworkWatcher()
-    appendStartupLog('startup complete')
-}).catch(err => {
-    appendStartupLog(`whenReady-error: ${err?.stack || err}`)
-})
+if (hasSingleInstanceLock) {
+    app.whenReady().then(() => {
+        appendStartupLog('app.whenReady')
+        database.init(app.getPath('userData'))
+        installContentSecurityPolicy()
+        networkRuntime.start()
+        createWindow()
+        appendStartupLog('startup complete')
+    }).catch(err => {
+        appendStartupLog(`whenReady-error: ${err?.stack || err}`)
+    })
+}
 
 process.on('uncaughtException', err => {
     appendStartupLog(`uncaughtException: ${err?.stack || err}`)
@@ -1025,75 +1378,85 @@ process.on('uncaughtException', err => {
 process.on('unhandledRejection', reason => {
     appendStartupLog(`unhandledRejection: ${reason?.stack || reason}`)
 })
-app.on('window-all-closed', () => {
-    stopNetworkWatcher()
-    stopAllTrackedProcesses()
-    database.close()
-    if (process.platform !== 'darwin') app.quit()
+let shutdownPromise = null
+let shutdownComplete = false
+
+function runCleanupStep(label, cleanup) {
+    try { cleanup() } catch (error) {
+        appendStartupLog(`shutdown-error step=${label} error=${error?.message || String(error)}`)
+    }
+}
+
+function shutdownApplicationResources() {
+    if (shutdownPromise) return shutdownPromise
+    shutdownPromise = (async () => {
+        appendStartupLog(`runtime-summary network=${JSON.stringify(networkRuntime.getMetrics())} native=${JSON.stringify(nativeProcessMetricsSnapshot())}`)
+        runCleanupStep('network-runtime', () => networkRuntime.stop())
+        runCleanupStep('mtr', stopAllMtrSessions)
+        runCleanupStep('speed-test', cancelSpeedTest)
+        runCleanupStep('port-scan', cancelPortScan)
+        runCleanupStep('lan-security', cancelAllLanSecuritySessions)
+        runCleanupStep('lan-scan', cancelAllLanScanSessions)
+        runCleanupStep('streaming-processes', stopAllTrackedProcesses)
+        runCleanupStep('native-processes', stopAllNativeProcesses)
+        runCleanupStep('database', () => database.close())
+        await startupLogger.flush()
+    })()
+    return shutdownPromise
+}
+
+function requestCleanQuit() {
+    if (quitRequested) return
+    quitRequested = true
+    for (const win of BrowserWindow.getAllWindows()) {
+        try { win.destroy() } catch { /* noop */ }
+    }
+    shutdownApplicationResources().finally(() => {
+        shutdownComplete = true
+        app.quit()
+    })
+}
+
+app.on('before-quit', event => {
+    if (!hasSingleInstanceLock) return
+    if (shutdownComplete) return
+    event.preventDefault()
+    requestCleanQuit()
 })
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') requestCleanQuit()
+    else void startupLogger.flush()
+})
+app.on('activate', () => {
+    networkRuntime.start()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+})
 
 // ═══════════════════════════════════════════════════════
 //   STANDARD IPC HANDLERS (request → response)
 // ═══════════════════════════════════════════════════════
 
-ipcMain.handle('get-network-interfaces', async () => {
-    observeInterfaceFingerprint()
-    const ifaces = os.networkInterfaces()
-    const hints = await getWindowsAdapterHints()
-    const result = []
-    for (const [name, addrs] of Object.entries(ifaces)) {
-        if (!addrs) continue
-        const hint = hints[name] || {}
-        for (const addr of addrs) {
-            result.push({
-                name,
-                ...addr,
-                interfaceDescription: hint.interfaceDescription || null,
-                interfaceStatus: hint.status || null,
-                interfaceType: hint.interfaceType || null,
-            })
-        }
-    }
-    return result
+trustedIpc.handle('get-network-snapshot', () => networkRuntime.getSnapshot())
+trustedIpc.handle('refresh-network-snapshot', async () => {
+    networkRuntime.refreshCore('manual')
+    await networkRuntime.refresh('manual')
+    // A signal arriving during an in-flight refresh is coalesced into one
+    // follow-up pass. Await it as well so IPC never confirms the old epoch.
+    if (networkRuntime.refreshPromise) await networkRuntime.refreshPromise
+    return networkRuntime.getSnapshot()
+})
+trustedIpc.handle('get-network-interfaces', () => networkRuntime.getSnapshot().interfaces)
+
+trustedIpc.handle('get-network-context', () => {
+    const snapshot = networkRuntime.getSnapshot()
+    return { active: snapshot.networkContext, interfaces: snapshot.networkContexts }
 })
 
-ipcMain.handle('get-network-context', async () => {
-    observeInterfaceFingerprint()
-    if (process.platform === 'win32') {
-        try {
-            const snapshot = await getWindowsNativeSnapshot()
-            const contexts = normalizeContexts(asArray(snapshot?.contexts), 'windows-default-route')
-            if (contexts.length) {
-                const fallback = contextsFromOsInterfaces()
-                const seen = new Set(contexts.map(item => item.address))
-                const interfaces = [...contexts, ...fallback.filter(item => !seen.has(item.address))]
-                return { active: contexts[0], interfaces }
-            }
-        } catch (error) {
-            appendStartupLog(`network-context windows route failed: ${error?.message || error || 'unknown error'}`)
-            /* fall through to portable interface data */
-        }
-    }
+trustedIpc.handle('get-vpn-status', () => networkRuntime.getSnapshot().vpnStatus)
 
-    const contexts = contextsFromOsInterfaces()
-    return { active: contexts[0] || null, interfaces: contexts }
-})
+trustedIpc.handle('get-system-info', () => networkRuntime.getSnapshot().sysInfo || getSystemInfoSnapshot())
 
-ipcMain.handle('get-vpn-status', async () => getVpnStatus())
-
-ipcMain.handle('get-system-info', () => ({
-    hostname: os.hostname(),
-    platform: os.platform(),
-    arch: os.arch(),
-    uptime: os.uptime(),
-    cpus: os.cpus().length,
-    cpuModel: os.cpus()[0]?.model || '—',
-    totalmem: os.totalmem(),
-    freemem: os.freemem(),
-}))
-
-ipcMain.handle('get-app-version', () => app.getVersion())
+trustedIpc.handle('get-app-version', () => app.getVersion())
 
 function requestPublicIp(url, parseBody) {
     return new Promise(resolve => {
@@ -1117,7 +1480,7 @@ function requestPublicIp(url, parseBody) {
 
 let publicIpProviderLogged = false
 
-ipcMain.handle('get-public-ip', async () => {
+async function loadPublicIp() {
     const providers = [
         ['https://api.ipify.org?format=json', body => JSON.parse(body).ip],
         ['https://icanhazip.com', body => body.trim()],
@@ -1133,28 +1496,63 @@ ipcMain.handle('get-public-ip', async () => {
         }
     }
     return 'Unavailable'
+}
+
+async function getPublicIpCached() {
+    const now = Date.now()
+    if (_publicIpCache.value && (now - _publicIpCache.ts) < PUBLIC_IP_CACHE_TTL_MS) return _publicIpCache.value
+    if (_publicIpCache.pending) return _publicIpCache.pending
+    const generation = _publicIpCache.generation
+    const pending = loadPublicIp().then(value => {
+        if (_publicIpCache.generation !== generation) {
+            if (_publicIpCache.pending === pending) _publicIpCache.pending = null
+            return getPublicIpCached()
+        }
+        _publicIpCache.value = value
+        _publicIpCache.ts = Date.now()
+        return value
+    }).finally(() => {
+        if (_publicIpCache.pending === pending) _publicIpCache.pending = null
+    })
+    _publicIpCache.pending = pending
+    return pending
+}
+
+trustedIpc.handle('get-public-ip', getPublicIpCached)
+
+function loadIpGeo(ip) {
+    return new Promise(resolve => {
+        let settled = false
+        const finish = value => {
+            if (settled) return
+            settled = true
+            resolve(value)
+        }
+        const url = `https://ipwho.is/${encodeURIComponent(ip)}?fields=success,country,country_code,city,latitude,longitude,connection,timezone`
+        const req = https.get(url, { headers: { 'User-Agent': `NetDuo/${app.getVersion()}` } }, res => {
+            let body = ''
+            res.on('data', chunk => { if (body.length < 16 * 1024) body += chunk })
+            res.on('end', () => {
+                try { finish(normalizeIpWhoResponse(JSON.parse(body))) } catch { finish({}) }
+            })
+        })
+        req.on('error', () => finish({}))
+        req.setTimeout(4000, () => { req.destroy(); finish({}) })
+    })
+}
+
+const getIpGeoCached = createIpGeoResolver({
+    load: loadIpGeo,
+    successTtlMs: IP_GEO_CACHE_TTL_MS,
+    failureTtlMs: 60 * 1000,
+    maxEntries: 8,
 })
 
-ipcMain.handle('get-ip-geo', (_, ip) => new Promise(resolve => {
-    if (!validators.isIPv4(String(ip || '').trim())) return resolve({})
-    // `countryCode` is the ISO 3166-1 alpha-2 (2 letters: US, DR, ES, MX,
-    // …). The Dashboard prefers it over the full country name in tight
-    // tile space so long names like "Dominican Republic" or "United Arab
-    // Emirates" never collide with the truncation ellipsis.
-    let settled = false
-    const finish = value => { if (!settled) { settled = true; resolve(value) } }
-    const req = http.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,city,isp,org,lat,lon,timezone,as`, res => {
-        let d = ''
-        res.on('data', c => { if (d.length < 16 * 1024) d += c })
-        res.on('end', () => { try { finish(JSON.parse(d)) } catch { finish({}) } })
-    })
-    req.on('error', () => finish({}))
-    req.setTimeout(4000, () => { req.destroy(); finish({}) })
-}))
+trustedIpc.handle('get-ip-geo', (_, ip) => getIpGeoCached(ip))
 
 // ── WiFi Info (Windows) ───────────────────────────────
-ipcMain.handle('get-wifi-info', async () => {
-    const snap = await getWifiSnapshot()
+trustedIpc.handle('get-wifi-info', async () => {
+    const snap = networkRuntime.getSnapshot().wifi
     if (!snap || !snap.connected) return null
     // Return same shape, minus the 'connected' field
     const { connected: _CONNECTED, ...wifi } = snap
@@ -1236,13 +1634,12 @@ async function getDnsServersCached() {
     return pending
 }
 
-ipcMain.handle('get-dns-servers', async () => {
-    observeInterfaceFingerprint()
-    return getDnsServersCached()
+trustedIpc.handle('get-dns-servers', async () => {
+    return networkRuntime.getSnapshot().dns
 })
 
 // ── ARP Table ─────────────────────────────────────────
-ipcMain.handle('get-arp-table', async () => {
+trustedIpc.handle('get-arp-table', async () => {
     const { out } = await runProgram('arp', ['-a'], 5000)
     const entries = []
     out.split('\n').forEach(line => {
@@ -1260,7 +1657,7 @@ ipcMain.handle('get-arp-table', async () => {
 })
 
 // ── Ping host ─────────────────────────────────────────
-ipcMain.handle('ping-host', async (_, rawHost, count = 4) => {
+trustedIpc.handle('ping-host', async (_, rawHost, count = 4) => {
     const host = sanitizeHost(rawHost)
     if (!host) return { host: rawHost, times: [], avg: null, min: null, max: null, loss: 100, raw: '', success: false }
     const isWin = process.platform === 'win32'
@@ -1279,7 +1676,7 @@ ipcMain.handle('ping-host', async (_, rawHost, count = 4) => {
     }
 })
 
-ipcMain.handle('ping-single', async (_, rawHost) => {
+trustedIpc.handle('ping-single', async (_, rawHost) => {
     const host = sanitizeHost(rawHost)
     if (!host) return { host: rawHost, time: null, success: false }
     const isWin = process.platform === 'win32'
@@ -1291,7 +1688,7 @@ ipcMain.handle('ping-single', async (_, rawHost) => {
 })
 
 // ── DNS Lookup — fixed per record type ────────────────
-ipcMain.handle('dns-lookup', (_, rawHostname, type) => new Promise(resolve => {
+trustedIpc.handle('dns-lookup', (_, rawHostname, type) => new Promise(resolve => {
     const hostname = sanitizeHost(rawHostname)
     if (!hostname) return resolve({ type, addresses: [], error: 'Invalid hostname', time: 0 })
     const start = Date.now()
@@ -1318,7 +1715,7 @@ ipcMain.handle('dns-lookup', (_, rawHostname, type) => new Promise(resolve => {
     }
 }))
 
-ipcMain.handle('dns-lookup-server', (_, rawHostname, rawType, rawServer) => new Promise(resolve => {
+trustedIpc.handle('dns-lookup-server', (_, rawHostname, rawType, rawServer) => new Promise(resolve => {
     const hostname = sanitizeHost(rawHostname)
     const type = String(rawType || 'A').toUpperCase()
     const server = String(rawServer || '').trim()
@@ -1342,7 +1739,7 @@ ipcMain.handle('dns-lookup-server', (_, rawHostname, rawType, rawServer) => new 
 }))
 
 // ── TCP Port Check ────────────────────────────────────
-ipcMain.handle('check-port', (_, host, port, timeout = 3000) => new Promise(resolve => {
+trustedIpc.handle('check-port', (_, host, port, timeout = 3000) => new Promise(resolve => {
     const start = Date.now()
     const socket = new net.Socket()
     socket.setTimeout(timeout)
@@ -1382,6 +1779,18 @@ function cancelLanSecuritySession(event, scanId) {
     }
     controller.sockets.clear()
     return true
+}
+
+function cancelAllLanSecuritySessions() {
+    for (const controller of lanSecuritySessions.values()) {
+        controller.cancelled = true
+        for (const socket of controller.sockets) {
+            try { socket.destroy?.() } catch { /* noop */ }
+            try { socket.close?.() } catch { /* noop */ }
+        }
+        controller.sockets.clear()
+    }
+    lanSecuritySessions.clear()
 }
 
 function normalizePortList(rawPorts, maxLength = 4096) {
@@ -1793,11 +2202,11 @@ async function scanLanSecurityHost(host, options, controller = null) {
     return entries
 }
 
-ipcMain.on('lan-security-scan-cancel', (event, scanId) => {
+trustedIpc.on('lan-security-scan-cancel', (event, scanId) => {
     cancelLanSecuritySession(event, scanId)
 })
 
-ipcMain.handle('lan-security-scan', async (event, payload = {}) => {
+trustedIpc.handle('lan-security-scan', async (event, payload = {}) => {
     const started = Date.now()
     const controller = getLanSecuritySession(event, payload?.scanId)
     const rawTargets = Array.isArray(payload?.targets) ? payload.targets : []
@@ -1851,14 +2260,15 @@ ipcMain.handle('lan-security-scan', async (event, payload = {}) => {
 
 // ── Port Scanner ──────────────────────────────────────
 let portScanCtrl = null
-ipcMain.on('stop-port-scan', () => {
+function cancelPortScan() {
     if (portScanCtrl) {
         portScanCtrl.cancelled = true
         for (const s of portScanCtrl.sockets) { try { s.destroy() } catch { /* noop */ } }
         portScanCtrl.sockets.clear()
     }
-})
-ipcMain.handle('scan-ports', async (_, host, startPort, endPort) => {
+}
+trustedIpc.on('stop-port-scan', cancelPortScan)
+trustedIpc.handle('scan-ports', async (_, host, startPort, endPort) => {
     // SECURITY: sanitize host (IPv4 / hostname) and clamp the port range
     // before allocating the port array. Without clamping, a renderer
     // could request endPort = 2**31 and balloon memory / tie up the
@@ -1900,7 +2310,7 @@ ipcMain.handle('scan-ports', async (_, host, startPort, endPort) => {
 })
 
 // ── HTTP Test ─────────────────────────────────────────
-ipcMain.handle('http-test', (_, url, method = 'GET', headers = {}) => new Promise(resolve => {
+trustedIpc.handle('http-test', (_, url, method = 'GET', headers = {}) => new Promise(resolve => {
     const start = Date.now()
     try {
         const urlObj = new URL(url)
@@ -1924,12 +2334,37 @@ ipcMain.handle('http-test', (_, url, method = 'GET', headers = {}) => new Promis
 const { lookupVendor: ouiLookup } = require('./oui-db')
 const vendorCache = new Map()
 const vendorPending = new Map()
+const VENDOR_CACHE_MAX_ENTRIES = 512
+const VENDOR_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000
+const VENDOR_CACHE_FAILURE_TTL_MS = 5 * 60 * 1000
 const scannerDiscoveryCache = {
     ssdpByBase: new Map(),
     mdnsByBase: new Map(),
 }
 const SCANNER_DISCOVERY_TTL_MS = 20000
 const SCANNER_DISCOVERY_MAX_KEYS = 16
+
+function readVendorCache(prefix) {
+    const entry = vendorCache.get(prefix)
+    if (!entry) return null
+    if (entry.expiresAt <= Date.now()) {
+        vendorCache.delete(prefix)
+        return null
+    }
+    // Refresh insertion order so eviction is least-recently-used.
+    vendorCache.delete(prefix)
+    vendorCache.set(prefix, entry)
+    return entry
+}
+
+function writeVendorCache(prefix, value) {
+    const ttl = value ? VENDOR_CACHE_SUCCESS_TTL_MS : VENDOR_CACHE_FAILURE_TTL_MS
+    vendorCache.delete(prefix)
+    vendorCache.set(prefix, { value: value || null, expiresAt: Date.now() + ttl })
+    while (vendorCache.size > VENDOR_CACHE_MAX_ENTRIES) {
+        vendorCache.delete(vendorCache.keys().next().value)
+    }
+}
 
 function getScannerDiscoveryCache(cacheMap, key) {
     const hit = cacheMap.get(key)
@@ -2076,7 +2511,8 @@ function lookupVendorOnline(mac) {
     const norm = mac.replace(/-/g, ':').toUpperCase()
     const prefix = norm.substring(0, 8)
     if (!prefix || prefix.length !== 8) return Promise.resolve(null)
-    if (vendorCache.has(prefix)) return Promise.resolve(vendorCache.get(prefix))
+    const cached = readVendorCache(prefix)
+    if (cached) return Promise.resolve(cached.value)
     if (vendorPending.has(prefix)) return vendorPending.get(prefix)
 
     const p = new Promise((resolve) => {
@@ -2099,10 +2535,9 @@ function lookupVendorOnline(mac) {
         req.on('error', () => resolve(null))
         req.setTimeout(2500, () => { req.destroy(); resolve(null) })
     }).then(vendor => {
-        vendorCache.set(prefix, vendor || null)
-        vendorPending.delete(prefix)
+        writeVendorCache(prefix, vendor)
         return vendor || null
-    })
+    }).finally(() => vendorPending.delete(prefix))
 
     vendorPending.set(prefix, p)
     return p
@@ -2563,6 +2998,17 @@ function cancelLanScanSession(event, scanId) {
     session.children.clear()
     lanScanSessions.delete(key)
     return true
+}
+
+function cancelAllLanScanSessions() {
+    for (const session of lanScanSessions.values()) {
+        session.cancelled = true
+        for (const child of session.children) {
+            try { child.kill() } catch { /* noop */ }
+        }
+        session.children.clear()
+    }
+    lanScanSessions.clear()
 }
 
 function httpGetText(urlStr, timeoutMs = 2200, redirects = 2) {
@@ -3040,11 +3486,11 @@ function getLocalMAC() {
     return { ip: null, mac: null }
 }
 
-ipcMain.on('lan-scan-cancel', (event, scanId) => {
+trustedIpc.on('lan-scan-cancel', (event, scanId) => {
     cancelLanScanSession(event, scanId)
 })
 
-ipcMain.handle('lan-scan', async (event, baseIP, rangeStart, rangeEnd, options = {}) => {
+trustedIpc.handle('lan-scan', async (event, baseIP, rangeStart, rangeEnd, options = {}) => {
     // SECURITY: revalidate every value received from the renderer before
     // it ever reaches a shell. Even though preload narrows the API, an
     // XSS inside our own content would hand the renderer a bypass; these
@@ -3332,7 +3778,7 @@ ipcMain.handle('lan-scan', async (event, baseIP, rangeStart, rangeEnd, options =
     return results
 })
 
-ipcMain.handle('lan-scan-enrich', async (_, payload = {}) => {
+trustedIpc.handle('lan-scan-enrich', async (_, payload = {}) => {
     const items = Array.isArray(payload?.devices) ? payload.devices : []
     if (!items.length) return []
 
@@ -3388,7 +3834,7 @@ ipcMain.handle('lan-scan-enrich', async (_, payload = {}) => {
     return enriched.filter(Boolean)
 })
 
-ipcMain.handle('lan-upnp-scan', async (_, baseIP, rangeStart, rangeEnd) => {
+trustedIpc.handle('lan-upnp-scan', async (_, baseIP, rangeStart, rangeEnd) => {
     baseIP = String(baseIP || '').trim()
     rangeStart = Math.max(1, Math.min(254, parseInt(rangeStart, 10) || 1))
     rangeEnd = Math.max(rangeStart, Math.min(254, parseInt(rangeEnd, 10) || 254))
@@ -3454,7 +3900,7 @@ ipcMain.handle('lan-upnp-scan', async (_, baseIP, rangeStart, rangeEnd) => {
 })
 
 // ── Speed Test ────────────────────────────────────────
-ipcMain.handle('speed-latency', async () => {
+trustedIpc.handle('speed-latency', async () => {
     const isWin = process.platform === 'win32'
     const pings = []
     for (const t of ['1.1.1.1', '8.8.8.8', '9.9.9.9']) {
@@ -3468,7 +3914,7 @@ ipcMain.handle('speed-latency', async () => {
     return { latency: avg.toFixed(1), jitter: jitter.toFixed(1) }
 })
 
-ipcMain.handle('speed-download', () => new Promise(resolve => {
+trustedIpc.handle('speed-download', () => new Promise(resolve => {
     const start = Date.now()
     let bytes = 0
     https.get('https://speed.cloudflare.com/__down?bytes=10000000', res => {
@@ -3522,7 +3968,7 @@ function cancelSpeedTest() {
     for (const fn of ctrl.closers) { try { fn() } catch { /* noop */ } }
     ctrl.closers.length = 0
 }
-ipcMain.on('stop-speed-test', () => cancelSpeedTest())
+trustedIpc.on('stop-speed-test', () => cancelSpeedTest())
 
 // -- M-Lab NDT7 Protocol -----------------------------------
 const NDT7_LOCATE_URL = 'https://locate.measurementlab.net/v2/nearest/ndt/ndt7'
@@ -3811,7 +4257,7 @@ function getSpeedServer(id) {
 }
 
 /** Return available servers list to renderer */
-ipcMain.handle('speed-get-servers', () =>
+trustedIpc.handle('speed-get-servers', () =>
     SPEED_SERVERS.map(s => ({ id: s.id, name: s.name, location: s.location, sponsor: s.sponsor }))
 )
 
@@ -3886,7 +4332,7 @@ function calcUploadBytes(dlMbps) {
 }
 
 /** Streaming speed test - adaptive, multi-CDN */
-ipcMain.handle('speed-test-full', async (event, serverId) => {
+trustedIpc.handle('speed-test-full', async (event, serverId) => {
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) return { error: 'No window' }
     const send = (ch, data) => { try { win.webContents.send(ch, data) } catch { /* noop */ } }
@@ -4162,7 +4608,7 @@ function runUploadTest(send, server, targetBytes, ctrl) {
 
 
 // ── SSL Certificate Checker ───────────────────────────
-ipcMain.handle('ssl-check', (_, rawHost, port = 443) => new Promise(resolve => {
+trustedIpc.handle('ssl-check', (_, rawHost, port = 443) => new Promise(resolve => {
     const host = sanitizeHost(rawHost)
     if (!host) return resolve({ error: 'Invalid host' })
     const start = Date.now()
@@ -4191,7 +4637,7 @@ ipcMain.handle('ssl-check', (_, rawHost, port = 443) => new Promise(resolve => {
 }))
 
 // ── Whois Lookup ──────────────────────────────────────
-ipcMain.handle('whois', (_, rawQuery) => new Promise(resolve => {
+trustedIpc.handle('whois', (_, rawQuery) => new Promise(resolve => {
     const query = sanitizeHost(rawQuery)
     if (!query) return resolve({ error: 'Invalid query' })
     const socket = new net.Socket()
@@ -4220,7 +4666,7 @@ ipcMain.handle('whois', (_, rawQuery) => new Promise(resolve => {
 }))
 
 // ── Wake-on-LAN ───────────────────────────────────────
-ipcMain.handle('wake-on-lan', (_, mac, broadcast = '255.255.255.255', wol_port = 9) => new Promise(resolve => {
+trustedIpc.handle('wake-on-lan', (_, mac, broadcast = '255.255.255.255', wol_port = 9) => new Promise(resolve => {
     const cleanMac = mac.replace(/[:-]/g, '').toLowerCase()
     if (cleanMac.length !== 12) return resolve({ error: 'Invalid MAC address' })
     const macBytes = Buffer.from(cleanMac, 'hex')
@@ -4386,7 +4832,7 @@ function normalizeProbeRequestBody(body) {
 }
 
 // ── Live Traceroute ───────────────────────────────────
-ipcMain.on('start-traceroute', (event, rawHost) => {
+trustedIpc.on('start-traceroute', (event, rawHost) => {
     const host = sanitizeHost(rawHost)
     if (!host) { event.sender.send('traceroute:done'); return }
     const isWin = process.platform === 'win32'
@@ -4463,12 +4909,12 @@ ipcMain.on('start-traceroute', (event, rawHost) => {
     event.sender.once('destroyed', () => stopTrackedProcess(tracerouteProcesses, senderId))
 })
 
-ipcMain.on('stop-traceroute', (event) => {
+trustedIpc.on('stop-traceroute', (event) => {
     stopTrackedProcess(tracerouteProcesses, event.sender.id)
 })
 
 // ── Live Ping (per-packet) ────────────────────────────
-ipcMain.on('start-ping-live', (event, rawHost, count = 10) => {
+trustedIpc.on('start-ping-live', (event, rawHost, count = 10) => {
     const host = sanitizeHost(rawHost)
     if (!host) { event.sender.send('ping:done', { seqNum: 0 }); return }
     const isWin = process.platform === 'win32'
@@ -4517,14 +4963,43 @@ ipcMain.on('start-ping-live', (event, rawHost, count = 10) => {
     event.sender.once('destroyed', () => stopTrackedProcess(pingLiveProcesses, senderId))
 })
 
-ipcMain.on('stop-ping-live', (event) => {
+trustedIpc.on('stop-ping-live', (event) => {
     stopTrackedProcess(pingLiveProcesses, event.sender.id)
 })
 
 // ── MTR (live per-hop ping) ───────────────────────────
 const mtrSessions = new Map()
+const mtrSessionBySender = new Map()
+const MTR_PING_CONCURRENCY = 6
 
-ipcMain.on('start-mtr', (event, rawHost, intervalMs = 1000) => {
+function sendMtr(session, channel, payload) {
+    if (!session.running || session.sender.isDestroyed()) return
+    session.sender.send(channel, payload)
+}
+
+function stopMtrSession(sessionId, ownerSenderId = null) {
+    const session = mtrSessions.get(sessionId)
+    if (!session || (ownerSenderId != null && session.senderId !== ownerSenderId)) return false
+    session.running = false
+    if (session.timer) clearTimeout(session.timer)
+    session.timer = null
+    for (const child of [...session.children]) {
+        try { child.kill() } catch { /* child may already be gone */ }
+    }
+    session.children.clear()
+    session.sender.removeListener?.('destroyed', session.onDestroyed)
+    mtrSessions.delete(sessionId)
+    if (mtrSessionBySender.get(session.senderId) === sessionId) {
+        mtrSessionBySender.delete(session.senderId)
+    }
+    return true
+}
+
+function stopAllMtrSessions() {
+    for (const sessionId of [...mtrSessions.keys()]) stopMtrSession(sessionId)
+}
+
+trustedIpc.on('start-mtr', (event, rawHost, intervalMs = 1000) => {
     const host = sanitizeHost(rawHost)
     if (!host) {
         if (!event.sender.isDestroyed()) event.sender.send('mtr:done')
@@ -4532,16 +5007,36 @@ ipcMain.on('start-mtr', (event, rawHost, intervalMs = 1000) => {
     }
 
     const safeIntervalMs = Number.isInteger(intervalMs) ? Math.max(500, Math.min(intervalMs, 5000)) : 1000
-    const hops = new Map()
-    let mtrRunning = true
+    const senderId = event.sender.id
+    const previousSessionId = mtrSessionBySender.get(senderId)
+    if (previousSessionId) stopMtrSession(previousSessionId, senderId)
+
+    const sessionId = `mtr-${senderId}-${Date.now()}`
+    const session = {
+        id: sessionId,
+        senderId,
+        sender: event.sender,
+        running: true,
+        timer: null,
+        children: new Set(),
+        hops: new Map(),
+        onDestroyed: null,
+    }
+    session.onDestroyed = () => stopMtrSession(sessionId, senderId)
+    event.sender.once('destroyed', session.onDestroyed)
+    mtrSessions.set(sessionId, session)
+    mtrSessionBySender.set(senderId, sessionId)
+    sendMtr(session, 'mtr:session', sessionId)
 
     // First do a traceroute to get hops, then ping each continuously
     const isWin = process.platform === 'win32'
     runProgram(
         isWin ? 'tracert' : 'traceroute',
         isWin ? ['-4', '-d', '-h', '20', host] : ['-4', '-m', '20', '-n', host],
-        30000
+        30000,
+        session,
     ).then(({ out }) => {
+        if (!session.running || event.sender.isDestroyed()) return
         const hopIPs = []
         out.split('\n').forEach(line => {
             const winMatch = line.match(/^\s*(\d+)\s+([\s\S]+)$/)
@@ -4559,58 +5054,42 @@ ipcMain.on('start-mtr', (event, rawHost, intervalMs = 1000) => {
 
         // Initialize hop stats
         hopIPs.filter(Boolean).forEach(({ hop, ip }) => {
-            hops.set(hop, { hop, ip, sent: 0, lost: 0, times: [], min: Infinity, max: 0, avg: null })
+            session.hops.set(hop, createHopStats(hop, ip))
         })
 
         // Send initial hop list
-        if (!event.sender.isDestroyed()) {
-            event.sender.send('mtr:hops', [...hops.values()])
-        }
+        sendMtr(session, 'mtr:hops', [...session.hops.values()].map(publicHopStats))
 
-        // Ping each hop continuously
-            const pingHop = async () => {
-                if (!mtrRunning || event.sender.isDestroyed()) return
-
-                await Promise.all([...hops.entries()].map(async ([, hopData]) => {
+        // Bound process fan-out and keep exactly one non-overlapping round.
+        const pingHop = async () => {
+            if (!session.running || event.sender.isDestroyed()) return
+            await mapWithConcurrency(
+                [...session.hops.values()],
+                MTR_PING_CONCURRENCY,
+                async hopData => {
+                    if (!session.running) return
                     const args = isWin
                         ? ['-4', '-n', '1', '-w', '1000', hopData.ip]
                         : ['-c', '1', '-W', '1', hopData.ip]
-                    const { out } = await runProgram('ping', args, 2500)
-                    const m = out.match(PING_TIME_RE)
-                    const time = m ? parseFloat(m[1]) : null
-                    hopData.sent++
-                if (time == null) {
-                    hopData.lost++
-                } else {
-                    hopData.times.push(time)
-                    if (time < hopData.min) hopData.min = time
-                    if (time > hopData.max) hopData.max = time
-                    hopData.avg = (hopData.times.reduce((a, b) => a + b, 0) / hopData.times.length).toFixed(1)
-                }
-                hopData.loss = ((hopData.lost / hopData.sent) * 100).toFixed(0)
-            }))
+                    const result = await runProgram('ping', args, 2500, session)
+                    if (!session.running) return
+                    const match = result.out.match(PING_TIME_RE)
+                    recordHopSample(hopData, match ? parseFloat(match[1]) : null)
+                },
+            )
 
-                if (!event.sender.isDestroyed()) {
-                    event.sender.send('mtr:update', [...hops.values()])
-                }
-
-                if (mtrRunning && !event.sender.isDestroyed()) {
-                    setTimeout(pingHop, safeIntervalMs)
-                }
-            }
+            if (!session.running || event.sender.isDestroyed()) return
+            sendMtr(session, 'mtr:update', [...session.hops.values()].map(publicHopStats))
+            session.timer = setTimeout(pingHop, safeIntervalMs)
+            session.timer?.unref?.()
+        }
 
         pingHop()
     })
-
-    // Stop handler
-    const sessionId = `${host}-${Date.now()}`
-    mtrSessions.set(sessionId, () => { mtrRunning = false })
-    if (!event.sender.isDestroyed()) event.sender.send('mtr:session', sessionId)
 })
 
-ipcMain.on('stop-mtr', (event, sessionId) => {
-    const stopper = mtrSessions.get(sessionId)
-    if (stopper) { stopper(); mtrSessions.delete(sessionId) }
+trustedIpc.on('stop-mtr', (event, sessionId) => {
+    stopMtrSession(String(sessionId || ''), event.sender.id)
 })
 
 // ======================================================
@@ -4618,31 +5097,31 @@ ipcMain.on('stop-mtr', (event, sessionId) => {
 // ======================================================
 
 // General history
-ipcMain.handle('history-get', () => database.historyGetAll())
-ipcMain.handle('history-add', (_, entry) => database.historyAdd(entry))
-ipcMain.handle('history-clear', () => database.historyClear())
+trustedIpc.handle('history-get', () => database.historyGetAll())
+trustedIpc.handle('history-add', (_, entry) => database.historyAdd(entry))
+trustedIpc.handle('history-clear', () => database.historyClear())
 
 // Speed-test history
-ipcMain.handle('speed-history-get', () => database.speedHistoryGetAll())
-ipcMain.handle('speed-history-add', (_, entry) => database.speedHistoryAdd(entry))
-ipcMain.handle('speed-history-clear', () => database.speedHistoryClear())
+trustedIpc.handle('speed-history-get', () => database.speedHistoryGetAll())
+trustedIpc.handle('speed-history-add', (_, entry) => database.speedHistoryAdd(entry))
+trustedIpc.handle('speed-history-clear', () => database.speedHistoryClear())
 
 // LAN-check report history
-ipcMain.handle('lan-check-history-get', () => database.lanCheckHistoryGetAll())
-ipcMain.handle('lan-check-history-add', (_, entry) => database.lanCheckHistoryAdd(entry))
-ipcMain.handle('lan-check-history-delete', (_, id) => database.lanCheckHistoryDelete(id))
-ipcMain.handle('lan-check-history-clear', () => database.lanCheckHistoryClear())
+trustedIpc.handle('lan-check-history-get', () => database.lanCheckHistoryGetAll())
+trustedIpc.handle('lan-check-history-add', (_, entry) => database.lanCheckHistoryAdd(entry))
+trustedIpc.handle('lan-check-history-delete', (_, id) => database.lanCheckHistoryDelete(id))
+trustedIpc.handle('lan-check-history-clear', () => database.lanCheckHistoryClear())
 
-ipcMain.handle('wan-probe-history-get', () => database.wanProbeHistoryGetAll())
-ipcMain.handle('wan-probe-history-add', (_, entry) => database.wanProbeHistoryAdd(entry))
-ipcMain.handle('wan-probe-history-delete', (_, id) => database.wanProbeHistoryDelete(id))
-ipcMain.handle('wan-probe-history-clear', () => database.wanProbeHistoryClear())
+trustedIpc.handle('wan-probe-history-get', () => database.wanProbeHistoryGetAll())
+trustedIpc.handle('wan-probe-history-add', (_, entry) => database.wanProbeHistoryAdd(entry))
+trustedIpc.handle('wan-probe-history-delete', (_, id) => database.wanProbeHistoryDelete(id))
+trustedIpc.handle('wan-probe-history-clear', () => database.wanProbeHistoryClear())
 
 // Report exports (PDF / CSV)
-ipcMain.handle('report-export', (_, kind, format, payload) =>
+trustedIpc.handle('report-export', (_, kind, format, payload) =>
     reports.exportReport(kind, format, payload)
 )
-ipcMain.handle('report-reveal', (_, filePath) => {
+trustedIpc.handle('report-reveal', (_, filePath) => {
     // SECURITY: reveal is only permitted for paths we ourselves
     // exported in this session (see reports/save.js for the whitelist,
     // which uses path.resolve + fs.realpathSync + fs.existsSync to
@@ -4653,44 +5132,44 @@ ipcMain.handle('report-reveal', (_, filePath) => {
 })
 
 // Device snapshots (LAN scan change tracking)
-ipcMain.handle('device-snapshot-add', (_, baseIP, devices) =>
+trustedIpc.handle('device-snapshot-add', (_, baseIP, devices) =>
     database.deviceSnapshotAdd(baseIP, devices)
 )
-ipcMain.handle('device-snapshot-latest', (_, baseIP, beforeTs) =>
+trustedIpc.handle('device-snapshot-latest', (_, baseIP, beforeTs) =>
     database.deviceSnapshotLatest(baseIP, beforeTs)
 )
-ipcMain.handle('device-snapshot-list', (_, baseIP, limit) =>
+trustedIpc.handle('device-snapshot-list', (_, baseIP, limit) =>
     database.deviceSnapshotList(baseIP, limit)
 )
-ipcMain.handle('device-snapshot-get', (_, id) =>
+trustedIpc.handle('device-snapshot-get', (_, id) =>
     database.deviceSnapshotGet(id)
 )
-ipcMain.handle('device-snapshot-clear', (_, baseIP) =>
+trustedIpc.handle('device-snapshot-clear', (_, baseIP) =>
     database.deviceSnapshotClear(baseIP)
 )
 
 // Device inventory (persistent known-device registry, scoped per NETWORK).
 // Callers pass a `networkId` derived from the gateway's MAC (preferred)
 // or the subnet (fallback). See deriveNetworkId() in Scanner.jsx.
-ipcMain.handle('device-inventory-list', (_, networkId) =>
+trustedIpc.handle('device-inventory-list', (_, networkId) =>
     database.deviceInventoryList(networkId)
 )
-ipcMain.handle('device-inventory-get', (_, deviceKey) =>
+trustedIpc.handle('device-inventory-get', (_, deviceKey) =>
     database.deviceInventoryGet(deviceKey)
 )
-ipcMain.handle('device-inventory-merge', (_, networkId, baseIP, devices) =>
+trustedIpc.handle('device-inventory-merge', (_, networkId, baseIP, devices) =>
     database.deviceInventoryMergeScan(networkId, baseIP, devices)
 )
-ipcMain.handle('device-inventory-update', (_, deviceKey, patch) =>
+trustedIpc.handle('device-inventory-update', (_, deviceKey, patch) =>
     database.deviceInventoryUpdateMeta(deviceKey, patch)
 )
-ipcMain.handle('device-inventory-remove', (_, deviceKey) =>
+trustedIpc.handle('device-inventory-remove', (_, deviceKey) =>
     database.deviceInventoryRemove(deviceKey)
 )
-ipcMain.handle('device-inventory-clear', (_, networkId) =>
+trustedIpc.handle('device-inventory-clear', (_, networkId) =>
     database.deviceInventoryClear(networkId)
 )
-ipcMain.handle('device-inventory-purge-ghosts', (_, networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey) =>
+trustedIpc.handle('device-inventory-purge-ghosts', (_, networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey) =>
     database.deviceInventoryPurgeGhosts(networkId, seenKeys, scanCoveredFullRange, gatewayDeviceKey)
 )
 
@@ -4721,7 +5200,7 @@ function isSensitiveRendererConfigKey(key) {
     return Boolean(database.isSensitiveConfigKey?.(key))
 }
 
-ipcMain.handle('config-get', (_, key) => {
+trustedIpc.handle('config-get', (_, key) => {
     if (isSensitiveRendererConfigKey(key)) return null
     return database.configGet(key)
 })
@@ -4729,19 +5208,19 @@ ipcMain.handle('config-get', (_, key) => {
 // One-shot query: did the DB layer recover from corruption on startup?
 // Returns true once (on first read), false afterwards. UI uses this to
 // show a warning toast when the inventory was reset.
-ipcMain.handle('db-recovery-flag', () => database.consumeRecoveryFlag())
-ipcMain.handle('config-set', (_, key, value) => {
+trustedIpc.handle('db-recovery-flag', () => database.consumeRecoveryFlag())
+trustedIpc.handle('config-set', (_, key, value) => {
     if (isSensitiveRendererConfigKey(key)) return false
     database.configSet(key, value)
     return true
 })
-ipcMain.handle('config-get-all', (_, keys) => database.configGetPublic(keys))
-ipcMain.handle('config-delete', (_, key) => {
+trustedIpc.handle('config-get-all', (_, keys) => database.configGetPublic(keys))
+trustedIpc.handle('config-delete', (_, key) => {
     if (isSensitiveRendererConfigKey(key)) return false
     database.configDelete(key)
     return true
 })
-ipcMain.handle('wan-probe-config-get', () => {
+trustedIpc.handle('wan-probe-config-get', () => {
     const output = {}
     for (const key of WAN_PROBE_CONFIG_KEYS) {
         const value = database.configGet(key)
@@ -4749,7 +5228,7 @@ ipcMain.handle('wan-probe-config-get', () => {
     }
     return output
 })
-ipcMain.handle('wan-probe-config-set', (_, payload = {}) => {
+trustedIpc.handle('wan-probe-config-set', (_, payload = {}) => {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
     for (const key of WAN_PROBE_CONFIG_KEYS) {
         if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
@@ -4776,7 +5255,7 @@ ipcMain.handle('wan-probe-config-set', (_, payload = {}) => {
 //
 // Each policy is strict-by-default; the renderer must explicitly
 // acknowledge any relaxation per request.
-ipcMain.handle('wan-probe-request', async (_, opts) => {
+trustedIpc.handle('wan-probe-request', async (_, opts) => {
     const url = typeof opts?.url === 'string' ? opts.url.trim() : ''
     if (!validators.isHttpUrl(url)) return { error: 'Invalid URL' }
 

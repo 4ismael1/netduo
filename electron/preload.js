@@ -6,8 +6,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     maximize: () => ipcRenderer.send('window-maximize'),
     close: () => ipcRenderer.send('window-close'),
     openExternal: (url) => ipcRenderer.invoke('open-external', url),
+    onWindowVisibilityChanged: (cb) => {
+        const handler = (_event, state) => cb({ visible: state?.visible === true })
+        ipcRenderer.on('window:visibility', handler)
+        return () => ipcRenderer.removeListener('window:visibility', handler)
+    },
 
     // Network
+    getNetworkSnapshot: () => ipcRenderer.invoke('get-network-snapshot'),
+    refreshNetworkSnapshot: () => ipcRenderer.invoke('refresh-network-snapshot'),
     getNetworkInterfaces: () => ipcRenderer.invoke('get-network-interfaces'),
     getNetworkContext: () => ipcRenderer.invoke('get-network-context'),
     getVpnStatus: () => ipcRenderer.invoke('get-vpn-status'),
@@ -132,13 +139,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('network:changed', handler)
         return () => ipcRenderer.removeListener('network:changed', handler)
     },
-    onNetworkSignal: (cb) => {
+    onNetworkSnapshot: (cb) => {
         const handler = (_event, data) => cb(data)
-        ipcRenderer.on('network:signal', handler)
-        return () => ipcRenderer.removeListener('network:signal', handler)
+        ipcRenderer.on('network:snapshot', handler)
+        return () => ipcRenderer.removeListener('network:snapshot', handler)
     },
     // DEPRECATED: kept as a no-op for backward compatibility. Call the
-    // unsubscribe function returned by onNetworkChanged / onNetworkSignal
+    // unsubscribe function returned by each network subscription
     // instead — using removeAllListeners here would clobber listeners
     // owned by sibling components.
     offNetworkEvents: () => { /* intentionally no-op */ },

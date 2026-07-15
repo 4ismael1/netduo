@@ -11,7 +11,7 @@ import {
   getScannerSessionSnapshot,
 } from './lib/scannerSession.js'
 import { getSessionRef, getSessionSnapshot, setSessionValue } from './lib/persistentSession.js'
-import { endOperation, getOperationSnapshot } from './lib/operationRegistry.js'
+import { getOperationSnapshot, invalidateOperation } from './lib/operationRegistry.js'
 // Dashboard is the first route on app open and is always needed, so we
 // import it eagerly to eliminate the visible skeleton flicker on cold
 // start. With lazy(), there were two competing skeletons: the Suspense
@@ -74,31 +74,51 @@ function RoutedPage({ Page, fallback = <RouteFallback /> }) {
   )
 }
 
-function OperationNetworkGuard() {
+export function OperationNetworkGuard() {
   const net = useNetworkStatus()
+  const loading = net.loading
+  const networkEpoch = Number.isInteger(Number(net.networkEpoch)) ? Number(net.networkEpoch) : 0
   const previousNetworkRef = useRef(undefined)
+  const activeNetworkEpochRef = getSessionRef('network-runtime', 'epoch', networkEpoch)
 
   useEffect(() => {
-    if (net.loading) return
-    const networkKey = [
-      net.networkContext?.cidr || '',
-      net.gateway || '',
-      net.localIP || '',
-    ].join('|')
+    if (loading) return
+    activeNetworkEpochRef.current = networkEpoch
+    setSessionValue('network-runtime', 'epoch', networkEpoch)
 
     if (previousNetworkRef.current === undefined) {
-      previousNetworkRef.current = networkKey
+      previousNetworkRef.current = networkEpoch
       return
     }
-    if (previousNetworkRef.current === networkKey) return
-    previousNetworkRef.current = networkKey
+    if (previousNetworkRef.current === networkEpoch) return
+    previousNetworkRef.current = networkEpoch
 
     const wasScanning = getScannerSessionSnapshot().scanning
-    const cancelledScanId = abortScannerSession({ clearDevices: true })
-    if (wasScanning) bridge.lanScanCancel?.(cancelledScanId)
+    if (wasScanning) {
+      // A route-only epoch (for example VPN on/off over the same Wi-Fi)
+      // invalidates the active sweep, but it is not a new physical LAN.
+      // Stop late callbacks without erasing the last completed result; the
+      // Scanner's underlay-identity guard performs the destructive clear only
+      // when the physical network itself actually changes.
+      const cancelledScanId = abortScannerSession({ clearDevices: false })
+      bridge.lanScanCancel?.(cancelledScanId)
+    }
+
+    // Monitoring is continuous, so keep it running across the transition,
+    // but begin a clean series for the new route. Its in-flight tick captures
+    // this epoch and discards any result that settles from the previous one.
+    const monitorSession = getSessionSnapshot('monitor')
+    if (monitorSession.running) {
+      setSessionValue('monitor', 'data', [])
+      setSessionValue('monitor', 'stats', {})
+      getSessionRef('monitor', 'alertedHosts', new Set()).current.clear()
+      getSessionRef('monitor', 'breachStreak', new Map()).current.clear()
+      getSessionRef('monitor', 'sessionStart', null).current = new Date().toISOString()
+    }
 
     const lanSession = getSessionSnapshot('lan-check')
     if (lanSession.running) {
+      getSessionRef('lan-check', 'scanControl', null).current?.abortController?.abort()
       const lanRunRef = getSessionRef('lan-check', 'scanRun', 0)
       const activeScanId = lanRunRef.current
       lanRunRef.current += 1
@@ -107,17 +127,21 @@ function OperationNetworkGuard() {
       setSessionValue('lan-check', 'running', false)
       setSessionValue('lan-check', 'stage', 'setup')
       setSessionValue('lan-check', 'inputError', 'The network changed, so the previous LAN check was stopped. Start a new check for the current network.')
-      endOperation('lan-check', 'error', { label: 'LAN check stopped because the network changed' })
+      invalidateOperation('lan-check', 'error', { label: 'LAN check stopped because the network changed' })
     }
 
     const speedSession = getSessionSnapshot('speed-test')
     if (!['idle', 'done', 'error', undefined].includes(speedSession.phase)) {
       getSessionRef('speed-test', 'networkChanged', false).current = true
+      // Revoke the component-side owner as well as the registry owner so
+      // progress events already queued by Electron cannot repaint the old
+      // run after this network transition.
+      getSessionRef('speed-test', 'operationToken', null).current = null
       bridge.stopSpeedTest?.()
       setSessionValue('speed-test', 'phase', 'error')
       setSessionValue('speed-test', 'cancelling', false)
       setSessionValue('speed-test', 'error', 'The connection changed during the test. Run it again on the current network.')
-      endOperation('speed-test', 'error', { label: 'Speed test stopped because the network changed' })
+      invalidateOperation('speed-test', 'error', { label: 'Speed test stopped because the network changed' })
     }
 
     const wanOperation = getOperationSnapshot()['wan-check']
@@ -126,9 +150,61 @@ function OperationNetworkGuard() {
       setSessionValue('wan-check', 'scanState', 'done')
       setSessionValue('wan-check', 'view', 'report')
       setSessionValue('wan-check', 'scanError', 'The network changed during the automatic WAN check. Partial results are shown; start a new check for the current connection.')
-      endOperation('wan-check', 'error', { label: 'WAN check stopped because the network changed' })
+      invalidateOperation('wan-check', 'error', { label: 'WAN check stopped because the network changed' })
     }
-  }, [net.gateway, net.loading, net.localIP, net.networkContext?.cidr])
+
+    const tracerouteSession = getSessionSnapshot('diagnostics-traceroute')
+    if (tracerouteSession.running) {
+      bridge.offTraceroute?.()
+      getSessionRef('diagnostics-traceroute', 'operationToken', null).current = null
+      setSessionValue('diagnostics-traceroute', 'running', false)
+      setSessionValue('diagnostics-traceroute', 'done', true)
+      setSessionValue('diagnostics-traceroute', 'error', 'The network route changed, so the traceroute was stopped. Run it again on the current connection.')
+      invalidateOperation('diagnostics-traceroute', 'error', { label: 'Traceroute stopped because the network changed' })
+    }
+
+    const pingSession = getSessionSnapshot('diagnostics-ping')
+    if (pingSession.running) {
+      bridge.offPingLive?.()
+      getSessionRef('diagnostics-ping', 'operationToken', null).current = null
+      setSessionValue('diagnostics-ping', 'running', false)
+      setSessionValue('diagnostics-ping', 'error', 'The network route changed, so live ping was stopped. Start it again on the current connection.')
+      invalidateOperation('diagnostics-ping', 'error', { label: 'Live ping stopped because the network changed' })
+    }
+
+    const portScanSession = getSessionSnapshot('diagnostics-ports')
+    if (portScanSession.loading) {
+      const portScanControl = getSessionRef('diagnostics-ports', 'scanControl', null).current
+      if (portScanControl) {
+        portScanControl.cancelled = true
+        portScanControl.operationToken = null
+      }
+      bridge.stopPortScan?.()
+      setSessionValue('diagnostics-ports', 'loading', false)
+      setSessionValue('diagnostics-ports', 'error', 'The network route changed, so the port scan was stopped. Run it again on the current connection.')
+      invalidateOperation('diagnostics-ports', 'error', { label: 'Port scan stopped because the network changed' })
+    }
+
+    const mtrSession = getSessionSnapshot('diagnostics-mtr')
+    if (mtrSession.loading || mtrSession.session) {
+      getSessionRef('diagnostics-mtr', 'operationToken', null).current = null
+      if (mtrSession.session) bridge.stopMtr?.(mtrSession.session)
+      setSessionValue('diagnostics-mtr', 'session', null)
+      setSessionValue('diagnostics-mtr', 'loading', false)
+      setSessionValue('diagnostics-mtr', 'error', 'The network route changed, so hop monitoring was stopped. Start it again on the current connection.')
+      invalidateOperation('diagnostics-mtr', 'error', { label: 'Hop monitor stopped because the network changed' })
+    }
+
+    const dnsBenchmarkSession = getSessionSnapshot('tools-dns-benchmark')
+    if (dnsBenchmarkSession.running) {
+      getSessionRef('tools-dns-benchmark', 'run', 0).current += 1
+      getSessionRef('tools-dns-benchmark', 'operationToken', null).current = null
+      setSessionValue('tools-dns-benchmark', 'running', false)
+      setSessionValue('tools-dns-benchmark', 'results', null)
+      setSessionValue('tools-dns-benchmark', 'error', 'The network route changed, so the DNS benchmark was stopped. Run it again on the current connection.')
+      invalidateOperation('tools-dns-benchmark', 'error', { label: 'DNS benchmark stopped because the network changed' })
+    }
+  }, [activeNetworkEpochRef, loading, networkEpoch])
 
   return null
 }
